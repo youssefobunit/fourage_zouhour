@@ -52,7 +52,7 @@ const _localDatabaseName = String.fromEnvironment(
   // photo that Android cannot read. The cloud workspace is restored on launch.
   defaultValue: 'forage-v2.db',
 );
-const _appVersion = '1.0.7+8';
+const _appVersion = '1.0.11+11';
 const _githubLatestRelease =
     'https://api.github.com/repos/youssefobunit/fourage_zouhour/releases/latest';
 
