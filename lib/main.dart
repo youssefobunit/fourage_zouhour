@@ -54,7 +54,7 @@ const _localDatabaseName = String.fromEnvironment(
 );
 const _appVersion = '1.0.7+8';
 const _githubLatestRelease =
-    'https://api.github.com/repos/youssefobunit/IPA_forage/releases/latest';
+    'https://api.github.com/repos/youssefobunit/fourage_zouhour/releases/latest';
 
 class AppUpdate {
   const AppUpdate({required this.version, required this.downloadUrl});
