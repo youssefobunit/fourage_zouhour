@@ -1,0 +1,49 @@
+name: Android APK release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install packages
+        run: flutter pub get
+
+      - name: Restore signing key
+        env:
+          FORAGE_KEYSTORE_BASE64: ${{ secrets.FORAGE_KEYSTORE_BASE64 }}
+          FORAGE_STORE_PASSWORD: ${{ secrets.FORAGE_STORE_PASSWORD }}
+          FORAGE_KEY_PASSWORD: ${{ secrets.FORAGE_KEY_PASSWORD }}
+          FORAGE_KEY_ALIAS: ${{ secrets.FORAGE_KEY_ALIAS }}
+        run: |
+          echo "$FORAGE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/forage-release.jks"
+          cat > "$RUNNER_TEMP/forage-signing.properties" <<EOF
+          storeFile=$RUNNER_TEMP/forage-release.jks
+          storePassword=$FORAGE_STORE_PASSWORD
+          keyAlias=$FORAGE_KEY_ALIAS
+          keyPassword=$FORAGE_KEY_PASSWORD
+          EOF
+
+      - name: Build Android APK
+        env:
+          FORAGE_SIGNING_PROPERTIES: ${{ runner.temp }}/forage-signing.properties
+        run: flutter build apk --release
+
+      - name: Publish APK
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: build/app/outputs/flutter-apk/app-release.apk
