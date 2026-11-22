@@ -2542,6 +2542,10 @@ class AppDatabase {
   Future<bool> synchronizeWithCloud({bool preferRemote = false}) async {
     final client = cloudSync;
     if (client == null) return false;
+    // Windows keeps a local mirror while the app is open. Full snapshots can
+    // include many photos and serializing them on the UI isolate is unsafe on
+    // this platform. Cloud sync still runs normally on iOS and Android.
+    if (Platform.isWindows) return false;
 
     final database = await _database;
     final dirtyRows = await database.query(
@@ -5158,7 +5162,7 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ),
       ),
-    );
+      ),
     );
   }
 }
@@ -5223,6 +5227,15 @@ class _ForageHomeState extends State<ForageHome> {
     // first usable frame hostage.
     await loadWorkshop();
     if (!mounted) return;
+    // The full snapshot synchronizer is intentionally disabled for Windows
+    // startup. A workshop with images can make the Windows process consume
+    // all CPU while it serializes the snapshot, leaving the native window
+    // marked as "not responding". Mobile keeps automatic cloud sync; Windows
+    // stays immediately usable and opens its local mirror first.
+    if (Platform.isWindows) {
+      if (widget.user.isAdmin) unawaited(_pollDeviceRequests());
+      return;
+    }
     _cloudSyncTimer = Timer.periodic(
       const Duration(seconds: 30),
       (_) => _synchronizeWorkshop(),
