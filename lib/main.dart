@@ -2543,8 +2543,8 @@ class AppDatabase {
     final client = cloudSync;
     if (client == null) return false;
 
-    final remote = await client.download();
-    final dirtyRows = await (await _database).query(
+    final database = await _database;
+    final dirtyRows = await database.query(
       'app_settings',
       columns: ['value'],
       where: 'key = ?',
@@ -2552,8 +2552,16 @@ class AppDatabase {
       limit: 1,
     );
     final dirty = dirtyRows.isNotEmpty && dirtyRows.single['value'] == 'true';
+    final hasLocalWorkshop = await _hasLocalWorkshopRecords(database);
+    final remote = await client.download();
 
-    if (remote != null && (preferRemote || !dirty)) {
+    // A complete remote snapshot can contain product photographs. Replacing
+    // every local table on *every* login was expensive enough to freeze the
+    // Windows window. A mirror is restored only on a genuinely empty device;
+    // afterwards this device keeps its local copy and uploads its own edits.
+    if (remote != null &&
+        !hasLocalWorkshop &&
+        (!dirty || preferRemote)) {
       await replaceFromSyncSnapshot(remote);
     } else if (remote == null || dirty) {
       await client.upload(await exportSyncSnapshot());
@@ -2564,6 +2572,16 @@ class AppDatabase {
       'value': 'false',
     }, conflictAlgorithm: ConflictAlgorithm.replace);
     return true;
+  }
+
+  Future<bool> _hasLocalWorkshopRecords(Database database) async {
+    // The default depot exists even in a new installation, so it cannot be
+    // used to decide whether this device already holds a workshop mirror.
+    for (final table in _syncTables.where((table) => table != 'depots')) {
+      final row = await database.query(table, columns: const ['id'], limit: 1);
+      if (row.isNotEmpty) return true;
+    }
+    return false;
   }
 
   /// Rebuilds this device's local mirror from Supabase without ever uploading
@@ -3009,12 +3027,12 @@ class AppDatabase {
     for (final column in binaryColumns) {
       final value = result[column];
       if (value is String) {
-        result[column] = compactImageForStorage(base64Decode(value));
+        // Images were compacted before being uploaded. Re-compressing every
+        // photograph while restoring a mirror can block the UI for seconds.
+        result[column] = base64Decode(value);
       }
     }
-    if (result['images'] is String) {
-      result['images'] = compactImageListJson(result['images'] as String);
-    }
+    // `images` is already a compact Base64 JSON list in the snapshot.
 
     // These defaults preserve compatibility with snapshots produced before
     // photos were synchronized.
@@ -4865,20 +4883,24 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
+    final foreground = dark ? const Color(0xFFFFF4FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFDFC3E9) : AppPalette.muted;
     final signIn = Glass(
       radius: 32,
-      accent: AppPalette.primary,
+      accent: accent,
       frosted: true,
       padding: const EdgeInsets.fromLTRB(22, 24, 22, 22),
       child: AutofillGroup(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Row(
+            Row(
               children: [
                 _AtelierIcon(
                   Icons.shield_outlined,
-                  color: AppPalette.primary,
+                  color: accent,
                   size: 46,
                 ),
                 SizedBox(width: 13),
@@ -4892,13 +4914,14 @@ class _LoginPageState extends State<LoginPage> {
                           fontSize: 24,
                           letterSpacing: -.55,
                           fontWeight: FontWeight.w800,
+                          color: foreground,
                         ),
                       ),
                       SizedBox(height: 3),
                       Text(
                         'Accédez à votre espace atelier',
                         style: TextStyle(
-                          color: AppPalette.muted,
+                          color: muted,
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                         ),
@@ -4912,7 +4935,7 @@ class _LoginPageState extends State<LoginPage> {
             Text(
               'Identifiants de connexion',
               style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: AppPalette.primaryDark,
+                color: accent,
                 fontWeight: FontWeight.w800,
               ),
             ),
@@ -4930,7 +4953,7 @@ class _LoginPageState extends State<LoginPage> {
             ),
             const SizedBox(height: 12),
             Glass(
-              accent: AppPalette.primary,
+              accent: accent,
               child: SegmentedButton<bool>(
                 segments: const [
                   ButtonSegment(
@@ -4982,12 +5005,12 @@ class _LoginPageState extends State<LoginPage> {
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     color: awaitingApproval
-                        ? AppPalette.primary.withValues(alpha: .13)
+                            ? accent.withValues(alpha: .13)
                         : AppPalette.coral.withValues(alpha: .13),
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(
                       color: awaitingApproval
-                          ? AppPalette.primary.withValues(alpha: .42)
+                          ? accent.withValues(alpha: .42)
                           : AppPalette.coral.withValues(alpha: .42),
                     ),
                   ),
@@ -4999,7 +5022,7 @@ class _LoginPageState extends State<LoginPage> {
                             ? Icons.hourglass_top_rounded
                             : Icons.error_outline_rounded,
                         color: awaitingApproval
-                            ? AppPalette.primary
+                            ? accent
                             : AppPalette.coral,
                       ),
                       const SizedBox(width: 9),
@@ -5008,7 +5031,7 @@ class _LoginPageState extends State<LoginPage> {
                           error!,
                           style: TextStyle(
                             color: awaitingApproval
-                                ? AppPalette.text
+                                ? foreground
                                 : AppPalette.coral,
                             fontWeight: FontWeight.w700,
                           ),
@@ -5018,11 +5041,11 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ),
               ),
-            const Padding(
+            Padding(
               padding: EdgeInsets.symmetric(vertical: 4),
               child: Text(
                 'Contactez un administrateur pour toute récupération d’accès.',
-                style: TextStyle(fontSize: 12, color: AppPalette.muted),
+                style: TextStyle(fontSize: 12, color: muted),
                 textAlign: TextAlign.center,
               ),
             ),
@@ -5032,15 +5055,17 @@ class _LoginPageState extends State<LoginPage> {
               child: FilledButton(
                 onPressed: authenticating || awaitingApproval ? null : login,
                 style: FilledButton.styleFrom(
+                  backgroundColor: dark ? const Color(0xFF7A28A3) : null,
+                  foregroundColor: dark ? Colors.white : null,
                   minimumSize: const Size.fromHeight(54),
                 ),
                 child: authenticating
-                    ? const SizedBox(
+                    ? SizedBox(
                         height: 22,
                         width: 22,
                         child: CircularProgressIndicator(
                           strokeWidth: 2.5,
-                          color: AppPalette.primary,
+                          color: accent,
                         ),
                       )
                     : Text(
@@ -5054,8 +5079,41 @@ class _LoginPageState extends State<LoginPage> {
         ),
       ),
     );
+    final baseTheme = Theme.of(context);
+    final pageTheme = dark
+        ? baseTheme.copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: Color(0xFFE46AFF),
+              onPrimary: Colors.white,
+              surface: Color(0xFF22052E),
+              onSurface: Color(0xFFFFF4FF),
+              outline: Color(0xFFCE94E6),
+            ),
+            textTheme: baseTheme.textTheme.apply(
+              bodyColor: foreground,
+              displayColor: foreground,
+            ),
+            inputDecorationTheme: baseTheme.inputDecorationTheme.copyWith(
+              filled: true,
+              fillColor: const Color(0xCC2A0B39),
+              labelStyle: TextStyle(color: muted),
+              floatingLabelStyle: TextStyle(color: accent),
+              prefixIconColor: accent,
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: const BorderSide(color: Color(0xFFAE61C9)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: const BorderSide(color: Color(0xFFF0B2FF), width: 1.5),
+              ),
+            ),
+          )
+        : baseTheme;
     return Scaffold(
-      body: Aura(
+      body: Theme(
+        data: pageTheme,
+        child: Aura(
         child: SafeArea(
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -5159,12 +5217,18 @@ class _ForageHomeState extends State<ForageHome> {
   }
 
   Future<void> _startWorkshop() async {
-    await _synchronizeWorkshop(preferRemote: true);
+    // Show the local workshop immediately after login.  A full cloud mirror
+    // can be large because it contains pictures, so it must not hold the
+    // first usable frame hostage.
+    await loadWorkshop();
     if (!mounted) return;
     _cloudSyncTimer = Timer.periodic(
-      const Duration(seconds: 8),
+      const Duration(seconds: 30),
       (_) => _synchronizeWorkshop(),
     );
+    Timer(const Duration(milliseconds: 900), () {
+      if (mounted) unawaited(_synchronizeWorkshop(preferRemote: true));
+    });
     if (widget.user.isAdmin) {
       await _pollDeviceRequests();
       _deviceRequestTimer = Timer.periodic(

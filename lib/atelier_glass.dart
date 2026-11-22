@@ -1270,16 +1270,31 @@ class _LoginIdentity extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
     final mark = Glass(
-      accent: AppPalette.primary,
+      accent: accent,
       radius: wide ? 23 : 19,
       padding: EdgeInsets.all(wide ? 12 : 8),
-      child: Image.asset(
-        'assets/app_logo.png',
-        width: wide ? 57 : 39,
-        height: wide ? 57 : 39,
-        excludeFromSemantics: true,
-      ),
+      child: dark
+          ? ColorFiltered(
+              colorFilter: const ColorFilter.mode(
+                Color(0xFFE46AFF),
+                BlendMode.srcIn,
+              ),
+              child: Image.asset(
+                'assets/app_logo.png',
+                width: wide ? 57 : 39,
+                height: wide ? 57 : 39,
+                excludeFromSemantics: true,
+              ),
+            )
+          : Image.asset(
+              'assets/app_logo.png',
+              width: wide ? 57 : 39,
+              height: wide ? 57 : 39,
+              excludeFromSemantics: true,
+            ),
     );
     if (!wide) {
       return Row(
@@ -1292,13 +1307,13 @@ class _LoginIdentity extends StatelessWidget {
     }
     return Glass(
       radius: 30,
-      accent: AppPalette.primary,
+      accent: accent,
       frosted: true,
       child: Stack(
         children: [
-          const Positioned.fill(
+          Positioned.fill(
             child: IgnorePointer(
-              child: CustomPaint(painter: _WorkshopEmblemPainter(1)),
+              child: CustomPaint(painter: _WorkshopEmblemPainter(dark ? .72 : 1)),
             ),
           ),
           ConstrainedBox(
@@ -1326,7 +1341,9 @@ class _LoginBrandName extends StatelessWidget {
   final bool large;
 
   @override
-  Widget build(BuildContext context) => Column(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    return Column(
     mainAxisSize: MainAxisSize.min,
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
@@ -1337,19 +1354,21 @@ class _LoginBrandName extends StatelessWidget {
           fontWeight: FontWeight.w900,
           height: 1.04,
           letterSpacing: large ? -1 : .15,
+          color: dark ? const Color(0xFFFFF4FF) : null,
         ),
       ),
       const SizedBox(height: 6),
-      const Text(
+      Text(
         'Gestion d’atelier',
         style: TextStyle(
-          color: AppPalette.primary,
+          color: dark ? const Color(0xFFE67BFF) : AppPalette.primary,
           fontWeight: FontWeight.w600,
           fontSize: 13,
         ),
       ),
     ],
   );
+  }
 }
 
 class _AtelierNavCapsule extends StatelessWidget {
