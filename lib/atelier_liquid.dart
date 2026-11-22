@@ -365,23 +365,29 @@ class _RenderLiquidLayer extends RenderProxyBox {
     final radius = min(style.radius, size.shortestSide * .5);
     final shape = RRect.fromRectAndRadius(bounds, Radius.circular(radius));
     final dark = _scene?.dark ?? false;
+    final materialOpacity = style.opacity.clamp(0.0, 1.0);
+    Color material(Color color) => color.withValues(
+      alpha: color.a * materialOpacity,
+    );
     final edgeColor = (dark ? const Color(0xFFF0BBFF) : style.accent)
-        .withValues(alpha: .30 + .32 * style.press);
+        .withValues(alpha: (.30 + .32 * style.press) * materialOpacity);
     canvas.drawRRect(
       shape,
       Paint()
         ..shader = LinearGradient(
           colors: [
             if (dark) ...[
-              const Color(0xFF57147E),
-              const Color(0xFF190024),
+              material(const Color(0xFF57147E)),
+              material(const Color(0xFF190024)),
             ] else ...[
-              Color.lerp(
-                AppPalette.surfaceRaised,
-                style.accent,
-                .12 + .10 * style.press,
-              )!,
-              AppPalette.background,
+              material(
+                Color.lerp(
+                  AppPalette.surfaceRaised,
+                  style.accent,
+                  .12 + .10 * style.press,
+                )!,
+              ),
+              material(AppPalette.background),
             ],
           ],
           begin: Alignment.topLeft,

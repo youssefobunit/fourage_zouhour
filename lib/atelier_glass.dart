@@ -1379,9 +1379,9 @@ class _AtelierNavCapsule extends StatelessWidget {
     decoration: const BoxDecoration(
       borderRadius: BorderRadius.all(Radius.circular(23)),
       boxShadow: [
-        BoxShadow(color: Color(0x7A33A5F5), blurRadius: 15, spreadRadius: 1),
+        BoxShadow(color: Color(0x8CCB4DFF), blurRadius: 17, spreadRadius: 1),
         BoxShadow(
-          color: Color(0x303167A0),
+          color: Color(0x4E26002F),
           blurRadius: 8,
           offset: Offset(0, 4),
         ),
@@ -1392,14 +1392,14 @@ class _AtelierNavCapsule extends StatelessWidget {
       depth: 1.53,
       press: .93,
       opacity: .78,
-      accent: const Color(0xFF248FE4),
+      accent: const Color(0xFFD44DFF),
       child: const DecoratedBox(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.all(Radius.circular(23)),
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0x80F7FDFF), Color(0x354FAEF1), Color(0x6B57A9EB)],
+            colors: [Color(0xAFFFF5FF), Color(0x55C84CFF), Color(0x795A117A)],
             stops: [0, .52, 1],
           ),
         ),
@@ -1421,22 +1421,31 @@ class _AtelierNavItem extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Semantics(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final activeColor = dark ? const Color(0xFFFFFFFF) : AppPalette.text;
+    final idleColor = dark ? const Color(0xFFF1D7F7) : AppPalette.muted;
+    return Semantics(
     button: true,
     selected: selected,
-    child: _LiquidTapTarget(
-      radius: 20,
-      idleOpacity: 0,
-      accent: selected ? AppPalette.primary : AppPalette.secondary,
-      onTap: onTap,
-      child: Padding(
+    // The moving capsule is the only selection effect in the phone bar.
+    // A second press lens used to remain visible after a fast page switch.
+    child: Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        splashFactory: NoSplash.splashFactory,
+        highlightColor: Colors.transparent,
+        hoverColor: Colors.transparent,
+        child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 7),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
               icon,
-              color: selected ? AppPalette.text : AppPalette.muted,
+              color: selected ? activeColor : idleColor,
               size: 22,
             ),
             const SizedBox(height: 5),
@@ -1445,14 +1454,16 @@ class _AtelierNavItem extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: selected ? AppPalette.text : AppPalette.muted,
+                color: selected ? activeColor : idleColor,
                 fontSize: 10,
                 fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
               ),
             ),
           ],
         ),
+        ),
       ),
     ),
-  );
+    );
+  }
 }

@@ -5317,8 +5317,15 @@ class _ForageHomeState extends State<ForageHome> {
 
   Future<void> loadWorkshop() async {
     try {
-      final data = await widget.database.loadWorkshop();
-      final savedMeterRate = await widget.database.meterRate();
+      // Never leave the whole native window on an endless loading screen.
+      // A locked/corrupt local SQLite file is reported to the user instead
+      // of blocking navigation forever after a successful login.
+      final data = await widget.database
+          .loadWorkshop()
+          .timeout(const Duration(seconds: 12));
+      final savedMeterRate = await widget.database
+          .meterRate()
+          .timeout(const Duration(seconds: 5));
       if (!mounted) return;
       setState(() {
         products = data.products;
@@ -9284,24 +9291,14 @@ class _WindowsWorkspaceShellState extends State<WindowsWorkspaceShell> {
               ),
               const SizedBox(height: 12),
               Expanded(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 380),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  transitionBuilder: (page, animation) => FadeTransition(
-                    opacity: animation,
-                    child: SlideTransition(
-                      position: Tween<Offset>(
-                        begin: const Offset(.022, 0),
-                        end: Offset.zero,
-                      ).animate(animation),
-                      child: page,
-                    ),
-                  ),
-                  child: KeyedSubtree(
-                    key: ValueKey(widget.section),
-                    child: widget.child,
-                  ),
+                // A previous AnimatedSwitcher occasionally retained an
+                // outgoing transparent page on Windows after a quick click,
+                // leaving the workspace apparently empty.  The new page is
+                // deliberately installed immediately; individual controls
+                // still keep their own small press animations.
+                child: KeyedSubtree(
+                  key: ValueKey(widget.section),
+                  child: widget.child,
                 ),
               ),
             ],
@@ -9371,13 +9368,19 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
   }
 
   @override
-  Widget build(BuildContext context) => CallbackShortcuts(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF5FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFDDBFE8) : AppPalette.muted;
+    return CallbackShortcuts(
     bindings: {
       const SingleActivator(LogicalKeyboardKey.keyK, control: true):
           searchFocus.requestFocus,
     },
     child: Focus(
-      autofocus: true,
+      // Do not steal keyboard focus during login/page changes on Windows.
+      // The previous autofocus could race the native text-input channel.
+      autofocus: false,
       child: Glass(
         radius: 28,
         accent: AppPalette.primary,
@@ -9399,16 +9402,17 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
                     widget.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 20,
                       letterSpacing: -.6,
                       fontWeight: FontWeight.w800,
+                      color: foreground,
                     ),
                   ),
                   Text(
                     widget.user.effectiveRole.label,
-                    style: const TextStyle(
-                      color: AppPalette.muted,
+                    style: TextStyle(
+                      color: muted,
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
                     ),
@@ -9428,9 +9432,13 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
                       style: const TextStyle(fontSize: 13),
                       decoration: InputDecoration(
                         isDense: true,
+                        filled: true,
+                        fillColor: dark
+                            ? const Color(0x55340B50)
+                            : AppPalette.surface.withValues(alpha: .80),
                         hintText: 'Rechercher un produit, une machine, …',
-                        hintStyle: const TextStyle(
-                          color: AppPalette.muted,
+                        hintStyle: TextStyle(
+                          color: muted,
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                         ),
@@ -9441,20 +9449,26 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
                             margin: const EdgeInsets.all(7),
                             alignment: Alignment.center,
                             decoration: BoxDecoration(
-                              color: AppPalette.primary.withValues(alpha: .18),
+                                color: (dark
+                                        ? const Color(0xFFCA69EF)
+                                        : AppPalette.primary)
+                                    .withValues(alpha: .18),
                               borderRadius: BorderRadius.circular(7),
                               border: Border.all(
-                                color: AppPalette.primary.withValues(
+                                color: (dark
+                                        ? const Color(0xFFCA69EF)
+                                        : AppPalette.primary)
+                                    .withValues(
                                   alpha: .42,
                                 ),
                               ),
                             ),
-                            child: const Text(
+                            child: Text(
                               'Ctrl K',
                               style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w800,
-                                color: AppPalette.text,
+                                color: foreground,
                               ),
                             ),
                           ),
@@ -9516,7 +9530,8 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
         ),
       ),
     ),
-  );
+    );
+  }
 }
 
 class _WindowsNavigationRail extends StatelessWidget {
@@ -9546,7 +9561,20 @@ class _WindowsNavigationRail extends StatelessWidget {
   ];
 
   @override
-  Widget build(BuildContext context) => AnimatedContainer(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final panelLine = dark
+        ? const Color(0xFFB959E5).withValues(alpha: .48)
+        : AppPalette.line.withValues(alpha: .72);
+    final panelGradient = dark
+        ? const [Color(0xE51D062C), Color(0xD82E0A46), Color(0xE30F001B)]
+        : [
+            AppPalette.surface.withValues(alpha: .78),
+            const Color(0xFFB9E0FA).withValues(alpha: .62),
+            AppPalette.surfaceRaised.withValues(alpha: .70),
+          ];
+    final muted = dark ? const Color(0xFFDEC0E9) : AppPalette.muted;
+    return AnimatedContainer(
     duration: MediaQuery.disableAnimationsOf(context)
         ? Duration.zero
         : const Duration(milliseconds: 280),
@@ -9556,19 +9584,16 @@ class _WindowsNavigationRail extends StatelessWidget {
     child: DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: AppPalette.line.withValues(alpha: .72)),
+        border: Border.all(color: panelLine),
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [
-            AppPalette.surface.withValues(alpha: .78),
-            const Color(0xFFB9E0FA).withValues(alpha: .62),
-            AppPalette.surfaceRaised.withValues(alpha: .70),
-          ],
+          colors: panelGradient,
         ),
         boxShadow: [
           BoxShadow(
-            color: AppPalette.primary.withValues(alpha: .12),
+            color: (dark ? const Color(0xFFCE54FF) : AppPalette.primary)
+                .withValues(alpha: .20),
             blurRadius: 24,
             offset: const Offset(0, 10),
           ),
@@ -9587,14 +9612,14 @@ class _WindowsNavigationRail extends StatelessWidget {
             _DesktopBrand(compact: compact, onToggle: onToggle),
             SizedBox(height: compact ? 20 : 26),
             if (!compact) ...[
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 10),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
                 child: Text(
                   'ESPACE DE TRAVAIL',
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w900,
-                    color: AppPalette.muted,
+                    color: muted,
                     letterSpacing: 1.25,
                   ),
                 ),
@@ -9619,10 +9644,11 @@ class _WindowsNavigationRail extends StatelessWidget {
             Container(
               padding: EdgeInsets.all(compact ? 7 : 12),
               decoration: BoxDecoration(
-                color: AppPalette.surface.withValues(alpha: .70),
+                color: (dark ? const Color(0xFF29083D) : AppPalette.surface)
+                    .withValues(alpha: .70),
                 borderRadius: BorderRadius.circular(18),
                 border: Border.all(
-                  color: AppPalette.line.withValues(alpha: .75),
+                  color: panelLine,
                 ),
               ),
               child: compact
@@ -9631,8 +9657,12 @@ class _WindowsNavigationRail extends StatelessWidget {
                       children: [
                         CircleAvatar(
                           radius: 17,
-                          backgroundColor: AppPalette.desktopAccentSoft,
-                          foregroundColor: AppPalette.desktopAccent,
+                          backgroundColor: dark
+                              ? const Color(0xFF61247F)
+                              : AppPalette.desktopAccentSoft,
+                          foregroundColor: dark
+                              ? const Color(0xFFFFE9FF)
+                              : AppPalette.desktopAccent,
                           child: Text(
                             user.fullName.substring(0, 1).toUpperCase(),
                             style: const TextStyle(fontWeight: FontWeight.w900),
@@ -9643,7 +9673,7 @@ class _WindowsNavigationRail extends StatelessWidget {
                           tooltip: 'Déconnexion',
                           onPressed: onLogout,
                           icon: const Icon(Icons.logout_rounded, size: 18),
-                          color: AppPalette.muted,
+                          color: muted,
                         ),
                       ],
                     )
@@ -9651,8 +9681,12 @@ class _WindowsNavigationRail extends StatelessWidget {
                       children: [
                         CircleAvatar(
                           radius: 17,
-                          backgroundColor: AppPalette.desktopAccentSoft,
-                          foregroundColor: AppPalette.desktopAccent,
+                          backgroundColor: dark
+                              ? const Color(0xFF61247F)
+                              : AppPalette.desktopAccentSoft,
+                          foregroundColor: dark
+                              ? const Color(0xFFFFE9FF)
+                              : AppPalette.desktopAccent,
                           child: Text(
                             user.fullName.substring(0, 1).toUpperCase(),
                             style: const TextStyle(fontWeight: FontWeight.w900),
@@ -9667,17 +9701,20 @@ class _WindowsNavigationRail extends StatelessWidget {
                                 user.fullName,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w800,
+                                  color: dark
+                                      ? const Color(0xFFFFF5FF)
+                                      : AppPalette.text,
                                 ),
                               ),
                               Text(
                                 user.effectiveRole.label,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: AppPalette.muted,
+                                style: TextStyle(
+                                  color: muted,
                                   fontSize: 11,
                                 ),
                               ),
@@ -9688,7 +9725,7 @@ class _WindowsNavigationRail extends StatelessWidget {
                           tooltip: 'Déconnexion',
                           onPressed: onLogout,
                           icon: const Icon(Icons.logout_rounded, size: 18),
-                          color: AppPalette.muted,
+                          color: muted,
                         ),
                       ],
                     ),
@@ -9697,7 +9734,8 @@ class _WindowsNavigationRail extends StatelessWidget {
         ),
       ),
     ),
-  );
+    );
+  }
 }
 
 class _DesktopBrand extends StatelessWidget {
@@ -9705,27 +9743,36 @@ class _DesktopBrand extends StatelessWidget {
   final bool compact;
   final VoidCallback onToggle;
 
-  Widget _mark() => Container(
+  Widget _mark(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final accent = dark ? const Color(0xFFC44BEB) : AppPalette.desktopAccent;
+    return Container(
     width: 40,
     height: 40,
     decoration: BoxDecoration(
-      color: AppPalette.desktopAccent,
+      color: accent,
       borderRadius: BorderRadius.circular(13),
       boxShadow: [
         BoxShadow(
-          color: AppPalette.desktopAccent.withValues(alpha: .26),
+          color: accent.withValues(alpha: .34),
           blurRadius: 18,
         ),
       ],
     ),
     child: const Icon(
       Icons.precision_manufacturing_rounded,
-      color: AppPalette.background,
+      color: dark ? const Color(0xFFFFF4FF) : AppPalette.background,
     ),
   );
+  }
 
   @override
-  Widget build(BuildContext context) => Glass(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF5FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFE1BEEB) : AppPalette.muted;
+    final accent = dark ? const Color(0xFFE77BFF) : AppPalette.desktopAccent;
+    return Glass(
     radius: 20,
     accent: AppPalette.primary,
     frosted: true,
@@ -9745,18 +9792,18 @@ class _DesktopBrand extends StatelessWidget {
                     onPressed: onToggle,
                     icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
                     iconSize: 16,
-                    color: AppPalette.muted,
+                    color: muted,
                   ),
                 ),
-                _mark(),
+                _mark(context),
               ],
             ),
           )
         : Row(
             children: [
-              _mark(),
+              _mark(context),
               const SizedBox(width: 10),
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -9765,13 +9812,14 @@ class _DesktopBrand extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 17,
                         fontWeight: FontWeight.w900,
+                        color: foreground,
                       ),
                     ),
                     Text(
                       'WORKSPACE',
                       style: TextStyle(
                         fontSize: 10,
-                        color: AppPalette.desktopAccent,
+                        color: accent,
                         fontWeight: FontWeight.w900,
                         letterSpacing: 1.3,
                       ),
@@ -9784,11 +9832,12 @@ class _DesktopBrand extends StatelessWidget {
                 onPressed: onToggle,
                 icon: const Icon(Icons.keyboard_double_arrow_left_rounded),
                 iconSize: 16,
-                color: AppPalette.muted,
+                color: muted,
               ),
             ],
           ),
-  );
+    );
+  }
 }
 
 class _DesktopNavigationEntry {
@@ -9812,12 +9861,18 @@ class _DesktopNavigationButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF6FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFE2C4ED) : AppPalette.muted;
+    final accent = dark ? const Color(0xFFE65CFF) : AppPalette.desktopAccent;
     final button = Padding(
       padding: const EdgeInsets.only(bottom: 5),
       child: _LiquidTapTarget(
         radius: 14,
         selected: selected,
-        accent: selected ? AppPalette.primary : AppPalette.secondary,
+        accent: selected
+            ? accent
+            : (dark ? const Color(0xFF9868AA) : AppPalette.secondary),
         idleOpacity: .16,
         selectedOpacity: .72,
         onTap: onTap,
@@ -9834,8 +9889,8 @@ class _DesktopNavigationButton extends StatelessWidget {
                     child: Icon(
                       entry.icon,
                       color: selected
-                          ? AppPalette.desktopAccent
-                          : AppPalette.muted,
+                          ? accent
+                          : muted,
                       size: 21,
                     ),
                   ),
@@ -9849,8 +9904,8 @@ class _DesktopNavigationButton extends StatelessWidget {
                       child: Icon(
                         entry.icon,
                         color: selected
-                            ? AppPalette.desktopAccent
-                            : AppPalette.muted,
+                            ? accent
+                            : muted,
                         size: 20,
                       ),
                     ),
@@ -9861,7 +9916,7 @@ class _DesktopNavigationButton extends StatelessWidget {
                       child: Text(
                         entry.label,
                         style: TextStyle(
-                          color: selected ? AppPalette.text : AppPalette.muted,
+                          color: selected ? foreground : muted,
                           fontWeight: selected
                               ? FontWeight.w900
                               : FontWeight.w700,
@@ -9876,8 +9931,8 @@ class _DesktopNavigationButton extends StatelessWidget {
                       child: Container(
                         width: 6,
                         height: 6,
-                        decoration: const BoxDecoration(
-                          color: AppPalette.desktopAccent,
+                        decoration: BoxDecoration(
+                          color: accent,
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -9904,7 +9959,10 @@ class Page extends StatelessWidget {
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: isWindows ? 1260 : 1050),
-          child: AppEntrance(child: child),
+          // Windows section changes are immediate. Besides feeling more
+          // responsive, this prevents a failed entrance animation from
+          // leaving the desktop content at zero opacity.
+          child: isWindows ? child : AppEntrance(child: child),
         ),
       ),
     );
