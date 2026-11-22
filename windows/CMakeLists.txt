@@ -32,6 +32,11 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# flutter_local_notifications_windows still includes the legacy coroutine
+# header.  MSVC 14.51 turns its deprecation notice into a hard error unless
+# this compatibility define is present.  It applies to plugin targets too.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
@@ -47,6 +52,14 @@ endfunction()
 
 # Flutter library and tool build rules.
 set(FLUTTER_MANAGED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/flutter")
+# The printing plugin reads these values while CMake configures its native
+# dependency. Cache them so they also apply when the build is started by an
+# IDE rather than by the Flutter command line.
+set(FLUTTER_TARGET_PLATFORM "windows-x64" CACHE STRING "Flutter target platform" FORCE)
+# printing 5.14.3 defaults to an old PDFium release URL.  Use the maintained
+# latest release, whose download URL does not depend on the retired versioned
+# path.
+set(PDFIUM_VERSION "latest" CACHE STRING "PDFium version for printing" FORCE)
 add_subdirectory(${FLUTTER_MANAGED_DIR})
 
 # Application build; see runner/CMakeLists.txt.

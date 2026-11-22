@@ -1,43 +1,677 @@
+// this relase is v1.1.0
+
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:ui';
+import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart' show compute, listEquals, setEquals;
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as image;
 import 'package:path/path.dart' show join;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
+import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:cryptography/cryptography.dart';
+import 'package:excel_plus/excel_plus.dart' as xlsx;
+import 'package:file_saver/file_saver.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import 'cloud_sync_client.dart';
+import 'device_identity.dart';
+import 'session_storage.dart';
+import 'security_config.dart';
+import 'security_activity_page.dart';
+
+part 'catalog_and_filters.dart';
+part 'atelier_glass.dart';
+part 'atelier_liquid.dart';
+
+late final DeviceIdentity appDevice;
+
+/// The hosted project remains the safe fallback.  A self-hosted test or
+/// production server is selected only by passing SUPABASE_URL and
+/// SUPABASE_PUBLISHABLE_KEY when building/running the application.
+const _supabaseUrl = String.fromEnvironment(
+  'SUPABASE_URL',
+  defaultValue: 'https://jomxwvuackengasnteeq.supabase.co',
+);
+const _supabasePublishableKey = String.fromEnvironment(
+  'SUPABASE_PUBLISHABLE_KEY',
+  defaultValue: 'sb_publishable_Yo7doKg9rULQ4Cd6JH_qhA_wQxELhnL',
+);
+// Detailed server/database errors are opt-in for development only.
+const _showStartupDiagnostics = bool.fromEnvironment(
+  'FORAGE_DIAGNOSTICS',
+  defaultValue: false,
+);
+const _localDatabaseName = String.fromEnvironment(
+  'FORAGE_DATABASE_NAME',
+  // v2 avoids opening an older on-device database containing an oversized
+  // photo that Android cannot read. The cloud workspace is restored on launch.
+  defaultValue: 'forage-v2.db',
+);
+const _appVersion = '1.0.16+16';
+const _githubLatestRelease =
+    'https://api.github.com/repos/youssefobunit/fourage_zouhour/releases/latest';
+// This identity is also verified by Supabase in the owner migration.
+const _maintenanceOwnerEmail = 'owner@younes.com';
+
+class AppUpdate {
+  const AppUpdate({required this.version, required this.downloadUrl});
+  final String version;
+  final String downloadUrl;
+}
+
+abstract final class GitHubUpdates {
+  static Future<AppUpdate?> check() async {
+    if (!Platform.isAndroid) return null;
+    try {
+      final request = await HttpClient().getUrl(
+        Uri.parse(_githubLatestRelease),
+      );
+      request.headers.set(
+        HttpHeaders.acceptHeader,
+        'application/vnd.github+json',
+      );
+      request.headers.set(
+        HttpHeaders.userAgentHeader,
+        'FORAGE-ZOUHOUR/$_appVersion',
+      );
+      final response = await request.close().timeout(
+        const Duration(seconds: 8),
+      );
+      if (response.statusCode != 200) return null;
+      final data = jsonDecode(await utf8.decoder.bind(response).join()) as Map;
+      final tag = data['tag_name']?.toString() ?? '';
+      final assets = (data['assets'] as List? ?? const []);
+      final apk = assets.cast<Map>().firstWhere(
+        (asset) =>
+            asset['name']?.toString().toLowerCase().endsWith('.apk') == true,
+        orElse: () => const {},
+      );
+      final url = apk['browser_download_url']?.toString();
+      if (url == null ||
+          !isTrustedUpdateUrl(url) ||
+          !_isNewer(tag, _appVersion)) {
+        return null;
+      }
+      return AppUpdate(
+        version: tag.replaceFirst(RegExp('^[vV]'), ''),
+        downloadUrl: url,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static bool _isNewer(String remote, String current) {
+    List<int> parts(String value) =>
+        RegExp(r'\d+')
+            .allMatches(value)
+            .map((match) => int.parse(match.group(0)!))
+            .toList();
+    final a = parts(remote);
+    final b = parts(current);
+    for (var i = 0; i < max(a.length, b.length); i++) {
+      final left = i < a.length ? a[i] : 0;
+      final right = i < b.length ? b[i] : 0;
+      if (left != right) return left > right;
+    }
+    return false;
+  }
+}
+
+// Android CursorWindow cannot read a database row containing multi-megabyte
+// photos. Keep every stored image small enough for a row with several photos.
+Uint8List compactImageForStorage(Uint8List bytes) {
+  const maximumBytes = 120 * 1024;
+  if (bytes.lengthInBytes <= maximumBytes) return bytes;
+  final decoded = image.decodeImage(bytes);
+  if (decoded == null) return bytes;
+  Uint8List? last;
+  for (final setting in const [
+    (800, 70),
+    (640, 60),
+    (512, 55),
+    (400, 48),
+    (320, 42),
+  ]) {
+    final maxSide = setting.$1;
+    final scale = decoded.width > decoded.height
+        ? maxSide / decoded.width
+        : maxSide / decoded.height;
+    final resized = scale < 1
+        ? image.copyResize(
+            decoded,
+            width: (decoded.width * scale).round(),
+            height: (decoded.height * scale).round(),
+          )
+        : decoded;
+    last = Uint8List.fromList(image.encodeJpg(resized, quality: setting.$2));
+    if (last.lengthInBytes <= maximumBytes) return last;
+  }
+  return last ?? bytes;
+}
+
+String compactImageListJson(String value) {
+  try {
+    final images = (jsonDecode(value) as List)
+        .whereType<String>()
+        .map((item) => base64Encode(compactImageForStorage(base64Decode(item))))
+        .toList();
+    return jsonEncode(images);
+  } catch (_) {
+    return value;
+  }
+}
+
+Future<String> passwordFromPattern(String email, List<int> pattern) async {
+  final digest = await Sha256().hash(
+    utf8.encode(
+      'forage-pattern-v1:${email.trim().toLowerCase()}:${pattern.join()}',
+    ),
+  );
+  return 'Fz1!${base64UrlEncode(digest.bytes).replaceAll('=', '')}a';
+}
+
+/// Refuses new oversized photos before they reach SQLite or Supabase.
+Future<Uint8List?> readAcceptedImage(
+  XFile file, {
+  required int maximumBytes,
+}) async {
+  final bytes = await file.readAsBytes();
+  return bytes.lengthInBytes <= maximumBytes ? bytes : null;
+}
+
+abstract final class SupabaseAccounts {
+  static SupabaseClient get _client => Supabase.instance.client;
+  static String? _loginNonce;
+
+  static String _newLoginNonce() =>
+      '${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 32)}';
+
+  static void _beginDeviceLogin() {
+    _loginNonce = _newLoginNonce();
+    _client.headers = {
+      ..._client.headers,
+      'x-forage-device-id': appDevice.id,
+      'x-forage-login-nonce': _loginNonce!,
+    };
+  }
+
+  static Future<List<AppUser>> loadUsers() async {
+    final rows = await _client
+        .from('profiles')
+        .select()
+        .order('full_name', ascending: true);
+    return (rows as List)
+        .cast<Map<String, dynamic>>()
+        .map(_fromProfile)
+        .toList();
+  }
+
+  static Future<AppUser?> currentUser() async {
+    final authUser = _client.auth.currentUser;
+    if (authUser == null) return null;
+    final row = await _client
+        .from('profiles')
+        .select()
+        .eq('id', authUser.id)
+        .maybeSingle();
+    return row == null ? null : _fromProfile(row);
+  }
+
+  static Future<LoginResult> signIn(String email, String password) async {
+    try {
+      if (email.length > 254 || password.isEmpty || password.length > 128) {
+        return const LoginResult.failure(LoginFailure.invalidCredentials);
+      }
+      final response = await _client.auth.signInWithPassword(
+        email: email.trim().toLowerCase(),
+        password: password,
+      );
+      if (response.user == null) {
+        return const LoginResult.failure(LoginFailure.invalidCredentials);
+      }
+      _beginDeviceLogin();
+      final user = await currentUser();
+      if (user == null || !user.canLogIn) {
+        await _client.auth.signOut();
+        return const LoginResult.failure(LoginFailure.inactiveAccount);
+      }
+      final access = await _requestDeviceAccess();
+      final status = access is Map ? access['status']?.toString() : null;
+      switch (status) {
+        case 'approved':
+          await _recordDeviceLogin();
+          return LoginResult.success(user);
+        case 'outside_schedule':
+          await _client.auth.signOut();
+          return const LoginResult.failure(LoginFailure.outsideSchedule);
+        case 'rejected':
+          await _client.auth.signOut();
+          return const LoginResult.failure(LoginFailure.deviceRejected);
+        default:
+          // Keep this short-lived authentication session while the request is
+          // pending, so this screen can poll for the administrator's decision.
+          return const LoginResult.failure(LoginFailure.devicePending);
+      }
+    } on AuthException catch (error) {
+      await _clearFailedLogin();
+      if (error.statusCode == '429') {
+        return const LoginResult.failure(LoginFailure.temporarilyLocked);
+      }
+      return const LoginResult.failure(LoginFailure.invalidCredentials);
+    } on PostgrestException catch (error) {
+      await _clearFailedLogin();
+      if (error.code == 'PGRST202') {
+        return const LoginResult.failure(LoginFailure.serverSetupRequired);
+      }
+      return const LoginResult.failure(LoginFailure.serviceUnavailable);
+    } catch (_) {
+      await _clearFailedLogin();
+      // A missing database function, a profile not yet created, or a network
+      // outage must be reported in the login form instead of silently
+      // returning the button to its idle state.
+      return const LoginResult.failure(LoginFailure.serviceUnavailable);
+    }
+  }
+
+  static Future<LoginResult> checkPendingDeviceLogin() async {
+    final authUser = _client.auth.currentUser;
+    if (authUser == null) {
+      return const LoginResult.failure(LoginFailure.invalidCredentials);
+    }
+    if (_loginNonce == null) _beginDeviceLogin();
+    final access = await _requestDeviceAccess();
+    final status = access is Map ? access['status']?.toString() : null;
+    if (status == 'approved') {
+      final user = await currentUser();
+      await _recordDeviceLogin();
+      return user == null
+          ? const LoginResult.failure(LoginFailure.invalidCredentials)
+          : LoginResult.success(user);
+    }
+    if (status == 'rejected') {
+      await _client.auth.signOut();
+      return const LoginResult.failure(LoginFailure.deviceRejected);
+    }
+    if (status == 'outside_schedule') {
+      await _client.auth.signOut();
+      return const LoginResult.failure(LoginFailure.outsideSchedule);
+    }
+    return const LoginResult.failure(LoginFailure.devicePending);
+  }
+
+  static Future<void> _clearFailedLogin() async {
+    _loginNonce = null;
+    try {
+      await _client.auth.signOut(scope: SignOutScope.local);
+    } catch (_) {
+      // The original sign-in failure still needs to be reported offline.
+    }
+  }
+
+  static Future<LoginResult> resumeCurrentSession() async {
+    if (_client.auth.currentUser == null) {
+      return const LoginResult.failure(LoginFailure.invalidCredentials);
+    }
+    _beginDeviceLogin();
+    final user = await currentUser();
+    if (user == null || !user.canLogIn) {
+      await _client.auth.signOut();
+      return const LoginResult.failure(LoginFailure.inactiveAccount);
+    }
+    final access = await _requestDeviceAccess();
+    final status = access is Map ? access['status']?.toString() : null;
+    if (status == 'approved') return LoginResult.success(user);
+    if (status == 'outside_schedule') {
+      await _client.auth.signOut();
+      return const LoginResult.failure(LoginFailure.outsideSchedule);
+    }
+    if (status == 'rejected') {
+      await _client.auth.signOut();
+      return const LoginResult.failure(LoginFailure.deviceRejected);
+    }
+    return const LoginResult.failure(LoginFailure.devicePending);
+  }
+
+  static Future<dynamic> _requestDeviceAccess() => _client.rpc(
+    'request_device_access',
+    params: {
+      'p_device_id': appDevice.id,
+      'p_device_label': appDevice.label,
+      'p_login_nonce': _loginNonce,
+    },
+  );
+
+  static Future<void> signOut() async {
+    try {
+      await _client.rpc('record_forage_device_logout');
+    } catch (_) {}
+    _loginNonce = null;
+    await _client.auth.signOut();
+  }
+
+  static Future<void> _recordDeviceLogin() => _client.rpc(
+    'record_forage_device_login',
+    params: {'p_label': appDevice.label, 'p_nonce': _loginNonce ?? ''},
+  );
+
+  static Future<void> updateUser(AppUser user) async {
+    if (user.password.isNotEmpty) {
+      await _resetUserPassword(user.id, user.password);
+    }
+    await _client
+        .from('profiles')
+        .update({
+          'full_name': user.fullName,
+          'username': user.username,
+          'role': user.effectiveRole.name,
+          'status': switch (user.status) {
+            UserStatus.active => 'active',
+            UserStatus.onLeave => 'on_leave',
+            UserStatus.dismissed => 'dismissed',
+          },
+          'allowed_pages': user.allowedPages.map((page) => page.name).toList(),
+          'writable_pages': user.writablePages
+              .map((page) => page.name)
+              .toList(),
+          'can_export': user.canExport,
+          'login_start_time': user.loginStartTime,
+          'login_end_time': user.loginEndTime,
+        })
+        .eq('id', user.id);
+  }
+
+  static Future<void> _resetUserPassword(String userId, String password) async {
+    final token = _client.auth.currentSession?.accessToken;
+    if (token == null) {
+      throw StateError('La session administrateur a expiré.');
+    }
+    final request = await HttpClient().postUrl(
+      Uri.parse('$_supabaseUrl/functions/v1/admin-reset-user-password'),
+    );
+    request.headers
+      ..contentType = ContentType.json
+      ..set('apikey', _supabasePublishableKey)
+      ..set(HttpHeaders.authorizationHeader, 'Bearer $token');
+    request.add(utf8.encode(jsonEncode({'userId': userId, 'password': password})));
+    final response = await request.close();
+    final raw = await utf8.decoder.bind(response).join();
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final payload = raw.isEmpty ? null : jsonDecode(raw);
+      final reason = payload is Map ? payload['error']?.toString() : null;
+      throw StateError(reason ?? 'Impossible de modifier le mot de passe.');
+    }
+  }
+
+  /// The service role key stays in the Edge Function. The mobile application
+  /// sends only the new member details with the administrator's normal
+  /// session token.
+  static Future<AppUser> createUser(AppUser draft) async {
+    try {
+      final token = _client.auth.currentSession?.accessToken;
+      if (token == null) {
+        throw StateError('La session administrateur a expiré.');
+      }
+      final request = await HttpClient().postUrl(
+        Uri.parse('$_supabaseUrl/functions/v1/admin-create-user'),
+      );
+      request.headers
+        ..contentType = ContentType.json
+        ..set('apikey', _supabasePublishableKey)
+        ..set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      request.add(
+        utf8.encode(
+          jsonEncode({
+            'fullName': draft.fullName,
+            'email': draft.email,
+            'username': draft.username,
+            'password': draft.password,
+            'role': draft.effectiveRole.name,
+            'allowedPages': draft.allowedPages
+                .map((page) => page.name)
+                .toList(),
+            'writablePages': draft.writablePages
+                .map((page) => page.name)
+                .toList(),
+          }),
+        ),
+      );
+      final response = await request.close();
+      final raw = await utf8.decoder.bind(response).join();
+      final data = raw.isEmpty ? null : jsonDecode(raw);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        final reason = data is Map ? data['error']?.toString() : null;
+        throw StateError(reason ?? 'Erreur serveur (${response.statusCode}).');
+      }
+      if (data is! Map || data['profile'] is! Map) {
+        throw const FormatException('Réponse serveur invalide.');
+      }
+      return _fromProfile(Map<String, dynamic>.from(data['profile'] as Map));
+    } on StateError {
+      rethrow;
+    } catch (error) {
+      throw StateError('Impossible de créer cet utilisateur : $error');
+    }
+  }
+
+  static Future<List<DeviceAccessRequest>> pendingDeviceRequests() async {
+    final rows = await _client
+        .from('device_access_requests')
+        .select('id, user_id, device_id, device_label, requested_at')
+        .eq('status', 'pending')
+        .order('requested_at', ascending: true);
+    return (rows as List).cast<Map<String, dynamic>>().map((row) {
+      return DeviceAccessRequest(
+        id: row['id'] as String,
+        userId: row['user_id'] as String,
+        userLabel: row['user_id'] as String,
+        deviceId: row['device_id'] as String,
+        deviceLabel: row['device_label'] as String? ?? 'Appareil inconnu',
+        requestedAt: DateTime.parse(row['requested_at'] as String).toLocal(),
+      );
+    }).toList();
+  }
+
+  static Future<void> decideDeviceRequest(
+    DeviceAccessRequest request, {
+    required bool approve,
+    bool makePrimary = false,
+  }) async {
+    await _client.rpc(
+      'decide_device_access_request',
+      params: {
+        'p_request_id': request.id,
+        'p_approve': approve,
+        'p_make_primary': makePrimary,
+      },
+    );
+  }
+
+  static Future<List<TrustedDevice>> trustedDevices() async {
+    final rows = await _client.rpc('list_forage_device_activity');
+    return (rows as List)
+        .cast<Map<String, dynamic>>()
+        .map(TrustedDevice.fromRow)
+        .toList();
+  }
+
+  static Future<void> setDeviceStatus(String id, String status) => _client.rpc(
+    'set_forage_device_status',
+    params: {'p_device_id': id, 'p_status': status},
+  );
+
+  static AppUser _fromProfile(Map<String, dynamic> row) {
+    final email = (row['email'] as String? ?? '').trim();
+    final username = (row['username'] as String?)?.trim();
+    final roleName = row['role'] as String? ?? UserRole.visitor.name;
+    final role =
+        UserRole.values.where((value) => value.name == roleName).firstOrNull ??
+        UserRole.visitor;
+    final allowedPages = _pages(row['allowed_pages']);
+    final writablePages = _pages(row['writable_pages']);
+    final status = switch (row['status'] as String?) {
+      'on_leave' => UserStatus.onLeave,
+      'dismissed' => UserStatus.dismissed,
+      _ => UserStatus.active,
+    };
+    return AppUser(
+      id: row['id'] as String,
+      username: username?.isNotEmpty == true
+          ? username!
+          : (email.isEmpty ? 'utilisateur' : email.split('@').first),
+      password: '',
+      email: email,
+      fullName: (row['full_name'] as String?)?.trim().isNotEmpty == true
+          ? (row['full_name'] as String).trim()
+          : email,
+      admin: role == UserRole.admin,
+      role: role,
+      roles: {role},
+      allowedPages: row['allowed_pages'] == null ? null : allowedPages,
+      writablePages: row['writable_pages'] == null ? null : writablePages,
+      status: status,
+      canExport: row['can_export'] == true,
+      loginStartTime: row['login_start_time'] as String?,
+      loginEndTime: row['login_end_time'] as String?,
+      isPrivateOwner:
+          email.toLowerCase() == _maintenanceOwnerEmail &&
+          role == UserRole.admin &&
+          status == UserStatus.active,
+    );
+  }
+
+  static Set<AppPage> _pages(Object? raw) {
+    if (raw is! List) return {};
+    return raw
+        .map((value) => value.toString())
+        .map(
+          (name) =>
+              AppPage.values.where((page) => page.name == name).firstOrNull,
+        )
+        .whereType<AppPage>()
+        .toSet();
+  }
+}
+
+class DeviceAccessRequest {
+  const DeviceAccessRequest({
+    required this.id,
+    required this.userId,
+    required this.userLabel,
+    required this.deviceId,
+    required this.deviceLabel,
+    required this.requestedAt,
+  });
+
+  final String id;
+  final String userId;
+  final String userLabel;
+  final String deviceId;
+  final String deviceLabel;
+  final DateTime requestedAt;
+}
+
+class TrustedDevice {
+  const TrustedDevice({
+    required this.id,
+    required this.userId,
+    required this.label,
+    required this.primary,
+    required this.status,
+    required this.email,
+    this.lastLoginAt,
+    this.lastLogoutAt,
+  });
+  factory TrustedDevice.fromRow(Map<String, dynamic> row) => TrustedDevice(
+    id: row['id'] as String,
+    userId: row['user_id'] as String,
+    label: row['device_label'] as String? ?? 'Appareil inconnu',
+    primary: row['is_primary'] == true,
+    status: row['access_status'] as String? ?? 'active',
+    email: row['email'] as String? ?? '',
+    lastLoginAt: row['last_login_at'] == null
+        ? null
+        : DateTime.parse(row['last_login_at'] as String).toLocal(),
+    lastLogoutAt: row['last_logout_at'] == null
+        ? null
+        : DateTime.parse(row['last_logout_at'] as String).toLocal(),
+  );
+  final String id;
+  final String userId;
+  final String label;
+  final bool primary;
+  final String status;
+  final String email;
+  final DateTime? lastLoginAt;
+  final DateTime? lastLogoutAt;
+}
 
 abstract final class AppPalette {
-  /// Industrial noir palette.  Yellow is kept exclusively for focus,
-  /// important actions and live workshop signals.
-  static const primary = Color(0xFFFFD100);
-  static const primaryDark = Color(0xFFC49F00);
-  static const secondary = Color(0xFFFFB800);
-  static const soft = Color(0xFF252525);
-  static const background = Color(0xFF121212);
-  static const text = Color(0xFFF3F3F3);
-  static const muted = Color(0xFFA1A1A1);
-  static const coral = Color(0xFFFF6B7A);
-  static const mint = Color(0xFF8EF4A8);
-  static const surface = Color(0xFF1C1C1C);
-  static const surfaceRaised = Color(0xFF242424);
-  static const line = Color(0xFF353535);
+  static const primary = Color(0xFF167CE3);
+  static const primaryDark = Color(0xFF075DBA);
+  static const secondary = Color(0xFF4B91F2);
+  static const soft = Color(0xFFF0F8FF);
+  static const background = Color(0xFFE4F3FF);
+  static const text = Color(0xFF102A52);
+  static const muted = Color(0xFF47688F);
+  static const coral = Color(0xFFE26C8C);
+  static const mint = Color(0xFF12BFA0);
+  static const amber = Color(0xFFE39A32);
+  static const lilac = Color(0xFF7778F4);
+  static const surface = Color(0xFFF5FBFF);
+  static const surfaceRaised = Color(0xFFDCEEFF);
+  static const line = Color(0xFF9BC9F3);
+  static const desktopRail = Color(0xFFEAF6FF);
+  static const desktopCanvas = Color(0xFFDFF1FF);
+  static const desktopAccent = primary;
+  static const desktopAccentSoft = Color(0xFFCDE7FF);
 }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  validatePublicBackendConfig(_supabaseUrl, _supabasePublishableKey);
+  // A secure-storage or device-info plugin must never prevent the UI from
+  // opening. A temporary id merely requires a new approval once storage is
+  // available again.
+  appDevice = await DeviceIdentity.load().timeout(
+    const Duration(seconds: 5),
+    onTimeout: () => DeviceIdentity(
+      id: 'temporary-${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 32)}',
+      label: 'Appareil temporaire',
+    ),
+  );
+  await Supabase.initialize(
+    url: _supabaseUrl,
+    publishableKey: _supabasePublishableKey,
+    debug: false,
+    authOptions: FlutterAuthClientOptions(
+      localStorage: SecureSessionStorage(_supabaseUrl),
+      detectSessionInUri: false,
+    ),
+    headers: {'x-forage-device-id': appDevice.id},
+  );
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
+  } else {
+    // Android and iOS use sqflite's native database implementation. Without
+    // this assignment, the FFI factory is the only configured backend and the
+    // workshop cannot open after a mobile login.
+    databaseFactory = sqflite.databaseFactory;
   }
   await AppNotifications.initialize();
   runApp(const ForageApp());
@@ -117,7 +751,16 @@ extension AppPageLabel on AppPage {
 
 enum UserStatus { active, onLeave, dismissed }
 
-enum LoginFailure { invalidCredentials, temporarilyLocked, inactiveAccount }
+enum LoginFailure {
+  invalidCredentials,
+  temporarilyLocked,
+  inactiveAccount,
+  devicePending,
+  deviceRejected,
+  outsideSchedule,
+  serverSetupRequired,
+  serviceUnavailable,
+}
 
 class LoginResult {
   const LoginResult.success(this.user) : failure = null;
@@ -150,6 +793,7 @@ class AppUser {
     required this.username,
     required this.password,
     required this.fullName,
+    this.email = '',
     this.admin = false,
     this.role = UserRole.operator,
     Set<UserRole>? roles,
@@ -158,6 +802,9 @@ class AppUser {
     this.status = UserStatus.active,
     this.leaveUntil,
     this.isPrivateOwner = false,
+    this.canExport = false,
+    this.loginStartTime,
+    this.loginEndTime,
   }) : roles = roles ?? {if (admin) UserRole.admin else role},
        allowedPages =
            allowedPages ??
@@ -171,6 +818,7 @@ class AppUser {
   final String username;
   final String password;
   final String fullName;
+  final String email;
   final bool admin;
 
   /// Kept for compatibility with old backups. New records use [roles].
@@ -180,6 +828,11 @@ class AppUser {
   final Set<AppPage> writablePages;
   final UserStatus status;
   final DateTime? leaveUntil;
+  final bool canExport;
+
+  /// A null pair means no daily time limit. Stored as HH:mm:ss in Supabase.
+  final String? loginStartTime;
+  final String? loginEndTime;
 
   /// The private owner account is intentionally excluded from the team list.
   /// It is the only account allowed to open the destructive maintenance area.
@@ -196,7 +849,6 @@ class AppUser {
         AppPage.products,
         AppPage.stock,
         AppPage.machines,
-        AppPage.team,
       });
     }
     return pages;
@@ -219,7 +871,11 @@ class AppUser {
   /// Leave and dismissal block access until an administrator explicitly
   /// reactivates the account. A leave end date is informational only.
   bool get canLogIn => status == UserStatus.active;
-  bool canAccess(AppPage page) => isAdmin || allowedPages.contains(page);
+  bool canAccess(AppPage page) {
+    if (page == AppPage.team) return isAdmin;
+    return isAdmin || allowedPages.contains(page);
+  }
+
   bool canWritePage(AppPage page) => isAdmin || writablePages.contains(page);
 
   AppUser copyWith({
@@ -231,11 +887,16 @@ class AppUser {
     DateTime? leaveUntil,
     bool clearLeaveUntil = false,
     bool? isPrivateOwner,
+    bool? canExport,
+    String? loginStartTime,
+    String? loginEndTime,
+    bool clearLoginSchedule = false,
   }) => AppUser(
     id: id,
     username: username,
     password: password ?? this.password,
     fullName: fullName,
+    email: email,
     admin: (roles ?? this.roles).contains(UserRole.admin),
     role: (roles ?? this.roles).first,
     roles: roles ?? this.roles,
@@ -244,6 +905,13 @@ class AppUser {
     status: status ?? this.status,
     leaveUntil: clearLeaveUntil ? null : (leaveUntil ?? this.leaveUntil),
     isPrivateOwner: isPrivateOwner ?? this.isPrivateOwner,
+    canExport: canExport ?? this.canExport,
+    loginStartTime: clearLoginSchedule
+        ? null
+        : (loginStartTime ?? this.loginStartTime),
+    loginEndTime: clearLoginSchedule
+        ? null
+        : (loginEndTime ?? this.loginEndTime),
   );
 }
 
@@ -504,10 +1172,15 @@ class Product {
 /// Result returned by the product form. Categories retain their product lists,
 /// so the selected category is saved alongside a new raw product.
 class ProductCreation {
-  const ProductCreation({required this.product, this.categoryId});
+  const ProductCreation({
+    required this.product,
+    this.categoryId,
+    this.familyId,
+  });
 
   final Product product;
   final String? categoryId;
+  final String? familyId;
 }
 
 class Depot {
@@ -775,17 +1448,72 @@ extension MaterialTypeLabel on MaterialType {
       'largeur × longueur × épaisseur × ${density.toStringAsFixed(0)} kg/m³';
 }
 
+class ProductFamily {
+  const ProductFamily({
+    required this.id,
+    required this.name,
+    this.productIds = const [],
+  });
+
+  final String id;
+  final String name;
+  final List<String> productIds;
+
+  factory ProductFamily.fromJson(Map<String, dynamic> json) => ProductFamily(
+    id: json['id'] as String,
+    name: json['name'] as String,
+    productIds: List<String>.from(json['product_ids'] as List),
+  );
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'name': name,
+    'product_ids': productIds,
+  };
+}
+
 class ProductCategory {
   const ProductCategory({
     required this.id,
     required this.name,
     required this.productIds,
     required this.image,
+    this.families = const [],
   });
   final String id;
   final String name;
   final List<String> productIds;
   final Uint8List image;
+  final List<ProductFamily> families;
+
+  ProductCategory copyWith({
+    String? name,
+    List<String>? productIds,
+    List<ProductFamily>? families,
+  }) => ProductCategory(
+    id: id,
+    name: name ?? this.name,
+    productIds: productIds ?? this.productIds,
+    image: image,
+    families: families ?? this.families,
+  );
+
+  ProductCategory withProductInFamily(String productId, String? familyId) =>
+      copyWith(
+        productIds: {...productIds, productId}.toList(),
+        families: [
+          for (final family in families)
+            ProductFamily(
+              id: family.id,
+              name: family.name,
+              productIds: [
+                for (final id in family.productIds)
+                  if (id != productId) id,
+                if (family.id == familyId) productId,
+              ],
+            ),
+        ],
+      );
 }
 
 abstract final class PdfReports {
@@ -1012,6 +1740,62 @@ abstract final class PdfReports {
       '${value.day.toString().padLeft(2, '0')}/${value.month.toString().padLeft(2, '0')}/${value.year}';
 }
 
+class ExcelSheetData {
+  const ExcelSheetData({
+    required this.name,
+    required this.headers,
+    required this.rows,
+  });
+
+  final String name;
+  final List<String> headers;
+  final List<List<Object?>> rows;
+}
+
+/// Produces a real .xlsx workbook. Values retain their Excel types so dates
+/// sort correctly and quantities can be used in formulas after export.
+abstract final class ExcelReports {
+  static Future<void> save(List<ExcelSheetData> sheets) async {
+    if (sheets.isEmpty) {
+      throw const FormatException('Sélectionnez au moins une page à exporter.');
+    }
+    final workbook = xlsx.Excel.createExcel();
+    for (final sheetData in sheets) {
+      final sheet = workbook[sheetData.name];
+      sheet.appendRow(sheetData.headers.map(xlsx.TextCellValue.new).toList());
+      for (final row in sheetData.rows) {
+        sheet.appendRow(row.map(_cell).toList());
+      }
+      for (var column = 0; column < sheetData.headers.length; column++) {
+        sheet.setColumnWidth(column, 20);
+      }
+    }
+    workbook.delete('Sheet1');
+    final bytes = workbook.save();
+    if (bytes == null) {
+      throw const FormatException('Le fichier Excel est vide.');
+    }
+    final stamp = DateTime.now().toIso8601String().replaceAll(
+      RegExp('[:.]'),
+      '-',
+    );
+    await FileSaver.instance.saveAs(
+      name: 'forage-zouhour-export-$stamp',
+      bytes: Uint8List.fromList(bytes),
+      fileExtension: 'xlsx',
+      mimeType: MimeType.microsoftExcel,
+    );
+  }
+
+  static xlsx.CellValue _cell(Object? value) => switch (value) {
+    null => xlsx.TextCellValue(''),
+    int value => xlsx.IntCellValue(value),
+    double value => xlsx.DoubleCellValue(value),
+    DateTime value => xlsx.DateTimeCellValue.fromDateTime(value),
+    _ => xlsx.TextCellValue(value.toString()),
+  };
+}
+
 enum LengthUnit { meter, kilometer, centimeter, millimeter }
 
 extension LengthUnitLabel on LengthUnit {
@@ -1209,6 +1993,7 @@ class WorkshopData {
     required this.products,
     required this.depots,
     required this.categories,
+    required this.catalogFamilies,
     required this.machines,
     required this.operations,
     required this.stockAdditions,
@@ -1226,6 +2011,7 @@ class WorkshopData {
   final List<Product> products;
   final List<Depot> depots;
   final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final List<FactoryMachine> machines;
   final List<Operation> operations;
   final List<StockAddition> stockAdditions;
@@ -1241,18 +2027,19 @@ class WorkshopData {
 }
 
 class AppDatabase {
-  AppDatabase({this._databasePath});
+  AppDatabase({this._databasePath, this.cloudSync});
 
-  static const _databaseName = 'forage.db';
+  static const _databaseName = _localDatabaseName;
   static const _generalDepotId = 'general-depot';
   static const _backupFormat = 'forage-zouhour-backup';
   static const _encryptedBackupFormat = 'forage-zouhour-encrypted-backup';
-  static const _backupVersion = 4;
+  static const _backupVersion = 6;
   static const _maximumFailedLogins = 5;
   static const _lockoutDuration = Duration(minutes: 15);
   static const _backupTables = [
     'products',
     'categories',
+    'catalog_families',
     'machines',
     'operations',
     'stock_additions',
@@ -1266,22 +2053,24 @@ class AppDatabase {
     'operator_payments',
     'depots',
   ];
-  // Tables included in a future remote synchronization snapshot.
-  static const _syncTables = ['users', ..._backupTables, 'app_settings'];
+  // Authentication and device-only preferences are never copied to the
+  // shared workspace. Only operational workshop records are synchronized.
+  static const _syncTables = _backupTables;
   static const _binaryBackupColumns = {
     'products': {'image'},
     'categories': {'image'},
     'machines': {'image'},
-    'operations': {'final_image', 'remainder_image'},
+    'operations': {'final_image', 'remainder_image', 'scrap_image'},
     'depots': {'image'},
   };
   final String? _databasePath;
+  final CloudSyncClient? cloudSync;
   late final Future<Database> _database = _open();
 
   Future<Database> _open() async {
     final database = await openDatabase(
       _databasePath ?? join(await getDatabasesPath(), _databaseName),
-      version: 35,
+      version: 37,
       onCreate: (database, version) async {
         await database.execute(
           "CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password TEXT NOT NULL, full_name TEXT NOT NULL, admin INTEGER NOT NULL, role TEXT NOT NULL DEFAULT 'operator', roles TEXT NOT NULL DEFAULT '[\"operator\"]', allowed_pages TEXT NOT NULL DEFAULT '[]', writable_pages TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'active', leave_until INTEGER, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until INTEGER, is_private_owner INTEGER NOT NULL DEFAULT 0)",
@@ -1293,8 +2082,9 @@ class AppDatabase {
           'CREATE TABLE products (id TEXT PRIMARY KEY, name TEXT NOT NULL, reference TEXT NOT NULL DEFAULT \'\', width REAL NOT NULL, length_meters REAL NOT NULL, length_unit TEXT NOT NULL, thickness REAL NOT NULL, manufactured INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT \'standard\', diameter REAL, diameter_is_external INTEGER NOT NULL DEFAULT 1, diameter_calculated_from_dimensions INTEGER NOT NULL DEFAULT 0, hose_unit TEXT NOT NULL DEFAULT \'piece\', meters_per_piece REAL, initial_stock INTEGER NOT NULL, initial_depot_id TEXT NOT NULL DEFAULT \'general-depot\', material_type TEXT NOT NULL DEFAULT \'steel\', image BLOB, parent_product_id TEXT)',
         );
         await database.execute(
-          'CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, product_ids TEXT NOT NULL, image BLOB NOT NULL)',
+          "CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, product_ids TEXT NOT NULL, image BLOB NOT NULL, families TEXT NOT NULL DEFAULT '[]')",
         );
+        await _createCatalogFamiliesTable(database);
         await database.execute(
           'CREATE TABLE machines (id TEXT PRIMARY KEY, name TEXT NOT NULL, copies INTEGER NOT NULL, type TEXT NOT NULL, inputs TEXT NOT NULL, output TEXT NOT NULL, operator_ids TEXT NOT NULL, image BLOB, category_id TEXT, units TEXT NOT NULL DEFAULT \'[]\', temporary INTEGER NOT NULL DEFAULT 0, deadline INTEGER, planned_pieces INTEGER, hopper_pieces INTEGER, temporary_input_product_id TEXT, temporary_source_depot_id TEXT, temporary_input_pieces INTEGER)',
         );
@@ -1353,8 +2143,14 @@ class AppDatabase {
           );
         }
         if (oldVersion < 6) {
-          await database.execute(
-            'ALTER TABLE categories ADD COLUMN image BLOB',
+          // Version 3 already created this column in some distributed builds.
+          // A database interrupted during upgrade may still report an older
+          // schema version, so never add the same column twice.
+          await _addColumnIfMissing(
+            database,
+            table: 'categories',
+            column: 'image',
+            definition: 'image BLOB',
           );
         }
         if (oldVersion < 8) {
@@ -1628,6 +2424,12 @@ class AppDatabase {
           );
           await _createPaymentTables(database);
         }
+        if (oldVersion < 36) {
+          await database.execute(
+            "ALTER TABLE categories ADD COLUMN families TEXT NOT NULL DEFAULT '[]'",
+          );
+        }
+        if (oldVersion < 37) await _createCatalogFamiliesTable(database);
       },
     );
     await database.insert('depots', const {
@@ -1637,8 +2439,84 @@ class AppDatabase {
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
     await _migrateLegacyRecords(database);
     await _ensurePrivateOwner(database);
-    await _removeManufacturedProductsFromCategories(database);
+    await _configureSyncTriggers(database);
     return database;
+  }
+
+  Future<void> _configureSyncTriggers(Database database) async {
+    final batch = database.batch();
+    for (final table in _syncTables) {
+      for (final action in const ['INSERT', 'UPDATE', 'DELETE']) {
+        batch.execute('''
+          CREATE TRIGGER IF NOT EXISTS sync_dirty_${table}_$action
+          AFTER $action ON $table
+          BEGIN
+            INSERT OR REPLACE INTO app_settings (key, value)
+            VALUES ('cloud_sync_dirty', 'true');
+          END
+        ''');
+      }
+    }
+    await batch.commit(noResult: true);
+  }
+
+  Future<void> _createCatalogFamiliesTable(DatabaseExecutor database) =>
+      database.execute(
+        "CREATE TABLE catalog_families (id TEXT PRIMARY KEY, name TEXT NOT NULL, category_ids TEXT NOT NULL DEFAULT '[]')",
+      );
+
+  Future<void> _addColumnIfMissing(
+    DatabaseExecutor database, {
+    required String table,
+    required String column,
+    required String definition,
+  }) async {
+    final columns = await database.rawQuery('PRAGMA table_info($table)');
+    if (columns.any((item) => item['name'] == column)) return;
+    await database.execute('ALTER TABLE $table ADD COLUMN $definition');
+  }
+
+  Future<bool> synchronizeWithCloud({bool preferRemote = false}) async {
+    final client = cloudSync;
+    if (client == null) return false;
+
+    final remote = await client.download();
+    final dirtyRows = await (await _database).query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: const ['cloud_sync_dirty'],
+      limit: 1,
+    );
+    final dirty = dirtyRows.isNotEmpty && dirtyRows.single['value'] == 'true';
+
+    if (remote != null && (preferRemote || !dirty)) {
+      await replaceFromSyncSnapshot(remote);
+    } else if (remote == null || dirty) {
+      await client.upload(await exportSyncSnapshot());
+    }
+
+    await (await _database).insert('app_settings', {
+      'key': 'cloud_sync_dirty',
+      'value': 'false',
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    return true;
+  }
+
+  /// Rebuilds this device's local mirror from Supabase without ever uploading
+  /// the local data. Used only after a damaged or outdated local database
+  /// prevents the Windows app from starting.
+  Future<bool> restoreLocalMirrorFromCloud() async {
+    final client = cloudSync;
+    if (client == null) return false;
+    final remote = await client.download();
+    if (remote == null) return false;
+    await replaceFromSyncSnapshot(remote);
+    await (await _database).insert('app_settings', {
+      'key': 'cloud_sync_dirty',
+      'value': 'false',
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    return true;
   }
 
   Future<void> close() async {
@@ -1758,6 +2636,10 @@ class AppDatabase {
       'categories',
       orderBy: 'name',
     )).map(_categoryFromRow).toList();
+    final catalogFamilies = (await database.query(
+      'catalog_families',
+      orderBy: 'name COLLATE NOCASE, id',
+    )).map(CatalogFamily.fromRow).toList();
     final machines = (await database.query(
       'machines',
       orderBy: 'name',
@@ -1813,6 +2695,7 @@ class AppDatabase {
       products: products,
       depots: depots,
       categories: categories,
+      catalogFamilies: catalogFamilies,
       machines: machines,
       operations: operations,
       stockAdditions: stockAdditions,
@@ -1930,10 +2813,9 @@ class AppDatabase {
     final backupVersion = decoded is Map ? decoded['version'] : null;
     if (decoded is! Map ||
         decoded['format'] != _backupFormat ||
-        (backupVersion != 1 &&
-            backupVersion != 2 &&
-            backupVersion != 3 &&
-            backupVersion != _backupVersion) ||
+        backupVersion is! int ||
+        backupVersion < 1 ||
+        backupVersion > _backupVersion ||
         decoded['tables'] is! Map) {
       throw const FormatException(
         'Fichier de sauvegarde FORAGE ZOUHOUR invalide.',
@@ -1953,6 +2835,7 @@ class AppDatabase {
             'stock_transfers',
             'sale_returns',
             'operator_payments',
+            'catalog_families',
           }.contains(table)) {
         restoredTables[table] = const [];
         continue;
@@ -2011,7 +2894,9 @@ class AppDatabase {
   Future<void> replaceFromSyncSnapshot(
     Map<String, List<Map<String, Object?>>> cloudData,
   ) async {
-    if (_syncTables.any((table) => !cloudData.containsKey(table))) {
+    if (_syncTables.any(
+      (table) => table != 'catalog_families' && !cloudData.containsKey(table),
+    )) {
       throw const FormatException('La sauvegarde distante est incomplète.');
     }
     await (await _database).transaction((transaction) async {
@@ -2019,7 +2904,7 @@ class AppDatabase {
         await transaction.delete(table);
       }
       for (final table in _syncTables) {
-        for (final row in cloudData[table]!) {
+        for (final row in cloudData[table] ?? const []) {
           await transaction.insert(table, _cloudRowForDatabase(table, row));
         }
       }
@@ -2034,13 +2919,20 @@ class AppDatabase {
   Map<String, Object?> _cloudRow(String table, Map<String, Object?> row) {
     final result = <String, Object?>{};
     for (final entry in row.entries) {
-      // `image` and `images` may contain raw bytes or Base64 data. Storing
-      // them in a remote snapshot can exceed practical payload limits.`r`n      // Images remain on-device until a dedicated object-storage strategy exists.
-      if (entry.key.contains('image') || entry.value is Uint8List) {
-        if (entry.key == 'images') result[entry.key] = '[]';
+      if (table == 'categories' &&
+          entry.key == 'families' &&
+          entry.value == '[]') {
         continue;
       }
-      result[entry.key] = entry.value;
+      // SQLite returns BLOB values as Uint8List. JSON cannot represent raw
+      // bytes, so encode them for the shared Supabase snapshot. The `images`
+      // fields are already JSON arrays of Base64 strings and pass through
+      // unchanged.
+      result[entry.key] = entry.value is Uint8List
+          ? base64Encode(compactImageForStorage(entry.value as Uint8List))
+          : entry.key == 'images' && entry.value is String
+          ? compactImageListJson(entry.value as String)
+          : entry.value;
     }
     return result;
   }
@@ -2050,16 +2942,33 @@ class AppDatabase {
     Map<String, Object?> row,
   ) {
     final result = Map<String, Object?>.from(row);
-    // Category images are mandatory in the historical SQLite schema. An empty
-    // byte array is intentionally rendered as the standard category icon.
-    if (table == 'categories') result['image'] = Uint8List(0);
+    final binaryColumns = _binaryBackupColumns[table] ?? const <String>{};
+    for (final column in binaryColumns) {
+      final value = result[column];
+      if (value is String) {
+        result[column] = compactImageForStorage(base64Decode(value));
+      }
+    }
+    if (result['images'] is String) {
+      result['images'] = compactImageListJson(result['images'] as String);
+    }
+
+    // These defaults preserve compatibility with snapshots produced before
+    // photos were synchronized.
+    if (table == 'categories' && !result.containsKey('image')) {
+      result['image'] = Uint8List(0);
+    }
     if (table == 'products' || table == 'depots' || table == 'machines') {
-      result['image'] = null;
+      if (!result.containsKey('image')) result['image'] = null;
     }
     if (table == 'operations') {
-      result['final_image'] = null;
-      result['remainder_image'] = null;
-      result['scrap_image'] = null;
+      for (final column in const [
+        'final_image',
+        'remainder_image',
+        'scrap_image',
+      ]) {
+        if (!result.containsKey(column)) result[column] = null;
+      }
     }
     return result;
   }
@@ -2122,41 +3031,6 @@ class AppDatabase {
 
   /// A category contains only the raw products a machine can consume. This
   /// also cleans category data created by older versions of the application.
-  Future<void> _removeManufacturedProductsFromCategories(
-    Database database,
-  ) async {
-    final manufacturedRows = await database.query(
-      'products',
-      columns: ['id'],
-      where: 'manufactured = ?',
-      whereArgs: [1],
-    );
-    final manufacturedIds = manufacturedRows
-        .map((row) => row['id'] as String)
-        .toSet();
-    if (manufacturedIds.isEmpty) return;
-
-    final categoryRows = await database.query(
-      'categories',
-      columns: ['id', 'product_ids'],
-    );
-    for (final row in categoryRows) {
-      final productIds = List<String>.from(
-        jsonDecode(row['product_ids'] as String) as List,
-      );
-      final rawProductIds = productIds
-          .where((id) => !manufacturedIds.contains(id))
-          .toList();
-      if (rawProductIds.length == productIds.length) continue;
-      await database.update(
-        'categories',
-        {'product_ids': jsonEncode(rawProductIds)},
-        where: 'id = ?',
-        whereArgs: [row['id']],
-      );
-    }
-  }
-
   Future<AppUser> insertUser(AppUser user) async {
     final protected = user.copyWith(
       password: await _passwordForStorage(user.password),
@@ -2343,6 +3217,35 @@ class AppDatabase {
           );
   Future<void> insertProduct(Product product) async =>
       (await _database).insert('products', _productToRow(product));
+
+  Future<ProductCategory?> insertCatalogProduct(
+    Product product,
+    String? categoryId,
+    String? familyId,
+  ) async {
+    return (await _database).transaction((transaction) async {
+      await transaction.insert('products', _productToRow(product));
+      if (categoryId == null) return null;
+      final rows = await transaction.query(
+        'categories',
+        where: 'id = ?',
+        whereArgs: [categoryId],
+      );
+      if (rows.isEmpty) throw StateError('Catégorie introuvable.');
+      final category = _categoryFromRow(rows.single);
+      if (familyId != null && !category.families.any((f) => f.id == familyId)) {
+        throw StateError('Famille introuvable.');
+      }
+      final updated = category.withProductInFamily(product.id, familyId);
+      await transaction.update(
+        'categories',
+        _categoryToRow(updated),
+        where: 'id = ?',
+        whereArgs: [categoryId],
+      );
+      return updated;
+    });
+  }
   Future<void> updateProduct(Product product) async => (await _database).update(
     'products',
     _productToRow(product),
@@ -2353,6 +3256,70 @@ class AppDatabase {
       (await _database).insert('depots', _depotToRow(depot));
   Future<void> insertCategory(ProductCategory category) async =>
       (await _database).insert('categories', _categoryToRow(category));
+
+  Future<void> saveCatalogFamily(CatalogFamily family) async {
+    final database = await _database;
+    await database.transaction((transaction) async {
+      final uniqueName = (await transaction.query('catalog_families')).every(
+        (row) =>
+            row['id'] == family.id ||
+            (row['name'] as String).toLowerCase() != family.name.toLowerCase(),
+      );
+      if (!uniqueName) throw StateError('Ce nom de famille existe déjà.');
+      final assigned = family.categoryIds.toSet();
+      final valid = (await transaction.query(
+        'categories',
+        columns: ['id'],
+      )).map((row) => row['id'] as String).toSet();
+      if (!valid.containsAll(assigned)) {
+        throw StateError('Une catégorie sélectionnée est introuvable.');
+      }
+      for (final row in await transaction.query('catalog_families')) {
+        final other = CatalogFamily.fromRow(row);
+        if (other.id == family.id) continue;
+        final remaining = other.categoryIds
+            .where((id) => !assigned.contains(id))
+            .toList();
+        if (remaining.length != other.categoryIds.length) {
+          await transaction.update(
+            'catalog_families',
+            {'category_ids': jsonEncode(remaining)},
+            where: 'id = ?',
+            whereArgs: [other.id],
+          );
+        }
+      }
+      await transaction.insert(
+        'catalog_families',
+        family.toRow(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    });
+  }
+
+  Future<void> insertCategoryInFamily(
+    ProductCategory category,
+    String familyId,
+  ) async {
+    await (await _database).transaction((transaction) async {
+      final rows = await transaction.query(
+        'catalog_families',
+        where: 'id = ?',
+        whereArgs: [familyId],
+      );
+      if (rows.isEmpty) throw StateError('Famille introuvable.');
+      final family = CatalogFamily.fromRow(rows.single);
+      await transaction.insert('categories', _categoryToRow(category));
+      await transaction.update(
+        'catalog_families',
+        {
+          'category_ids': jsonEncode([...family.categoryIds, category.id]),
+        },
+        where: 'id = ?',
+        whereArgs: [familyId],
+      );
+    });
+  }
   Future<void> updateCategory(ProductCategory category) async =>
       (await _database).update(
         'categories',
@@ -2415,6 +3382,7 @@ class AppDatabase {
     }
     await batch.commit(noResult: true);
   }
+
   Future<List<TransactionPayment>> loadTransactionPayments() async =>
       (await (await _database).query(
         'transaction_payments',
@@ -2547,8 +3515,25 @@ class AppDatabase {
     });
   }
 
-  Future<void> deleteCategory(String id) async =>
-      (await _database).delete('categories', where: 'id = ?', whereArgs: [id]);
+  Future<void> deleteCategory(String id) async {
+    await (await _database).transaction((transaction) async {
+      for (final row in await transaction.query('catalog_families')) {
+        final family = CatalogFamily.fromRow(row);
+        if (!family.categoryIds.contains(id)) continue;
+        await transaction.update(
+          'catalog_families',
+          {
+            'category_ids': jsonEncode(
+              family.categoryIds.where((value) => value != id).toList(),
+            ),
+          },
+          where: 'id = ?',
+          whereArgs: [family.id],
+        );
+      }
+      await transaction.delete('categories', where: 'id = ?', whereArgs: [id]);
+    });
+  }
   Future<void> deleteProductAndHistory(String id) async {
     final database = await _database;
     final machines = await database.query(
@@ -2594,20 +3579,17 @@ class AppDatabase {
         whereArgs: [id, id],
       );
       final categories = await transaction.query('categories');
-      for (final category in categories) {
-        final productIds = List<String>.from(
-          jsonDecode(category['product_ids'] as String) as List,
+      for (final row in categories) {
+        final category = _categoryFromRow(row);
+        if (!category.productIds.contains(id)) continue;
+        final updated = category.withProductInFamily(id, null).copyWith(
+          productIds: category.productIds.where((item) => item != id).toList(),
         );
-        if (!productIds.contains(id)) continue;
         await transaction.update(
           'categories',
-          {
-            'product_ids': jsonEncode(
-              productIds.where((item) => item != id).toList(),
-            ),
-          },
+          _categoryToRow(updated),
           where: 'id = ?',
-          whereArgs: [category['id']],
+          whereArgs: [category.id],
         );
       }
       await transaction.delete('products', where: 'id = ?', whereArgs: [id]);
@@ -2779,6 +3761,7 @@ class AppDatabase {
     'id': category.id,
     'name': category.name,
     'product_ids': jsonEncode(category.productIds),
+    'families': jsonEncode(category.families),
     'image': category.image,
   };
   ProductCategory _categoryFromRow(Map<String, Object?> row) => ProductCategory(
@@ -2788,6 +3771,10 @@ class AppDatabase {
       jsonDecode(row['product_ids'] as String) as List,
     ),
     image: row['image'] as Uint8List? ?? Uint8List(0),
+    families: [
+      for (final item in jsonDecode(row['families'] as String? ?? '[]') as List)
+        ProductFamily.fromJson(item as Map<String, dynamic>),
+    ],
   );
 
   StockAddition _stockAdditionFromRow(Map<String, Object?> row) =>
@@ -2848,22 +3835,21 @@ class AppDatabase {
     'id': competitor.id,
     'name': competitor.name,
   };
-  Competitor _competitorFromRow(Map<String, Object?> row) => Competitor(
-    id: row['id'] as String,
-    name: row['name'] as String,
-  );
-  TransactionPayment _transactionPaymentFromRow(
-    Map<String, Object?> row,
-  ) => TransactionPayment(
-    id: row['id'] as String,
-    saleId: row['sale_id'] as String?,
-    stockAdditionId: row['stock_addition_id'] as int?,
-    source: PaymentSource.values.byName(row['source'] as String),
-    competitorId: row['competitor_id'] as String?,
-    mode: row['payment_mode'] as String,
-    amount: (row['amount'] as num).toDouble(),
-    createdAt: DateTime.fromMillisecondsSinceEpoch(row['created_at'] as int),
-  );
+  Competitor _competitorFromRow(Map<String, Object?> row) =>
+      Competitor(id: row['id'] as String, name: row['name'] as String);
+  TransactionPayment _transactionPaymentFromRow(Map<String, Object?> row) =>
+      TransactionPayment(
+        id: row['id'] as String,
+        saleId: row['sale_id'] as String?,
+        stockAdditionId: row['stock_addition_id'] as int?,
+        source: PaymentSource.values.byName(row['source'] as String),
+        competitorId: row['competitor_id'] as String?,
+        mode: row['payment_mode'] as String,
+        amount: (row['amount'] as num).toDouble(),
+        createdAt: DateTime.fromMillisecondsSinceEpoch(
+          row['created_at'] as int,
+        ),
+      );
 
   Map<String, Object?> _saleToRow(Sale sale) => {
     'id': sale.id,
@@ -3166,39 +4152,84 @@ class ForageApp extends StatefulWidget {
 
 class _ForageAppState extends State<ForageApp> {
   late final AppDatabase database;
+  bool get _usesCloud => widget.database == null;
   var users = <AppUser>[];
   AppUser? current;
   var loading = true;
+  String? startupError;
+  AppUpdate? update;
 
   @override
   void initState() {
     super.initState();
-    database = widget.database ?? AppDatabase();
+    database =
+        widget.database ??
+        AppDatabase(
+          cloudSync: SupabaseCloudSyncClient(Supabase.instance.client),
+        );
     loadUsers();
+    _checkForUpdate();
+  }
+
+  Future<void> _checkForUpdate() async {
+    final available = await GitHubUpdates.check();
+    if (available == null) return;
+    final dismissed = await SecureAppPreferences.dismissedUpdateVersion();
+    if (!mounted || dismissed == available.version) return;
+    setState(() => update = available);
+  }
+
+  Future<void> _startUpdate(AppUpdate available) async {
+    await SecureAppPreferences.dismissUpdateVersion(available.version);
+    if (mounted) setState(() => update = null);
   }
 
   Future<void> loadUsers() async {
-    final savedUsers = await database.loadUsers();
+    var savedUsers = <AppUser>[];
+    AppUser? signedIn;
+    String? error;
+    try {
+      if (_usesCloud) {
+        // A new launch must always show the login form.  The app clears a
+        // previously stored Supabase session here; signing in later during
+        // this run still works normally.
+        try {
+          await SupabaseAccounts.signOut();
+        } catch (_) {}
+        signedIn = null;
+        savedUsers = <AppUser>[];
+      } else {
+        savedUsers = await database.loadUsers();
+      }
+    } catch (_) {
+      // A connection problem must lead to the login screen, never to a
+      // permanent splash screen. Local mode keeps the failure visible.
+      if (!_usesCloud) {
+        error = 'Impossible d’ouvrir les données locales. Réessayez.';
+      }
+    }
     if (mounted) {
       setState(() {
         users = savedUsers;
-        current = null;
+        current = signedIn;
+        startupError = error;
         loading = false;
       });
     }
   }
 
-  Future<void> addUser(AppUser user) async {
-    if (users.any(
-      (item) => item.username.toLowerCase() == user.username.toLowerCase(),
-    )) {
-      throw StateError('Ce nom d’utilisateur existe déjà.');
-    }
-    final protected = await database.insertUser(user);
+  Future<AppUser> addUser(AppUser user) async {
+    final protected = _usesCloud
+        ? await SupabaseAccounts.createUser(user)
+        : await database.insertUser(user);
     if (mounted) setState(() => users.add(protected));
+    return protected;
   }
 
   Future<void> createFirstAdmin(AppUser user) async {
+    if (_usesCloud) {
+      throw StateError('Le premier administrateur est géré dans Supabase.');
+    }
     if (users.isNotEmpty) {
       throw StateError('Un compte administrateur existe déjà.');
     }
@@ -3211,7 +4242,14 @@ class _ForageAppState extends State<ForageApp> {
   }
 
   Future<void> updateUser(AppUser user) async {
-    final protected = await database.updateUser(user);
+    late final AppUser protected;
+    if (_usesCloud) {
+      await SupabaseAccounts.updateUser(user);
+      // Never retain a newly entered password in application state.
+      protected = user.copyWith(password: '');
+    } else {
+      protected = await database.updateUser(user);
+    }
     if (!mounted) return;
     setState(() {
       final index = users.indexWhere((item) => item.id == user.id);
@@ -3221,14 +4259,40 @@ class _ForageAppState extends State<ForageApp> {
   }
 
   Future<LoginResult> login(String username, String password) async {
-    final result = await database.authenticate(username, password);
+    final result = _usesCloud
+        ? await SupabaseAccounts.signIn(username, password)
+        : await database.authenticate(username, password);
     if (result.succeeded && mounted) setState(() => current = result.user);
+    if (result.succeeded && _usesCloud) {
+      final cloudUsers = await SupabaseAccounts.loadUsers();
+      if (mounted) setState(() => users = cloudUsers);
+    }
     return result;
   }
 
+  /// Finishes a device-login request which was approved while the login page
+  /// was open.  We deliberately do not call [login] again here: doing that
+  /// would create a new device request and require a second approval.
+  Future<void> acceptApprovedDeviceLogin(LoginResult result) async {
+    if (!result.succeeded || !mounted) return;
+    setState(() => current = result.user);
+    if (_usesCloud) {
+      final cloudUsers = await SupabaseAccounts.loadUsers();
+      if (mounted) setState(() => users = cloudUsers);
+    }
+  }
+
   Future<void> logout() async {
-    final user = current;
-    if (user != null) await database.recordLogout(user.id);
+    if (_usesCloud) {
+      try {
+        await SupabaseAccounts.signOut();
+      } finally {
+        if (mounted) setState(() => current = null);
+      }
+    } else {
+      final user = current;
+      if (user != null) await database.recordLogout(user.id);
+    }
     if (mounted) setState(() => current = null);
   }
 
@@ -3236,67 +4300,60 @@ class _ForageAppState extends State<ForageApp> {
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
     title: 'FORAGE ZOUHOUR',
-    theme: ThemeData(
-      useMaterial3: true,
-      brightness: Brightness.dark,
-      colorScheme: const ColorScheme.dark(
-        primary: AppPalette.primary,
-        secondary: AppPalette.secondary,
-        surface: AppPalette.surface,
-        onPrimary: Color(0xFF151515),
-        onSurface: AppPalette.text,
+    theme: atelierTheme(),
+    themeMode: ThemeMode.light,
+    builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+        systemNavigationBarColor: AppPalette.background,
+        systemNavigationBarIconBrightness: Brightness.dark,
       ),
-      scaffoldBackgroundColor: AppPalette.background,
-      dividerColor: AppPalette.line,
-      textTheme: ThemeData.dark().textTheme.apply(
-        bodyColor: AppPalette.text,
-        displayColor: AppPalette.text,
-        fontFamily: 'Inter',
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: AppPalette.surface,
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 16,
-        ),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: AppPalette.line),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: AppPalette.line),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: AppPalette.primary, width: 1.5),
-        ),
-      ),
-      filledButtonTheme: FilledButtonThemeData(
-        style: FilledButton.styleFrom(
-          backgroundColor: AppPalette.primary,
-          foregroundColor: const Color(0xFF151515),
-          minimumSize: const Size(0, 48),
-          elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-          textStyle: const TextStyle(fontWeight: FontWeight.w800),
-        ),
-      ),
-      outlinedButtonTheme: OutlinedButtonThemeData(
-        style: OutlinedButton.styleFrom(
-          foregroundColor: AppPalette.primary,
-          side: const BorderSide(color: AppPalette.line),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: AtelierLiquidStage(
+        child: Stack(
+          children: [
+            child ?? const SizedBox.shrink(),
+            if (update != null)
+              SafeArea(
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: _UpdateBanner(
+                    update: update!,
+                    onDismiss: () => setState(() => update = null),
+                    onStartUpdate: _startUpdate,
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     ),
     home: loading
         ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+        : startupError != null
+        ? _StartupFailure(
+            message: startupError!,
+            onRetry: () {
+              setState(() {
+                loading = true;
+                startupError = null;
+              });
+              loadUsers();
+            },
+          )
         : current == null
-        ? users.isEmpty
+        ? _usesCloud
+              ? LoginPage(
+                  onLogin: login,
+                  onApprovedDeviceLogin: acceptApprovedDeviceLogin,
+                )
+              : users.isEmpty
               ? InitialAdminSetup(onCreate: createFirstAdmin)
-              : LoginPage(onLogin: login)
+              : LoginPage(
+                  onLogin: login,
+                  onApprovedDeviceLogin: acceptApprovedDeviceLogin,
+                )
         : ForageHome(
             user: current!,
             users: users,
@@ -3308,9 +4365,150 @@ class _ForageAppState extends State<ForageApp> {
   );
 }
 
+class _StartupFailure extends StatelessWidget {
+  const _StartupFailure({
+    required this.message,
+    required this.onRetry,
+    this.onRestoreLocalCache,
+  });
+  final String message;
+  final VoidCallback onRetry;
+  final Future<void> Function()? onRestoreLocalCache;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: Aura(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Glass(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.error_outline_rounded,
+                    color: AppPalette.coral,
+                    size: 44,
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Démarrage impossible',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 20),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(message, textAlign: TextAlign.center),
+                  const SizedBox(height: 18),
+                  FilledButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Réessayer'),
+                  ),
+                  if (onRestoreLocalCache != null) ...[
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      onPressed: () => onRestoreLocalCache!(),
+                      icon: const Icon(Icons.cloud_download_outlined),
+                      label: const Text('Restaurer depuis le serveur'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _UpdateBanner extends StatelessWidget {
+  const _UpdateBanner({
+    required this.update,
+    required this.onDismiss,
+    required this.onStartUpdate,
+  });
+  final AppUpdate update;
+  final VoidCallback onDismiss;
+  final Future<void> Function(AppUpdate update) onStartUpdate;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
+    child: Container(
+      margin: const EdgeInsets.all(12),
+      padding: const EdgeInsets.fromLTRB(16, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: AppPalette.surfaceRaised,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppPalette.primary),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final action = FilledButton(
+            onPressed: () async {
+              await onStartUpdate(update);
+              await launchUrl(
+                Uri.parse(update.downloadUrl),
+                mode: LaunchMode.externalApplication,
+              );
+            },
+            child: const Text('Mise à jour'),
+          );
+          final heading = Row(
+            children: [
+              const Icon(
+                Icons.system_update_rounded,
+                color: AppPalette.primary,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Mise à jour ${update.version} disponible',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Fermer',
+                onPressed: onDismiss,
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ],
+          );
+          if (constraints.maxWidth < 520) {
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                heading,
+                const SizedBox(height: 8),
+                Align(alignment: Alignment.centerRight, child: action),
+              ],
+            );
+          }
+          return Row(
+            children: [
+              Expanded(child: heading),
+              action,
+            ],
+          );
+        },
+      ),
+    ),
+  );
+}
+
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key, required this.onLogin});
+  const LoginPage({
+    super.key,
+    required this.onLogin,
+    required this.onApprovedDeviceLogin,
+  });
   final Future<LoginResult> Function(String username, String password) onLogin;
+  final Future<void> Function(LoginResult result) onApprovedDeviceLogin;
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
@@ -3463,215 +4661,342 @@ class _InitialAdminSetupState extends State<InitialAdminSetup> {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final username = TextEditingController();
+  final email = TextEditingController();
   final password = TextEditingController();
+  final pattern = <int>[];
+  var usesPattern = false;
   String? error;
   var authenticating = false;
+  var awaitingApproval = false;
+  Timer? _approvalTimer;
 
   Future<void> login() async {
     if (authenticating) return;
     setState(() {
       authenticating = true;
       error = null;
+      awaitingApproval = false;
     });
     try {
-      final result = await widget.onLogin(username.text, password.text);
+      if (usesPattern && pattern.length < 4) {
+        setState(() => error = 'Reliez au moins 4 points.');
+        return;
+      }
+      final secret = usesPattern
+          ? await passwordFromPattern(email.text, pattern)
+          : password.text;
+      final result = await widget.onLogin(email.text, secret);
       if (!mounted || result.succeeded) return;
+      if (result.failure == LoginFailure.devicePending) {
+        setState(() => awaitingApproval = true);
+        _waitForAdministratorApproval();
+      }
       setState(
         () => error = switch (result.failure!) {
-          LoginFailure.invalidCredentials => 'Mot de passe incorrect.',
+          LoginFailure.invalidCredentials =>
+            'E-mail ou mot de passe incorrect.',
           LoginFailure.temporarilyLocked =>
             'Compte temporairement verrouillé. Réessayez dans 15 minutes.',
           LoginFailure.inactiveAccount =>
             'Ce compte est en congé ou désactivé.',
+          LoginFailure.devicePending => 'Demande envoyée à l’administrateur. Attendez son autorisation sur cet appareil.',
+          LoginFailure.deviceRejected =>
+            'Cet appareil a été refusé par l’administrateur.',
+          LoginFailure.outsideSchedule =>
+            'La plage horaire autorisée pour ce compte est terminée.',
+          LoginFailure.serverSetupRequired => 'Le serveur doit être initialisé : appliquez la migration Supabase de contrôle des appareils.',
+          LoginFailure.serviceUnavailable => 'Connexion impossible au serveur. Vérifiez Internet et la configuration Supabase.',
         },
       );
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () =>
+              error = 'Connexion impossible. Vérifiez Internet puis réessayez.',
+        );
+      }
     } finally {
       if (mounted) setState(() => authenticating = false);
     }
   }
 
+  void _waitForAdministratorApproval() {
+    _approvalTimer?.cancel();
+    _approvalTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      try {
+        final result = await SupabaseAccounts.checkPendingDeviceLogin();
+        if (!mounted || !result.succeeded) {
+          if (mounted && result.failure == LoginFailure.deviceRejected) {
+            _approvalTimer?.cancel();
+            setState(() {
+              awaitingApproval = false;
+              error = 'Cet appareil a été refusé par l’administrateur.';
+            });
+          }
+          if (mounted && result.failure == LoginFailure.outsideSchedule) {
+            _approvalTimer?.cancel();
+            setState(() {
+              awaitingApproval = false;
+              error = 'La plage horaire autorisée pour ce compte est terminée.';
+            });
+          }
+          return;
+        }
+        _approvalTimer?.cancel();
+        if (mounted) await widget.onApprovedDeviceLogin(result);
+      } catch (_) {
+        // Network interruptions keep the pending request intact. Poll again.
+      }
+    });
+  }
+
   @override
-  Widget build(BuildContext context) => Scaffold(
-    backgroundColor: AppPalette.background,
-    body: SafeArea(
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 460),
-          child: Stack(
-            children: [
-              Container(
-                height: 270,
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xFF2A2A2A), Color(0xFF121212)],
-                  ),
-                  borderRadius: BorderRadius.vertical(
-                    bottom: Radius.circular(42),
-                  ),
+  void dispose() {
+    _approvalTimer?.cancel();
+    email.dispose();
+    password.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final signIn = Glass(
+      radius: 32,
+      accent: AppPalette.primary,
+      frosted: true,
+      padding: const EdgeInsets.fromLTRB(22, 24, 22, 22),
+      child: AutofillGroup(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Row(
+              children: [
+                _AtelierIcon(
+                  Icons.shield_outlined,
+                  color: AppPalette.primary,
+                  size: 46,
                 ),
-                child: Stack(
-                  children: [
-                    Positioned(
-                      top: 22,
-                      right: 24,
-                      child: Image.asset(
-                        'assets/app_logo.png',
-                        width: 76,
-                        height: 76,
-                      ),
-                    ),
-                    Positioned(
-                      top: -90,
-                      right: -70,
-                      child: Container(
-                        width: 280,
-                        height: 280,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: .045),
-                          shape: BoxShape.circle,
+                SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Connexion sécurisée',
+                        style: TextStyle(
+                          fontSize: 24,
+                          letterSpacing: -.55,
+                          fontWeight: FontWeight.w800,
                         ),
                       ),
-                    ),
-                    Positioned(
-                      top: 48,
-                      left: 24,
-                      right: 24,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const SizedBox(height: 58),
-                          const Text(
-                            'Bienvenue dans FORAGE ZOUHOUR',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 25,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                          const SizedBox(height: 7),
-                          const Text(
-                            'Connectez-vous pour gérer votre atelier.',
-                            style: TextStyle(
-                              color: AppPalette.muted,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ],
+                      SizedBox(height: 3),
+                      Text(
+                        'Accédez à votre espace atelier',
+                        style: TextStyle(
+                          color: AppPalette.muted,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 22),
+            Text(
+              'Identifiants de connexion',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: AppPalette.primaryDark,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: email,
+              enabled: !authenticating && !awaitingApproval,
+              textInputAction: TextInputAction.next,
+              keyboardType: TextInputType.emailAddress,
+              autofillHints: const [AutofillHints.username],
+              decoration: const InputDecoration(
+                labelText: 'Adresse e-mail',
+                prefixIcon: Icon(Icons.email_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Glass(
+              accent: AppPalette.primary,
+              child: SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                    value: false,
+                    icon: Icon(Icons.lock_outline_rounded),
+                    label: Text('Mot de passe'),
+                  ),
+                  ButtonSegment(
+                    value: true,
+                    icon: Icon(Icons.gesture_rounded),
+                    label: Text('Schéma'),
+                  ),
+                ],
+                selected: {usesPattern},
+                onSelectionChanged: authenticating || awaitingApproval
+                    ? null
+                    : (value) => setState(() => usesPattern = value.first),
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (usesPattern)
+              PatternPad(
+                pattern: pattern,
+                onChanged: authenticating || awaitingApproval
+                    ? null
+                    : (value) => setState(() {
+                        pattern
+                          ..clear()
+                          ..addAll(value);
+                      }),
+              )
+            else
+              TextField(
+                controller: password,
+                enabled: !authenticating && !awaitingApproval,
+                obscureText: true,
+                autofillHints: const [AutofillHints.password],
+                onSubmitted: authenticating ? null : (_) => login(),
+                decoration: const InputDecoration(
+                  labelText: 'Mot de passe',
+                  prefixIcon: Icon(Icons.lock_outline_rounded),
                 ),
               ),
-              SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 218, 20, 28),
+            if (error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
                 child: Container(
-                  padding: const EdgeInsets.fromLTRB(22, 28, 22, 26),
-                  decoration: const BoxDecoration(
-                    color: AppPalette.surface,
-                    borderRadius: BorderRadius.all(Radius.circular(32)),
-                    border: Border.fromBorderSide(BorderSide(color: AppPalette.line)),
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: awaitingApproval
+                        ? AppPalette.primary.withValues(alpha: .13)
+                        : AppPalette.coral.withValues(alpha: .13),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: awaitingApproval
+                          ? AppPalette.primary.withValues(alpha: .42)
+                          : AppPalette.coral.withValues(alpha: .42),
+                    ),
                   ),
-                  child: Column(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Align(
-                        alignment: Alignment.centerLeft,
+                      Icon(
+                        awaitingApproval
+                            ? Icons.hourglass_top_rounded
+                            : Icons.error_outline_rounded,
+                        color: awaitingApproval
+                            ? AppPalette.primary
+                            : AppPalette.coral,
+                      ),
+                      const SizedBox(width: 9),
+                      Expanded(
                         child: Text(
-                          'Connexion',
+                          error!,
                           style: TextStyle(
-                            fontSize: 23,
-                            fontWeight: FontWeight.w900,
-                            color: AppPalette.text,
+                            color: awaitingApproval
+                                ? AppPalette.text
+                                : AppPalette.coral,
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 6),
-                      const Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'Entrez vos identifiants pour continuer.',
-                          style: TextStyle(color: AppPalette.muted),
-                        ),
-                      ),
-                      const SizedBox(height: 28),
-                      TextField(
-                        controller: username,
-                        enabled: !authenticating,
-                        textInputAction: TextInputAction.next,
-                        decoration: const InputDecoration(
-                          hintText: 'Nom d’utilisateur',
-                          prefixIcon: Icon(Icons.person_outline_rounded),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: password,
-                        enabled: !authenticating,
-                        obscureText: true,
-                        onSubmitted: authenticating ? null : (_) => login(),
-                        decoration: const InputDecoration(
-                          hintText: 'Mot de passe',
-                          prefixIcon: Icon(Icons.lock_outline_rounded),
-                        ),
-                      ),
-                      if (error != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 10),
-                          child: Text(
-                            error!,
-                            style: const TextStyle(color: Color(0xFFB42318)),
-                          ),
-                        ),
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 4),
-                        child: Text(
-                          'Contactez un administrateur pour toute récupération d’accès.',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppPalette.muted,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        // toll 1500*930*5
-                      ),
-                      const SizedBox(height: 14),
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton(
-                          onPressed: authenticating ? null : login,
-                          style: FilledButton.styleFrom(
-                            minimumSize: const Size.fromHeight(54),
-                            shape: const StadiumBorder(),
-                          ),
-                          child: authenticating
-                              ? const SizedBox(
-                                  height: 22,
-                                  width: 22,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2.5,
-                                    color: Color(0xFF151515),
-                                  ),
-                                )
-                              : const Text('Connexion'),
-                        ),
-                      ),
-                      const SizedBox(height: 22),
-                      const Text(
-                        'FORAGE ZOUHOUR · Gestion d’atelier',
-                        style: TextStyle(color: AppPalette.muted, fontSize: 12),
                       ),
                     ],
                   ),
                 ),
               ),
-            ],
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 4),
+              child: Text(
+                'Contactez un administrateur pour toute récupération d’accès.',
+                style: TextStyle(fontSize: 12, color: AppPalette.muted),
+                textAlign: TextAlign.center,
+              ),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: authenticating || awaitingApproval ? null : login,
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(54),
+                ),
+                child: authenticating
+                    ? const SizedBox(
+                        height: 22,
+                        width: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: AppPalette.primary,
+                        ),
+                      )
+                    : Text(
+                        awaitingApproval
+                            ? 'En attente d’autorisation'
+                            : 'Connexion',
+                      ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    return Scaffold(
+      body: Aura(
+        child: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= 780;
+              return SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 20,
+                ),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: wide ? 960 : 454,
+                      minHeight: max(0.0, constraints.maxHeight - 40),
+                    ),
+                    child: Align(
+                      alignment: Alignment.center,
+                      child: wide
+                          ? Row(
+                              children: [
+                                const Expanded(
+                                  child: _LoginIdentity(wide: true),
+                                ),
+                                const SizedBox(width: 20),
+                                Expanded(child: signIn),
+                              ],
+                            )
+                          : Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                const _LoginIdentity(wide: false),
+                                const SizedBox(height: 16),
+                                signIn,
+                              ],
+                            ),
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class ForageHome extends StatefulWidget {
@@ -3687,7 +5012,7 @@ class ForageHome extends StatefulWidget {
   final AppUser user;
   final List<AppUser> users;
   final AppDatabase database;
-  final Future<void> Function(AppUser) onUserAdded;
+  final Future<AppUser> Function(AppUser) onUserAdded;
   final Future<void> Function(AppUser) onUserUpdated;
   final VoidCallback onLogout;
   @override
@@ -3699,6 +5024,7 @@ class _ForageHomeState extends State<ForageHome> {
   var products = <Product>[];
   var depots = <Depot>[];
   var categories = <ProductCategory>[];
+  var catalogFamilies = <CatalogFamily>[];
   var machines = <FactoryMachine>[];
   var operations = <Operation>[];
   var stockAdditions = <StockAddition>[];
@@ -3713,22 +5039,109 @@ class _ForageHomeState extends State<ForageHome> {
   var meterRate = 7.0;
   var received = <String, int>{};
   var loading = true;
+  String? loadError;
   var _automaticBackupChecked = false;
+  Timer? _cloudSyncTimer;
+  Timer? _deviceRequestTimer;
+  var _cloudSyncInProgress = false;
+  bool _syncDeniedShown = false;
+  final _announcedDeviceRequests = <String>{};
 
   @override
   void initState() {
     super.initState();
-    loadWorkshop();
+    _startWorkshop();
+  }
+
+  Future<void> _startWorkshop() async {
+    await _synchronizeWorkshop(preferRemote: true);
+    if (!mounted) return;
+    _cloudSyncTimer = Timer.periodic(
+      const Duration(seconds: 8),
+      (_) => _synchronizeWorkshop(),
+    );
+    if (widget.user.isAdmin) {
+      await _pollDeviceRequests();
+      _deviceRequestTimer = Timer.periodic(
+        const Duration(seconds: 10),
+        (_) => _pollDeviceRequests(),
+      );
+    }
+  }
+
+  Future<void> _pollDeviceRequests() async {
+    try {
+      final requests = await SupabaseAccounts.pendingDeviceRequests();
+      for (final request in requests) {
+        if (!_announcedDeviceRequests.add(request.id)) continue;
+        await AppNotifications.show(
+          title: 'Nouvelle demande d’appareil',
+          body:
+              '${appUser(request.userId)?.fullName ?? 'Un utilisateur'} souhaite se connecter depuis ${request.deviceLabel}.',
+        );
+      }
+    } catch (_) {
+      // A temporary network failure is retried on the next polling pass.
+    }
+  }
+
+  Future<void> _synchronizeWorkshop({bool preferRemote = false}) async {
+    if (_cloudSyncInProgress) return;
+    _cloudSyncInProgress = true;
+    try {
+      if (widget.database.cloudSync != null) {
+        final current = await SupabaseAccounts.currentUser();
+        if (current == null ||
+            !current.canLogIn ||
+            current.effectiveRole != widget.user.effectiveRole ||
+            !setEquals(current.allowedPages, widget.user.allowedPages) ||
+            !setEquals(current.writablePages, widget.user.writablePages)) {
+          widget.onLogout();
+          return;
+        }
+      }
+      await widget.database
+          .synchronizeWithCloud(preferRemote: preferRemote)
+          .timeout(const Duration(seconds: 10));
+      _syncDeniedShown = false;
+    } on PostgrestException catch (error) {
+      if (mounted && !_syncDeniedShown) {
+        _syncDeniedShown = true;
+        message(
+          context,
+          'Le serveur a refusé la synchronisation. Vos modifications ne sont pas enregistrées sur le serveur. Contactez l’administrateur.',
+        );
+      }
+      if (error.code == '42501' && mounted) {
+        widget.onLogout();
+        return;
+      }
+    } catch (_) {
+      // The local database remains usable while a device is offline. The
+      // periodic retry will upload the pending changes after reconnection.
+    } finally {
+      _cloudSyncInProgress = false;
+    }
+    if (mounted) await loadWorkshop();
+  }
+
+  @override
+  void dispose() {
+    _cloudSyncTimer?.cancel();
+    _deviceRequestTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> loadWorkshop() async {
-    final data = await widget.database.loadWorkshop();
-    final savedMeterRate = await widget.database.meterRate();
-    if (mounted) {
+    try {
+      final data = await widget.database.loadWorkshop();
+      final savedMeterRate = await widget.database.meterRate();
+      if (!mounted) return;
       setState(() {
         products = data.products;
         depots = data.depots;
         categories = data.categories;
+        catalogFamilies = data.catalogFamilies;
         machines = data.machines;
         operations = data.operations;
         stockAdditions = data.stockAdditions;
@@ -3742,6 +5155,7 @@ class _ForageHomeState extends State<ForageHome> {
         payments = data.payments;
         meterRate = savedMeterRate > 0 ? savedMeterRate : 7;
         received = data.received;
+        loadError = null;
         loading = false;
       });
       if (widget.user.isAdmin && !_automaticBackupChecked) {
@@ -3750,6 +5164,14 @@ class _ForageHomeState extends State<ForageHome> {
           (_) => _checkAutomaticBackup(),
         );
       }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        loadError = _showStartupDiagnostics
+            ? 'Impossible de charger les données de l’atelier.\n\n$error'
+            : 'Impossible de charger les données de l’atelier.';
+        loading = false;
+      });
     }
   }
 
@@ -3767,8 +5189,6 @@ class _ForageHomeState extends State<ForageHome> {
         fileName: 'forage-zouhour-backup-$stamp.json',
         bytes: await widget.database.createBackup(passphrase),
         mimeType: 'application/json',
-        type: FileType.custom,
-        allowedExtensions: const ['json'],
       );
       if (savedFile == null) return false;
       await widget.database.recordSuccessfulBackup(now);
@@ -4132,35 +5552,35 @@ class _ForageHomeState extends State<ForageHome> {
       context,
       MaterialPageRoute(
         builder: (_) =>
-            ProductForm(kind: kind, depots: depots, categories: categories),
+            ProductForm(
+              kind: kind,
+              depots: depots,
+              categories: categories,
+              catalogFamilies: catalogFamilies,
+            ),
       ),
     );
     if (!mounted || item == null) return;
-    await widget.database.insertProduct(item.product);
-      if (item.categoryId != null) {
-        final categoryIndex = categories.indexWhere(
-          (category) => category.id == item.categoryId,
-        );
-        if (categoryIndex >= 0) {
-          final category = categories[categoryIndex];
-          final updated = ProductCategory(
-            id: category.id,
-            name: category.name,
-            productIds: [...category.productIds, item.product.id],
-            image: category.image,
-          );
-          await widget.database.updateCategory(updated);
-          if (mounted) setState(() => categories[categoryIndex] = updated);
-        }
+    final updatedCategory = await widget.database.insertCatalogProduct(
+      item.product,
+      item.categoryId,
+      item.familyId,
+    );
+    if (!mounted) return;
+    setState(() {
+      final index = categories.indexWhere((value) => value.id == item.categoryId);
+      if (index >= 0 && updatedCategory != null) {
+        categories[index] = updatedCategory;
       }
-      if (mounted) setState(() => products.add(item.product));
-      if (item.product.initialStock > 0) {
-        await AppNotifications.show(
-          title: 'Stock initial ajouté',
-          body:
-              '${productQuantityLabel(item.product, item.product.initialStock)} de ${item.product.displayReference} ont été ajoutés.',
-        );
-      }
+      products.add(item.product);
+    });
+    if (item.product.initialStock > 0) {
+      await AppNotifications.show(
+        title: 'Stock initial ajouté',
+        body:
+            '${productQuantityLabel(item.product, item.product.initialStock)} de ${item.product.displayReference} ont été ajoutés.',
+      );
+    }
   }
 
   Future<void> addStock({String? initialProductId}) async {
@@ -4172,45 +5592,48 @@ class _ForageHomeState extends State<ForageHome> {
       MaterialPageRoute(
         builder: (_) => StockForm(
           products: products.where((p) => !p.manufactured).toList(),
+          categories: categories,
+          catalogFamilies: catalogFamilies,
           stock: stock,
           depots: depots,
           suppliers: suppliers,
           onAddSupplier: addSupplier,
+          // Purchase documents are selected from the device gallery for every
+          // user; they are not evidence that must be taken live.
+          allowGallery: true,
           initialProductId: initialProductId,
         ),
       ),
     );
     if (!mounted || item == null) return;
     final payment = await Navigator.push<PaymentEntryResult>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PaymentForm(competitors: competitors),
-        ),
-      );
+      context,
+      MaterialPageRoute(builder: (_) => PaymentForm(competitors: competitors)),
+    );
     if (payment == null) return;
     for (final competitor in payment.newCompetitors) {
       await widget.database.insertCompetitor(competitor);
     }
     final draft = await widget.database.addStock(
-        StockAddition(
-          productId: item.productId,
-          depotId: item.depotId,
-          pieces: item.pieces,
-          receiptNumber: item.receiptNumber,
-          supplierId: item.supplierId,
-          returnOfPurchaseId: item.returnOfPurchaseId,
-          quantity: item.quantity,
-          unit: item.unit,
-          images: item.images,
-          addedAt: item.addedAt,
-          draft: item.draft,
-          transportCharge: item.transportCharge,
-          payments: payment.allocations,
-        ),
+      StockAddition(
+        productId: item.productId,
+        depotId: item.depotId,
+        pieces: item.pieces,
+        receiptNumber: item.receiptNumber,
+        supplierId: item.supplierId,
+        returnOfPurchaseId: item.returnOfPurchaseId,
+        quantity: item.quantity,
+        unit: item.unit,
+        images: item.images,
+        addedAt: item.addedAt,
+        draft: item.draft,
+        transportCharge: item.transportCharge,
+        payments: payment.allocations,
+      ),
     );
     await widget.database.insertTransactionPayments(
-        stockAdditionId: draft.id,
-        allocations: payment.allocations,
+      stockAdditionId: draft.id,
+      allocations: payment.allocations,
     );
     final refreshedPayments = await widget.database.loadTransactionPayments();
     if (mounted) {
@@ -4219,7 +5642,8 @@ class _ForageHomeState extends State<ForageHome> {
         stockAdditions = [draft, ...stockAdditions];
         transactionPayments = refreshedPayments;
       });
-      final productName = product(draft.productId)?.displayReference ?? 'Produit';
+      final productName =
+          product(draft.productId)?.displayReference ?? 'Produit';
       message(
         context,
         'Achat enregistré comme brouillon : validation requise.',
@@ -4274,10 +5698,13 @@ class _ForageHomeState extends State<ForageHome> {
       MaterialPageRoute(
         builder: (_) => SaleForm(
           products: products,
+          categories: categories,
+          catalogFamilies: catalogFamilies,
           depots: depots,
           clients: clients,
           available: depotStock,
           onAddClient: addClient,
+          allowGallery: widget.user.isAdmin,
         ),
       ),
     );
@@ -4413,6 +5840,8 @@ class _ForageHomeState extends State<ForageHome> {
           products: products,
           additions: stockAdditions,
           sales: sales,
+          transfers: stockTransfers,
+          depots: depots,
           saleReturns: saleReturns,
           suppliers: suppliers,
           clients: clients,
@@ -4444,13 +5873,53 @@ class _ForageHomeState extends State<ForageHome> {
     );
   }
 
+  Future<void> openExcelExport() async {
+    if (!widget.user.isAdmin && !widget.user.canExport) {
+      return forbidden('Vous n’avez pas le droit d’exporter les données.');
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (_) => ExcelExportDialog(
+        products: products,
+        categories: categories,
+        catalogFamilies: catalogFamilies,
+        depots: depots,
+        stockAdditions: stockAdditions,
+        sales: sales,
+        operations: operations,
+        transfers: stockTransfers,
+        returns: saleReturns,
+        machines: machines,
+        suppliers: suppliers,
+        clients: clients,
+        productName: (id) => product(id)?.displayReference ?? id,
+        depotName: (id) => depot(id)?.name ?? id,
+        clientName: (id) => client(id)?.name ?? id,
+        supplierName: (id) => supplier(id)?.name ?? id,
+      ),
+    );
+  }
+
+  Future<void> openDeviceRequests() async {
+    if (!widget.user.isAdmin) return;
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) =>
+            DeviceRequestsPage(userName: (id) => appUser(id)?.fullName ?? id),
+      ),
+    );
+  }
+
   Future<void> addDepot() async {
     if (!widget.user.canWritePage(AppPage.stock)) {
       return forbidden('Vous n’avez pas le droit de modifier les dépôts.');
     }
     final item = await Navigator.push<Depot>(
       context,
-      MaterialPageRoute(builder: (_) => const DepotForm()),
+      MaterialPageRoute(
+        builder: (_) => DepotForm(allowGallery: widget.user.isAdmin),
+      ),
     );
     if (item != null) {
       await widget.database.insertDepot(item);
@@ -4467,6 +5936,8 @@ class _ForageHomeState extends State<ForageHome> {
       MaterialPageRoute(
         builder: (_) => StockTransferForm(
           products: products,
+          categories: categories,
+          catalogFamilies: catalogFamilies,
           depots: depots,
           available: depotStock,
         ),
@@ -4497,6 +5968,8 @@ class _ForageHomeState extends State<ForageHome> {
           onUserAdded: widget.onUserAdded,
           canManageUsers: widget.user.isAdmin,
           canCreateTemporary: widget.user.isAdmin,
+          // A machine record needs a live, current photo of every unit.
+          allowGallery: false,
           depots: depots,
           available: depotStock,
         ),
@@ -4572,7 +6045,7 @@ class _ForageHomeState extends State<ForageHome> {
     }
   }
 
-  Future<void> addCategory() async {
+  Future<void> addCategory(String familyId) async {
     if (!widget.user.canWritePage(AppPage.products)) {
       return forbidden('Vous n’avez pas le droit de modifier les produits.');
     }
@@ -4581,8 +6054,8 @@ class _ForageHomeState extends State<ForageHome> {
       MaterialPageRoute(builder: (_) => const CategoryForm()),
     );
     if (item != null) {
-      await widget.database.insertCategory(item);
-      if (mounted) setState(() => categories.add(item));
+      await widget.database.insertCategoryInFamily(item, familyId);
+      if (mounted) await loadWorkshop();
     }
   }
 
@@ -4592,11 +6065,28 @@ class _ForageHomeState extends State<ForageHome> {
     }
     final item = await Navigator.push<ProductCategory>(
       context,
-      MaterialPageRoute(builder: (_) => CategoryForm(initial: value)),
+      MaterialPageRoute(
+        builder: (_) => CategoryForm(initial: value),
+      ),
     );
     if (item != null) {
       await widget.database.updateCategory(item);
-      if (mounted) setState(() => categories[categories.indexOf(value)] = item);
+      if (mounted) {
+        final index = categories.indexWhere((category) => category.id == item.id);
+        if (index >= 0) setState(() => categories[index] = item);
+      }
+    }
+  }
+
+  Future<void> saveCatalogFamily(CatalogFamily family) async {
+    if (!widget.user.canWritePage(AppPage.products)) {
+      return forbidden('Vous n’avez pas le droit de modifier les produits.');
+    }
+    try {
+      await widget.database.saveCatalogFamily(family);
+      if (mounted) await loadWorkshop();
+    } on StateError catch (error) {
+      if (mounted) message(context, error.message.toString());
     }
   }
 
@@ -5137,6 +6627,41 @@ class _ForageHomeState extends State<ForageHome> {
     if (loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    if (loadError != null) {
+      return _StartupFailure(
+        message: loadError!,
+        onRetry: () {
+          setState(() {
+            loading = true;
+            loadError = null;
+          });
+          _synchronizeWorkshop();
+        },
+        onRestoreLocalCache: () async {
+          setState(() {
+            loading = true;
+            loadError = null;
+          });
+          try {
+            await widget.database.resetApplication();
+            final restored = await widget.database
+                .restoreLocalMirrorFromCloud();
+            if (!restored) {
+              throw StateError('Aucune copie distante disponible.');
+            }
+            await loadWorkshop();
+          } catch (_) {
+            if (mounted) {
+              setState(() {
+                loadError =
+                    'Impossible de restaurer les données depuis le serveur.';
+                loading = false;
+              });
+            }
+          }
+        },
+      );
+    }
     final visibleOperations = widget.user.isAdmin
         ? operations
         : operations
@@ -5157,7 +6682,10 @@ class _ForageHomeState extends State<ForageHome> {
                   onOpenTeam: () {},
                   onOpenBackups: () {},
                   onOpenAnalytics: () => _openAnalytics(context),
+                  onOpenActivity: () => _openReviews(context),
                   canAccessAnalytics: widget.user.canAccess(AppPage.analytics),
+                  canExport: widget.user.isAdmin || widget.user.canExport,
+                  onOpenExport: openExcelExport,
                 ),
                 Expanded(
                   child: MachinesPage(
@@ -5201,6 +6729,8 @@ class _ForageHomeState extends State<ForageHome> {
                   onOpenBackups: () {},
                   onOpenAnalytics: () => _openAnalytics(context),
                   canAccessAnalytics: widget.user.canAccess(AppPage.analytics),
+                  canExport: widget.user.isAdmin || widget.user.canExport,
+                  onOpenExport: openExcelExport,
                 ),
                 Expanded(
                   child: ValidationPage(
@@ -5263,6 +6793,7 @@ class _ForageHomeState extends State<ForageHome> {
       ProductsPage(
         products: products,
         categories: categories,
+        catalogFamilies: catalogFamilies,
         stock: stock,
         depots: depots,
         depotStock: depotStock,
@@ -5273,6 +6804,8 @@ class _ForageHomeState extends State<ForageHome> {
       ),
       StockPage(
         products: products,
+        categories: categories,
+        catalogFamilies: catalogFamilies,
         stock: stock,
         draftCount:
             stockAdditions.where((item) => item.draft).length +
@@ -5311,6 +6844,7 @@ class _ForageHomeState extends State<ForageHome> {
         onUpdate: widget.onUserUpdated,
         onLoadSessions: widget.database.loadUserSessions,
         onOpenPayroll: () => _openPayroll(context),
+        onOpenDeviceRequests: openDeviceRequests,
       ),
       ValidationPage(
         products: products,
@@ -5358,35 +6892,59 @@ class _ForageHomeState extends State<ForageHome> {
       'Équipe',
       'Validations',
     ];
+    final currentPage = widget.user.canAccess(pageKeys[section])
+        ? pages[section]
+        : _PageAccessDenied(page: pageKeys[section]);
+    final isWindows = _usesWorkspaceRail(context);
     return Scaffold(
-      extendBody: true,
+      extendBody: !isWindows,
       body: Aura(
         child: SafeArea(
-          child: Column(
-            children: [
-              AppHeader(
-                title: titles[section],
-                user: widget.user,
-                onLogout: widget.onLogout,
-                onOpenTeam: () => setState(() => section = 4),
-                onOpenBackups: () => _openBackups(context),
-                onOpenAnalytics: () => _openAnalytics(context),
-                canAccessAnalytics: widget.user.canAccess(AppPage.analytics),
-                onOpenDeveloper: () => _openDeveloper(context),
-              ),
-              Expanded(
-                child: widget.user.canAccess(pageKeys[section])
-                    ? pages[section]
-                    : _PageAccessDenied(page: pageKeys[section]),
-              ),
-            ],
-          ),
+          child: isWindows
+              ? WindowsWorkspaceShell(
+                  title: titles[section],
+                  user: widget.user,
+                  section: section,
+                  onSectionChanged: (value) => setState(() => section = value),
+                  onLogout: widget.onLogout,
+                  onOpenTeam: () => setState(() => section = 4),
+                  onOpenBackups: () => _openBackups(context),
+                  onOpenAnalytics: () => _openAnalytics(context),
+                  canAccessAnalytics: widget.user.canAccess(AppPage.analytics),
+                  canExport: widget.user.isAdmin || widget.user.canExport,
+                  onOpenExport: openExcelExport,
+                  onOpenDeveloper: () => _openDeveloper(context),
+                  child: currentPage,
+                )
+              : Column(
+                  children: [
+                    AppHeader(
+                      title: titles[section],
+                      user: widget.user,
+                      onLogout: widget.onLogout,
+                      onOpenTeam: () => setState(() => section = 4),
+                      onOpenBackups: () => _openBackups(context),
+                      onOpenAnalytics: () => _openAnalytics(context),
+                      onOpenActivity: () => _openReviews(context),
+                      canAccessAnalytics: widget.user.canAccess(
+                        AppPage.analytics,
+                      ),
+                      canExport: widget.user.isAdmin || widget.user.canExport,
+                      onOpenExport: openExcelExport,
+                      onOpenDeveloper: () => _openDeveloper(context),
+                    ),
+                    Expanded(child: currentPage),
+                  ],
+                ),
         ),
       ),
-      bottomNavigationBar: MobileGlassNavigation(
-        index: section,
-        onTap: (value) => setState(() => section = value),
-      ),
+      bottomNavigationBar: isWindows
+          ? null
+          : MobileGlassNavigation(
+              index: section,
+              onTap: (value) => setState(() => section = value),
+              showTeam: widget.user.isAdmin,
+            ),
     );
   }
 
@@ -5394,13 +6952,14 @@ class _ForageHomeState extends State<ForageHome> {
     context,
     MaterialPageRoute(
       builder: (_) => ManagementScreen(
-        title: 'Catégories',
-        child: CategoriesPage(
-          categories: categories,
-          products: products,
-          admin: widget.user.isAdmin,
-          onAdd: addCategory,
-          onEdit: editCategory,
+        title: 'Familles',
+        child: CatalogFamiliesPage(
+          loadCategories: () => categories,
+          loadFamilies: () => catalogFamilies,
+          admin: widget.user.canWritePage(AppPage.products),
+          onSaveFamily: saveCatalogFamily,
+          onAddCategory: addCategory,
+          onEditCategory: editCategory,
         ),
       ),
     ),
@@ -5414,6 +6973,8 @@ class _ForageHomeState extends State<ForageHome> {
         child: DepotsPage(
           depots: depots,
           products: products,
+          categories: categories,
+          catalogFamilies: catalogFamilies,
           stock: depotStock,
           canEdit: widget.user.canWritePage(AppPage.stock),
           canTransfer: widget.user.isAdmin,
@@ -5516,112 +7077,15 @@ class _ForageHomeState extends State<ForageHome> {
 class Aura extends StatelessWidget {
   const Aura({super.key, required this.child});
   final Widget child;
+
   @override
   Widget build(BuildContext context) => Stack(
     fit: StackFit.expand,
     children: [
-      const RepaintBoundary(child: NoirBackground()),
+      const RepaintBoundary(child: _LiquidWallpaper()),
       child,
     ],
   );
-}
-
-/// A subtle animated perspective grid and orbit system.  It creates depth
-/// without drop shadows, images, or expensive blur filters.
-class NoirBackground extends StatefulWidget {
-  const NoirBackground({super.key});
-
-  @override
-  State<NoirBackground> createState() => _NoirBackgroundState();
-}
-
-class _NoirBackgroundState extends State<NoirBackground>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 18),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _controller,
-    builder: (_, _) => CustomPaint(
-      painter: _NoirBackgroundPainter(_controller.value),
-      child: const SizedBox.expand(),
-    ),
-  );
-}
-
-class _NoirBackgroundPainter extends CustomPainter {
-  const _NoirBackgroundPainter(this.progress);
-  final double progress;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()..color = AppPalette.background,
-    );
-
-    final horizon = size.height * .32;
-    final grid = Paint()
-      ..color = AppPalette.line.withValues(alpha: .48)
-      ..strokeWidth = 1;
-    final center = Offset(size.width * .72, horizon);
-    for (var i = -7; i <= 7; i++) {
-      final end = Offset(center.dx + i * size.width * .22, size.height);
-      canvas.drawLine(center, end, grid);
-    }
-    for (var row = 0; row < 9; row++) {
-      final t = row / 9;
-      final eased = t * t;
-      final y = horizon + (size.height - horizon) * eased;
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
-    }
-
-    final angle = progress * pi * 2;
-    final orbitCenter = Offset(
-      size.width * .77 + sin(angle) * 18,
-      size.height * .20 + cos(angle * .8) * 10,
-    );
-    final ring = Paint()
-      ..color = AppPalette.primary.withValues(alpha: .24)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2;
-    canvas.save();
-    canvas.translate(orbitCenter.dx, orbitCenter.dy);
-    canvas.rotate(-.45 + sin(angle) * .08);
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset.zero, width: 360, height: 118),
-      ring,
-    );
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset.zero, width: 210, height: 70),
-      ring,
-    );
-    canvas.restore();
-
-    final point = Offset(
-      orbitCenter.dx + cos(angle) * 126,
-      orbitCenter.dy + sin(angle) * 40,
-    );
-    canvas.drawCircle(point, 5, Paint()..color = AppPalette.primary);
-    canvas.drawCircle(
-      Offset(size.width * .12 + sin(angle * .62) * 20, size.height * .79),
-      3,
-      Paint()..color = AppPalette.primary.withValues(alpha: .70),
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _NoirBackgroundPainter oldDelegate) =>
-      oldDelegate.progress != progress;
 }
 
 class _PageAccessDenied extends StatelessWidget {
@@ -5656,20 +7120,666 @@ class _PageAccessDenied extends StatelessWidget {
   );
 }
 
+enum ExportDataset {
+  products,
+  purchases,
+  sales,
+  operations,
+  transfers,
+  returns,
+  machines,
+  suppliers,
+  clients,
+}
+
+extension ExportDatasetLabel on ExportDataset {
+  String get label => switch (this) {
+    ExportDataset.products => 'Produits',
+    ExportDataset.purchases => 'Achats',
+    ExportDataset.sales => 'Ventes',
+    ExportDataset.operations => 'Opérations',
+    ExportDataset.transfers => 'Transferts',
+    ExportDataset.returns => 'Retours clients',
+    ExportDataset.machines => 'Machines',
+    ExportDataset.suppliers => 'Fournisseurs',
+    ExportDataset.clients => 'Clients',
+  };
+}
+
+class ExcelExportDialog extends StatefulWidget {
+  const ExcelExportDialog({
+    super.key,
+    required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
+    required this.depots,
+    required this.stockAdditions,
+    required this.sales,
+    required this.operations,
+    required this.transfers,
+    required this.returns,
+    required this.machines,
+    required this.suppliers,
+    required this.clients,
+    required this.productName,
+    required this.depotName,
+    required this.clientName,
+    required this.supplierName,
+    this.saveSheets = ExcelReports.save,
+  });
+
+  final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
+  final List<Depot> depots;
+  final List<StockAddition> stockAdditions;
+  final List<Sale> sales;
+  final List<Operation> operations;
+  final List<StockTransfer> transfers;
+  final List<SaleReturn> returns;
+  final List<FactoryMachine> machines;
+  final List<Supplier> suppliers;
+  final List<Client> clients;
+  final String Function(String id) productName;
+  final String Function(String id) depotName;
+  final String Function(String id) clientName;
+  final String Function(String id) supplierName;
+  final Future<void> Function(List<ExcelSheetData>) saveSheets;
+
+  @override
+  State<ExcelExportDialog> createState() => _ExcelExportDialogState();
+}
+
+class _ExcelExportDialogState extends State<ExcelExportDialog> {
+  final selected = <ExportDataset>{};
+  DateTimeRange? period;
+  final selections = <ExportDataset, Set<String>>{};
+  Set<String> productFamilyIds = const {};
+  var saving = false;
+  String? firstDepot;
+  String? secondDepot;
+
+  bool matches(ExportDataset dataset, String? id) {
+    final ids = selections[dataset];
+    return ids == null || ids.isEmpty || ids.contains(id);
+  }
+
+  Iterable<ProductCategory> categoriesFor(Product item) =>
+      widget.categories.where(
+        (category) => category.productIds.contains(_catalogMembershipId(item)),
+      );
+
+  List<_CatalogGroup> get productGroups => _catalogGroups(
+    widget.categories,
+    widget.catalogFamilies,
+    products: widget.products,
+  );
+
+  Iterable<_CatalogSection> productSections(List<_CatalogGroup> groups) =>
+      groups
+          .where(
+            (group) =>
+                productFamilyIds.isEmpty || productFamilyIds.contains(group.id),
+          )
+          .expand((group) => group.sections);
+
+  bool inRange(DateTime value) {
+    final range = period;
+    if (range == null) return true;
+    final exclusiveEnd = DateTime(
+      range.end.year,
+      range.end.month,
+      range.end.day + 1,
+    );
+    return !value.isBefore(range.start) && value.isBefore(exclusiveEnd);
+  }
+
+  Future<void> pickPeriod() async {
+    final range = await showDateRangePicker(
+      context: context,
+      initialDateRange: period,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (range != null && mounted) setState(() => period = range);
+  }
+
+  Widget dateFilter() {
+    final range = period;
+    final localizations = MaterialLocalizations.of(context);
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: saving ? null : pickPeriod,
+            icon: const Icon(Icons.date_range),
+            label: Text(
+              range == null
+                  ? 'Toutes les dates'
+                  : '${localizations.formatShortDate(range.start)} – ${localizations.formatShortDate(range.end)}',
+            ),
+          ),
+        ),
+        if (range != null)
+          IconButton(
+            tooltip: 'Effacer la période',
+            icon: const Icon(Icons.clear),
+            onPressed: saving ? null : () => setState(() => period = null),
+          ),
+      ],
+    );
+  }
+
+  Widget datasetFilters(ExportDataset dataset) {
+    final groups = dataset == ExportDataset.products
+        ? productGroups
+        : const <_CatalogGroup>[];
+    final suppliers = _choices(
+      widget.suppliers,
+      (item) => item.id,
+      (item) => _partnerLabel(item.name, item.company),
+    );
+    final clients = _choices(
+      widget.clients,
+      (item) => item.id,
+      (item) => _partnerLabel(item.name, item.company),
+    );
+    final (label, options) = switch (dataset) {
+      ExportDataset.products => (
+        'Catégories',
+        {
+          for (final section in productSections(groups))
+            section.category.id: section.category.name,
+        },
+      ),
+      ExportDataset.machines => (
+        'Catégories',
+        _choices(widget.categories, (item) => item.id, (item) => item.name),
+      ),
+      ExportDataset.purchases => (
+        'Fournisseurs',
+        {
+          ...suppliers,
+          for (final id
+              in widget.stockAdditions
+                  .map((item) => item.supplierId)
+                  .whereType<String>()
+                  .toSet())
+            if (id.isNotEmpty && !suppliers.containsKey(id))
+              id: widget.supplierName(id),
+        },
+      ),
+      ExportDataset.suppliers => ('Fournisseurs', suppliers),
+      ExportDataset.sales => (
+        'Clients',
+        {
+          ...clients,
+          for (final id in widget.sales.map((item) => item.clientId).toSet())
+            if (id.isNotEmpty && !clients.containsKey(id))
+              id: widget.clientName(id),
+        },
+      ),
+      ExportDataset.returns || ExportDataset.clients => ('Clients', clients),
+      ExportDataset.operations => (
+        'Machines',
+        _choices(widget.machines, (item) => item.id, (item) => item.name),
+      ),
+      ExportDataset.transfers => ('', const <String, String>{}),
+    };
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (groups.isNotEmpty) ...[
+            SearchChoiceField(
+              label: 'Familles',
+              options: _choices(
+                groups,
+                (group) => group.id,
+                (group) => group.name,
+              ),
+              selected: productFamilyIds,
+              multiple: true,
+              onChanged: (ids) => setState(() {
+                productFamilyIds = ids;
+                final available = productSections(groups)
+                    .map((section) => section.category.id)
+                    .toSet();
+                selections[dataset] = (selections[dataset] ?? const <String>{})
+                    .intersection(available);
+              }),
+            ),
+            if (options.isNotEmpty) const SizedBox(height: 8),
+          ],
+          if (options.isNotEmpty)
+            SearchChoiceField(
+              label: label,
+              options: options,
+              selected: selections[dataset] ?? const {},
+              multiple: true,
+              onChanged: (ids) => setState(() => selections[dataset] = ids),
+            )
+          else if (dataset == ExportDataset.purchases ||
+              dataset == ExportDataset.sales)
+            InputDecorator(
+              decoration: InputDecoration(labelText: label, enabled: false),
+              child: Text(
+                dataset == ExportDataset.purchases
+                    ? 'Aucun fournisseur disponible'
+                    : 'Aucun client disponible',
+              ),
+            ),
+          if (dataset == ExportDataset.transfers)
+            _TransferDepotFields(
+              depots: widget.depots,
+              first: firstDepot,
+              second: secondDepot,
+              onChanged: (first, second) => setState(() {
+                firstDepot = first;
+                secondDepot = second;
+              }),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> export() async {
+    if (selected.isEmpty || saving) return;
+    setState(() => saving = true);
+    try {
+      final sheets = <ExcelSheetData>[];
+      final clientBySale = {
+        for (final sale in widget.sales) sale.id: sale.clientId,
+      };
+      if (selected.contains(ExportDataset.products)) {
+        final filterProducts =
+            productFamilyIds.isNotEmpty ||
+            selections[ExportDataset.products]?.isNotEmpty == true;
+        final matchingIds = filterProducts
+            ? productSections(productGroups)
+                  .where(
+                    (section) =>
+                        matches(ExportDataset.products, section.category.id),
+                  )
+                  .expand((section) => section.productIds)
+                  .toSet()
+            : null;
+        sheets.add(
+          ExcelSheetData(
+            name: 'Produits',
+            headers: const [
+              'Référence',
+              'Produit',
+              'Catégorie',
+              'Type',
+              'Matière',
+              'Longueur (m)',
+              'Épaisseur (mm)',
+            ],
+            rows: widget.products
+                .where(
+                  (item) =>
+                      matchingIds == null ||
+                      matchingIds.contains(_catalogMembershipId(item)),
+                )
+                .map(
+                  (item) => [
+                    item.reference,
+                    item.name,
+                    categoriesFor(item)
+                        .map((category) => category.name)
+                        .join(', '),
+                    item.kind.label,
+                    item.material.label,
+                    item.lengthMeters,
+                    item.thickness,
+                  ],
+                )
+                .toList(),
+          ),
+        );
+      }
+      if (selected.contains(ExportDataset.purchases)) {
+        sheets.add(
+          ExcelSheetData(
+            name: 'Achats',
+            headers: const [
+              'Date',
+              'Produit',
+              'Dépôt',
+              'Quantité',
+              'Unité',
+              'Pièces',
+              'Bon',
+              'Fournisseur',
+              'Statut',
+            ],
+            rows: widget.stockAdditions
+                .where(
+                  (item) =>
+                      inRange(item.addedAt) &&
+                      matches(ExportDataset.purchases, item.supplierId),
+                )
+                .map(
+                  (item) => [
+                    item.addedAt,
+                    widget.productName(item.productId),
+                    widget.depotName(item.depotId),
+                    item.quantity,
+                    item.unit.shortLabel,
+                    item.pieces,
+                    item.receiptNumber,
+                    item.supplierId == null
+                        ? ''
+                        : widget.supplierName(item.supplierId!),
+                    item.draft ? 'Brouillon' : 'Validé',
+                  ],
+                )
+                .toList(),
+          ),
+        );
+      }
+      if (selected.contains(ExportDataset.sales)) {
+        sheets.add(
+          ExcelSheetData(
+            name: 'Ventes',
+            headers: const [
+              'Date',
+              'Produit',
+              'Dépôt',
+              'Client',
+              'Quantité',
+              'Unité',
+              'Pièces',
+              'Statut',
+            ],
+            rows: widget.sales
+                .where(
+                  (item) =>
+                      inRange(item.createdAt) &&
+                      matches(ExportDataset.sales, item.clientId),
+                )
+                .map(
+                  (item) => [
+                    item.createdAt,
+                    widget.productName(item.productId),
+                    widget.depotName(item.depotId),
+                    widget.clientName(item.clientId),
+                    item.quantity,
+                    item.unit.shortLabel,
+                    item.pieces,
+                    item.draft ? 'Brouillon' : 'Validé',
+                  ],
+                )
+                .toList(),
+          ),
+        );
+      }
+      if (selected.contains(ExportDataset.operations)) {
+        sheets.add(
+          ExcelSheetData(
+            name: 'Opérations',
+            headers: const [
+              'Début',
+              'Fin',
+              'Machine',
+              'Produit',
+              'Entrée',
+              'Sortie',
+              'Rebut',
+              'Statut',
+            ],
+            rows: widget.operations
+                .where(
+                  (item) =>
+                      inRange(item.startedAt) &&
+                      matches(ExportDataset.operations, item.machineId),
+                )
+                .map(
+                  (item) => [
+                    item.startedAt,
+                    item.finishedAt,
+                    item.machineId,
+                    widget.productName(item.productId),
+                    item.pieces,
+                    item.outputPieces,
+                    item.scrapPieces,
+                    item.active
+                        ? 'En cours'
+                        : (item.completionDraft ? 'Brouillon' : 'Terminée'),
+                  ],
+                )
+                .toList(),
+          ),
+        );
+      }
+      if (selected.contains(ExportDataset.transfers)) {
+        sheets.add(
+          ExcelSheetData(
+            name: 'Transferts',
+            headers: const [
+              'Date',
+              'Produit',
+              'Dépôt départ',
+              'Dépôt arrivée',
+              'Pièces',
+              'Statut',
+            ],
+            rows: widget.transfers
+                .where(
+                  (item) =>
+                      inRange(item.createdAt) &&
+                      transferMatchesDepots(item, firstDepot, secondDepot),
+                )
+                .map(
+                  (item) => [
+                    item.createdAt,
+                    widget.productName(item.productId),
+                    widget.depotName(item.sourceDepotId),
+                    widget.depotName(item.destinationDepotId),
+                    item.pieces,
+                    item.draft ? 'Brouillon' : 'Validé',
+                  ],
+                )
+                .toList(),
+          ),
+        );
+      }
+      if (selected.contains(ExportDataset.returns)) {
+        sheets.add(
+          ExcelSheetData(
+            name: 'Retours',
+            headers: const [
+              'Date',
+              'Vente',
+              'Produit',
+              'Dépôt',
+              'Pièces',
+              'Statut',
+            ],
+            rows: widget.returns
+                .where(
+                  (item) =>
+                      inRange(item.createdAt) &&
+                      matches(ExportDataset.returns, clientBySale[item.saleId]),
+                )
+                .map(
+                  (item) => [
+                    item.createdAt,
+                    item.saleId,
+                    widget.productName(item.productId),
+                    widget.depotName(item.depotId),
+                    item.pieces,
+                    item.status.label,
+                  ],
+                )
+                .toList(),
+          ),
+        );
+      }
+      if (selected.contains(ExportDataset.machines)) {
+        sheets.add(
+          ExcelSheetData(
+            name: 'Machines',
+            headers: const [
+              'Machine',
+              'Type',
+              'Unités',
+              'Produit de sortie',
+              'Temporaire',
+            ],
+            rows: widget.machines
+                .where(
+                  (item) => matches(ExportDataset.machines, item.categoryId),
+                )
+                .map(
+                  (item) => [
+                    item.name,
+                    item.type.name,
+                    item.units.length,
+                    widget.productName(item.outputId),
+                    item.temporary ? 'Oui' : 'Non',
+                  ],
+                )
+                .toList(),
+          ),
+        );
+      }
+      if (selected.contains(ExportDataset.suppliers)) {
+        sheets.add(
+          ExcelSheetData(
+            name: 'Fournisseurs',
+            headers: const ['Nom', 'Société', 'Contact'],
+            rows: widget.suppliers
+                .where((item) => matches(ExportDataset.suppliers, item.id))
+                .map((item) => [item.name, item.company, item.contact])
+                .toList(),
+          ),
+        );
+      }
+      if (selected.contains(ExportDataset.clients)) {
+        sheets.add(
+          ExcelSheetData(
+            name: 'Clients',
+            headers: const ['Nom', 'Société', 'Téléphone', 'ICE'],
+            rows: widget.clients
+                .where((item) => matches(ExportDataset.clients, item.id))
+                .map((item) => [item.name, item.company, item.phone, item.ice])
+                .toList(),
+          ),
+        );
+      }
+      await widget.saveSheets(sheets);
+      if (mounted) Navigator.pop(context);
+    } catch (_) {
+      if (mounted) message(context, 'Impossible de créer le fichier Excel.');
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Exporter vers Excel'),
+    content: SizedBox(
+      width: 520,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          dateFilter(),
+          const SizedBox(height: 8),
+          Flexible(
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final dataset in ExportDataset.values) ...[
+                    CheckboxListTile(
+                      value: selected.contains(dataset),
+                      title: Text(dataset.label),
+                      onChanged: saving
+                          ? null
+                          : (checked) => setState(() {
+                              if (checked == true) {
+                                selected.add(dataset);
+                              } else {
+                                selected.remove(dataset);
+                              }
+                            }),
+                    ),
+                    if (selected.contains(dataset)) datasetFilters(dataset),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: saving ? null : () => Navigator.pop(context),
+        child: const Text('Annuler'),
+      ),
+      FilledButton.icon(
+        onPressed: saving || selected.isEmpty ? null : export,
+        icon: const Icon(Icons.table_view_rounded),
+        label: Text(saving ? 'Création…' : 'Créer le fichier Excel'),
+      ),
+    ],
+  );
+}
+
 class Glass extends StatelessWidget {
-  const Glass({super.key, required this.child, this.padding});
+  const Glass({
+    super.key,
+    required this.child,
+    this.padding,
+    this.radius = 24,
+    this.accent = AppPalette.secondary,
+    this.frosted = false,
+    this.depth,
+    this.opacity,
+  });
+
   final Widget child;
   final EdgeInsets? padding;
+  final double radius;
+  final Color accent;
+  final bool frosted;
+  /// Allows floating UI such as the phone navigation to reveal the content
+  /// scrolling underneath it, without changing normal glass panels.
+  final double? depth;
+  final double? opacity;
+
   @override
-  Widget build(BuildContext context) => Container(
-    padding: padding,
-    decoration: BoxDecoration(
-      color: AppPalette.surface.withValues(alpha: .96),
-      borderRadius: BorderRadius.circular(24),
-      border: Border.all(color: AppPalette.line),
-    ),
-    child: child,
-  );
+  Widget build(BuildContext context) {
+    final rounded = BorderRadius.circular(radius);
+    final panel = _LiquidLayer(
+      radius: radius,
+      accent: accent,
+      depth: depth ?? (frosted ? 1.34 : .93),
+      opacity: opacity ?? (frosted ? .98 : .96),
+      child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
+    );
+    if (!frosted) return panel;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: rounded,
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x520B000F),
+            blurRadius: 22,
+            offset: Offset(0, 9),
+          ),
+        ],
+      ),
+      child: panel,
+    );
+  }
 }
 
 class AppHeader extends StatelessWidget {
@@ -5682,6 +7792,9 @@ class AppHeader extends StatelessWidget {
     required this.onOpenBackups,
     required this.onOpenAnalytics,
     required this.canAccessAnalytics,
+    required this.canExport,
+    required this.onOpenExport,
+    this.onOpenActivity,
     this.onOpenDeveloper,
   });
   final String title;
@@ -5691,101 +7804,122 @@ class AppHeader extends StatelessWidget {
   final VoidCallback onOpenBackups;
   final VoidCallback onOpenAnalytics;
   final bool canAccessAnalytics;
+  final bool canExport;
+  final VoidCallback onOpenExport;
+  final VoidCallback? onOpenActivity;
   final VoidCallback? onOpenDeveloper;
+
+  void _showProfile(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * .85,
+      ),
+      builder: (sheetContext) {
+        VoidCallback closeThen(VoidCallback action) => () {
+          Navigator.pop(sheetContext);
+          action();
+        };
+        return ProfileSheet(
+          user: user,
+          onOpenTeam: closeThen(onOpenTeam),
+          onOpenBackups: closeThen(onOpenBackups),
+          onOpenExport: onOpenActivity != null && canExport
+              ? closeThen(onOpenExport)
+              : null,
+          onOpenDeveloper:
+              onOpenActivity != null &&
+                  user.isDeveloper &&
+                  onOpenDeveloper != null
+              ? closeThen(onOpenDeveloper!)
+              : null,
+          onLogout: closeThen(onLogout),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(22, 16, 22, 20),
-    child: Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w900,
-                  color: AppPalette.text,
+    padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+    child: Glass(
+      radius: 28,
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    letterSpacing: -.6,
+                    fontWeight: FontWeight.w800,
+                    color: AppPalette.text,
+                  ),
+                ),
+                Text(
+                  user.effectiveRole.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppPalette.muted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 4),
+          if (canAccessAnalytics) ...[
+            _DashboardHeaderButton(
+              label: 'Analyses',
+              onTap: onOpenAnalytics,
+              child: const Icon(Icons.bar_chart_rounded, size: 21),
+            ),
+            const SizedBox(width: 7),
+          ],
+          if (onOpenActivity case final openActivity?) ...[
+            _DashboardHeaderButton(
+              label: 'Notifications et contrôles',
+              onTap: openActivity,
+              child: const Icon(Icons.notifications_none_rounded, size: 21),
+            ),
+            const SizedBox(width: 7),
+          ],
+          if (onOpenActivity == null &&
+              user.isDeveloper &&
+              onOpenDeveloper != null) ...[
+            Tooltip(
+              message: 'Mode développeur',
+              child: IconButton(
+                onPressed: onOpenDeveloper,
+                icon: const Icon(Icons.admin_panel_settings_rounded),
+                color: AppPalette.coral,
+                style: IconButton.styleFrom(
+                  side: const BorderSide(color: AppPalette.coral),
                 ),
               ),
-              Text(
-                user.effectiveRole.label,
-                style: const TextStyle(
-                  color: AppPalette.muted,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 8),
-        if (canAccessAnalytics) ...[
-          Tooltip(
-            message: 'Analyses',
-            child: IconButton(
-              onPressed: onOpenAnalytics,
-              icon: const Icon(Icons.query_stats_rounded),
-              color: AppPalette.primary,
-              style: IconButton.styleFrom(
-                backgroundColor: AppPalette.surface,
-                side: const BorderSide(color: AppPalette.line),
-              ),
+            ),
+            const SizedBox(width: 4),
+          ],
+          _DashboardHeaderButton(
+            label: 'Profil',
+            onTap: () => _showProfile(context),
+            child: Text(
+              user.fullName.characters.first.toUpperCase(),
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
           ),
-          const SizedBox(width: 8),
         ],
-        if (user.isDeveloper && onOpenDeveloper != null) ...[
-          Tooltip(
-            message: 'Mode développeur',
-            child: IconButton(
-              onPressed: onOpenDeveloper,
-              icon: const Icon(Icons.admin_panel_settings_rounded),
-              color: Colors.white,
-              style: IconButton.styleFrom(
-                backgroundColor: const Color(0xFFDC2626),
-                side: const BorderSide(color: Color(0xFFFCA5A5)),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-        ],
-        InkWell(
-          onTap: () => showModalBottomSheet<void>(
-            context: context,
-            backgroundColor: Colors.transparent,
-            builder: (_) => ProfileSheet(
-              user: user,
-              onOpenTeam: () {
-                Navigator.pop(context);
-                onOpenTeam();
-              },
-              onOpenBackups: () {
-                Navigator.pop(context);
-                onOpenBackups();
-              },
-              onLogout: () {
-                Navigator.pop(context);
-                onLogout();
-              },
-            ),
-          ),
-          borderRadius: BorderRadius.circular(28),
-          child: Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: AppPalette.surface,
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(color: AppPalette.line),
-            ),
-            child: CircleAvatar(
-              backgroundColor: AppPalette.primary,
-              foregroundColor: AppPalette.background,
-              child: Text(user.fullName.substring(0, 1).toUpperCase()),
-            ),
-          ),
-        ),
-      ],
+      ),
     ),
   );
 }
@@ -5797,11 +7931,15 @@ class ProfileSheet extends StatelessWidget {
     required this.onOpenTeam,
     required this.onOpenBackups,
     required this.onLogout,
+    this.onOpenExport,
+    this.onOpenDeveloper,
   });
   final AppUser user;
   final VoidCallback onOpenTeam;
   final VoidCallback onOpenBackups;
   final VoidCallback onLogout;
+  final VoidCallback? onOpenExport;
+  final VoidCallback? onOpenDeveloper;
 
   @override
   Widget build(BuildContext context) => SafeArea(
@@ -5814,145 +7952,161 @@ class ProfileSheet extends StatelessWidget {
         offset: Offset(0, 28 * (1 - value)),
         child: Opacity(opacity: value, child: child),
       ),
-      child: ClipRRect(
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(22, 12, 22, 22),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: .68),
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(32),
-              ),
-              border: Border.all(color: Colors.white.withValues(alpha: .8)),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 44,
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFD9D6F8),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+      child: SingleChildScrollView(
+        child: Glass(
+          radius: 32,
+          frosted: true,
+          padding: const EdgeInsets.fromLTRB(22, 12, 22, 22),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 44,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: AppPalette.line,
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                const SizedBox(height: 22),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [AppPalette.primaryDark, AppPalette.primary],
-                    ),
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        radius: 29,
-                        backgroundColor: Colors.white.withValues(alpha: .22),
-                        foregroundColor: Colors.white,
-                        child: Text(
-                          user.fullName.substring(0, 1).toUpperCase(),
-                          style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              user.fullName,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              '@${user.username}',
-                              style: const TextStyle(color: Color(0xFFF3E8FF)),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              user.effectiveRole.label,
-                              style: const TextStyle(
-                                color: Color(0xFFF3E8FF),
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+              ),
+              const SizedBox(height: 22),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      AppPalette.desktopAccentSoft,
+                      AppPalette.surfaceRaised,
                     ],
                   ),
+                  borderRadius: BorderRadius.circular(24),
                 ),
-                const SizedBox(height: 12),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 29,
+                      backgroundColor: AppPalette.primary.withValues(
+                        alpha: .16,
+                      ),
+                      foregroundColor: AppPalette.primary,
+                      child: Text(
+                        user.fullName.substring(0, 1).toUpperCase(),
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            user.fullName,
+                            style: const TextStyle(
+                              color: AppPalette.text,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            '@${user.username}',
+                            style: const TextStyle(color: AppPalette.muted),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            user.effectiveRole.label,
+                            style: const TextStyle(
+                              color: AppPalette.muted,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (user.isAdmin) ...[
                 ListTile(
                   onTap: onOpenTeam,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18),
                   ),
-                  tileColor: Colors.white.withValues(alpha: .46),
+                  tileColor: AppPalette.surfaceRaised.withValues(alpha: .82),
                   leading: const Icon(
                     Icons.groups_rounded,
                     color: AppPalette.primary,
                   ),
                   title: const Text(
-                    'Mon équipe',
+                    'Équipe',
                     style: TextStyle(fontWeight: FontWeight.w800),
                   ),
-                  subtitle: const Text('Voir les membres de l’atelier'),
+                  subtitle: const Text('Gérer les membres de l’atelier'),
                   trailing: const Icon(Icons.chevron_right_rounded),
                 ),
                 const SizedBox(height: 8),
-                if (user.isAdmin) ...[
-                  ListTile(
-                    onTap: onOpenBackups,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    tileColor: Colors.white.withValues(alpha: .46),
-                    leading: const Icon(
-                      Icons.backup_rounded,
-                      color: AppPalette.primary,
-                    ),
-                    title: const Text(
-                      'Sauvegardes',
-                      style: TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    subtitle: const Text(
-                      'Télécharger, restaurer ou supprimer les données',
-                    ),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                  ),
-                  const SizedBox(height: 8),
-                ],
+              ],
+              if (user.isAdmin) ...[
                 ListTile(
-                  onTap: onLogout,
+                  onTap: onOpenBackups,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18),
                   ),
+                  tileColor: AppPalette.surfaceRaised.withValues(alpha: .82),
                   leading: const Icon(
-                    Icons.logout_rounded,
-                    color: Color(0xFF9F1239),
+                    Icons.backup_rounded,
+                    color: AppPalette.primary,
                   ),
                   title: const Text(
-                    'Se déconnecter',
-                    style: TextStyle(
-                      color: Color(0xFF9F1239),
-                      fontWeight: FontWeight.w800,
-                    ),
+                    'Sauvegardes',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  subtitle: const Text(
+                    'Télécharger, restaurer ou supprimer les données',
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (onOpenExport case final export?)
+                ListTile(
+                  onTap: export,
+                  leading: const Icon(
+                    Icons.table_view_rounded,
+                    color: AppPalette.primary,
+                  ),
+                  title: const Text('Exporter vers Excel'),
+                ),
+              if (onOpenDeveloper case final developer?)
+                ListTile(
+                  onTap: developer,
+                  leading: const Icon(
+                    Icons.admin_panel_settings_rounded,
+                    color: AppPalette.coral,
+                  ),
+                  title: const Text('Mode développeur'),
+                ),
+              ListTile(
+                onTap: onLogout,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                leading: const Icon(
+                  Icons.logout_rounded,
+                  color: AppPalette.coral,
+                ),
+                title: const Text(
+                  'Se déconnecter',
+                  style: TextStyle(
+                    color: AppPalette.coral,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
@@ -6026,7 +8180,7 @@ class _BackupPageState extends State<BackupPage> {
                 child: const Text('Annuler'),
               ),
               FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: color),
+                style: color == AppPalette.coral ? _criticalActionStyle : null,
                 onPressed: () => Navigator.pop(context, true),
                 child: Text(action),
               ),
@@ -6055,7 +8209,7 @@ class _BackupPageState extends State<BackupPage> {
       title: 'Supprimer les données de l’atelier ?',
       detail: 'Cette action supprimera les produits, catégories, machines, opérations, dépôts et ajouts de stock. Les comptes utilisateurs seront conservés.',
       action: 'Supprimer',
-      color: const Color(0xFFB91C1C),
+      color: AppPalette.coral,
     );
     if (!confirmed || !mounted) return;
     setState(() => busy = true);
@@ -6200,9 +8354,7 @@ class _BackupPageState extends State<BackupPage> {
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFFB91C1C),
-                  ),
+                  style: _criticalActionStyle,
                   onPressed: busy || !hasRecentBackup ? null : _clearData,
                   icon: const Icon(Icons.delete_forever_rounded),
                   label: const Text('Supprimer les données de l’atelier'),
@@ -6227,6 +8379,7 @@ class DashboardPage extends StatelessWidget {
     required this.onValidation,
     required this.onCategories,
     required this.onReviews,
+    this.forceDesktopLayout = false,
   });
 
   final AppUser user;
@@ -6240,201 +8393,160 @@ class DashboardPage extends StatelessWidget {
   final VoidCallback onValidation;
   final VoidCallback onCategories;
   final VoidCallback onReviews;
+  final bool forceDesktopLayout;
 
   @override
-  Widget build(BuildContext context) => Page(
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  Widget build(BuildContext context) {
+    final desktop =
+        forceDesktopLayout ||
+        (_usesWorkspaceRail(context) && MediaQuery.sizeOf(context).width >= 1380);
+    return Page(
+      child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'Bonjour, ${user.fullName.split(' ').first}',
-          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
-        ),
-        const SizedBox(height: 5),
-        const Text(
-          'Voici un aperçu de votre atelier.',
-          style: TextStyle(color: AppPalette.muted),
-        ),
-        const SizedBox(height: 20),
-        Container(
-          height: 205,
-          width: double.infinity,
-          padding: const EdgeInsets.all(22),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF242424), Color(0xFF171717)],
-            ),
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: AppPalette.line),
+        if (desktop)
+          _DesktopDashboardWelcome(
+            firstName: user.fullName.trim().split(RegExp(r'\s+')).first,
           ),
-          child: Stack(
-            children: [
-              Positioned(
-                right: -56,
-                top: -70,
-                child: Container(
-                  width: 190,
-                  height: 190,
-                  decoration: BoxDecoration(
-                    color: AppPalette.primary.withValues(alpha: .12),
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ),
-              Column(
+        if (desktop) const SizedBox(height: 18),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final hero = _AtelierOverview(
+              firstName: user.fullName.trim().split(RegExp(r'\s+')).first,
+              machineCount: machineCount,
+              desktop: desktop,
+            );
+            final products = _DashboardMetric(
+              icon: Icons.view_in_ar_outlined,
+              label: 'Produits',
+              value: productCount,
+              accent: AppPalette.secondary,
+            );
+            final reviews = _DashboardMetric(
+              icon: Icons.schedule_rounded,
+              label: 'Contrôles en attente',
+              value: pendingReviews,
+              accent: pendingReviews > 0
+                  ? AppPalette.amber
+                  : AppPalette.primary,
+            );
+            if (constraints.maxWidth >= (desktop ? 780 : 690)) {
+              return Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'FORAGE ZOUHOUR',
-                    style: TextStyle(
-                      color: AppPalette.primary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.1,
-                    ),
-                  ),
-                  const Spacer(),
-                  Text(
-                    '$machineCount machine${machineCount == 1 ? '' : 's'} active${machineCount == 1 ? '' : 's'}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 25,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '$productCount produits · $pendingReviews contrôle${pendingReviews == 1 ? '' : 's'} en attente',
-                    style: const TextStyle(
-                      color: AppPalette.muted,
-                      fontWeight: FontWeight.w700,
+                  Expanded(flex: 3, child: hero),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    flex: 2,
+                    child: Column(
+                      children: [products, const SizedBox(height: 12), reviews],
                     ),
                   ),
                 ],
-              ),
-              const Positioned(
-                right: 0,
-                bottom: 0,
-                child: Icon(
-                  Icons.precision_manufacturing_rounded,
-                  color: Colors.white,
-                  size: 44,
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                hero,
+                const SizedBox(height: 12),
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: products),
+                      const SizedBox(width: 10),
+                      Expanded(child: reviews),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
+              ],
+            );
+          },
         ),
-        const SizedBox(height: 24),
-        const Text(
+        const SizedBox(height: 19),
+        Text(
           'Accès rapide',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+          style: Theme.of(context).textTheme.titleMedium
+              ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -.4),
         ),
         const SizedBox(height: 12),
-        GridView.count(
-          crossAxisCount: 3,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          mainAxisSpacing: 12,
-          crossAxisSpacing: 12,
-          childAspectRatio: .92,
-          children: [
-            _DashboardAction(
-              icon: Icons.inventory_2_outlined,
-              color: const Color(0xFF3D2BC7),
-              label: 'Produits',
-              onTap: onProducts,
-            ),
-            _DashboardAction(
-              icon: Icons.warehouse_outlined,
-              color: const Color(0xFF0D8CE6),
-              label: 'Stock',
-              onTap: onStock,
-            ),
-            _DashboardAction(
-              icon: Icons.precision_manufacturing_outlined,
-              color: const Color(0xFFFF4D72),
-              label: 'Machines',
-              onTap: onMachines,
-            ),
-            _DashboardAction(
-              icon: Icons.category_outlined,
-              color: const Color(0xFFF59E0B),
-              label: 'Catégories',
-              onTap: onCategories,
-            ),
-            _DashboardAction(
-              icon: user.canValidate
-                  ? Icons.verified_user_outlined
-                  : Icons.fact_check_outlined,
-              color: const Color(0xFF14B8A6),
-              label: user.canValidate ? 'Validations' : 'Contrôles',
-              onTap: user.canValidate ? onValidation : onReviews,
-            ),
-            _DashboardAction(
-              icon: Icons.groups_outlined,
-              color: const Color(0xFF635BCE),
-              label: 'Équipe',
-              onTap: onTeam,
-            ),
-          ],
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final columns = constraints.maxWidth >= (desktop ? 940 : 670)
+                ? 6
+                : constraints.maxWidth >= 670
+                ? 3
+                : constraints.maxWidth >= 290
+                ? 2
+                : 1;
+            const gap = 10.0;
+            final width =
+                (constraints.maxWidth - gap * (columns - 1)) / columns;
+            final shortcuts = [
+              _DashboardAction(
+                icon: Icons.inventory_2_outlined,
+                color: const Color(0xFF1A95E8),
+                label: 'Produits',
+                onTap: onProducts,
+              ),
+              _DashboardAction(
+                icon: Icons.warehouse_outlined,
+                color: const Color(0xFF2FB9E8),
+                label: 'Stock',
+                onTap: onStock,
+              ),
+              _DashboardAction(
+                icon: Icons.precision_manufacturing_outlined,
+                color: const Color(0xFF4A7EEA),
+                label: 'Machines',
+                onTap: onMachines,
+              ),
+              _DashboardAction(
+                icon: Icons.folder_outlined,
+                color: const Color(0xFF258DD8),
+                label: 'Familles',
+                onTap: onCategories,
+              ),
+              _DashboardAction(
+                icon: user.canValidate
+                    ? Icons.verified_user_outlined
+                    : Icons.fact_check_outlined,
+                color: const Color(0xFF38A8E6),
+                label: user.canValidate ? 'Validations' : 'Contrôles',
+                onTap: user.canValidate ? onValidation : onReviews,
+              ),
+              if (user.isAdmin)
+                _DashboardAction(
+                  icon: Icons.groups_outlined,
+                  color: const Color(0xFF668AEF),
+                  label: 'Équipe',
+                  onTap: onTeam,
+                ),
+            ];
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: [
+                for (final shortcut in shortcuts)
+                  SizedBox(
+                    width: width,
+                    child: _DashboardAction(
+                      icon: shortcut.icon,
+                      color: shortcut.color,
+                      label: shortcut.label,
+                      onTap: shortcut.onTap,
+                      desktop: desktop,
+                    ),
+                  ),
+              ],
+            );
+          },
         ),
       ],
-    ),
-  );
-}
-
-class _DashboardAction extends StatelessWidget {
-  const _DashboardAction({
-    required this.icon,
-    required this.color,
-    required this.label,
-    required this.onTap,
-  });
-  final IconData icon;
-  final Color color;
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(22),
-      child: Ink(
-        decoration: BoxDecoration(
-          color: AppPalette.surface,
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(color: AppPalette.line),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(9),
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: .13),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(icon, color: color, size: 23),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              label,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 12,
-                color: AppPalette.text,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ],
-        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class MobileGlassNavigation extends StatelessWidget {
@@ -6442,11 +8554,13 @@ class MobileGlassNavigation extends StatelessWidget {
     super.key,
     required this.index,
     required this.onTap,
+    required this.showTeam,
   });
   final int index;
   final ValueChanged<int> onTap;
-  static const labels = ['Accueil', 'Produits', 'Stock', 'Machines', 'Équipe'];
-  static const icons = [
+  final bool showTeam;
+  static const _labels = ['Accueil', 'Produits', 'Stock', 'Machines', 'Équipe'];
+  static const _icons = [
     Icons.home_rounded,
     Icons.grid_view_outlined,
     Icons.inventory_2_outlined,
@@ -6455,78 +8569,706 @@ class MobileGlassNavigation extends StatelessWidget {
   ];
   @override
   Widget build(BuildContext context) {
+    final indexes = showTeam ? const [0, 1, 2, 3, 4] : const [0, 1, 2, 3];
     return SafeArea(
       top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(22),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-            child: Container(
-              height: 70,
-              decoration: BoxDecoration(
-                color: AppPalette.surface.withValues(alpha: .98),
-                borderRadius: BorderRadius.circular(22),
-                border: Border.all(color: AppPalette.line),
-              ),
-              child: Row(
-                children: List.generate(labels.length, (i) {
-                  final selected = i == index;
-                  return Expanded(
-                    child: InkWell(
-                      onTap: () => onTap(i),
-                      borderRadius: BorderRadius.circular(20),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          AnimatedContainer(
-                            duration: const Duration(milliseconds: 240),
-                            curve: Curves.easeOutCubic,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 13,
-                              vertical: 5,
-                            ),
-                            decoration: BoxDecoration(
-                              color: selected
-                                  ? AppPalette.primary
-                                  : Colors.transparent,
-                              borderRadius: BorderRadius.circular(18),
-                            ),
-                            child: Icon(
-                              icons[i],
-                              color: selected
-                                  ? AppPalette.background
-                                  : AppPalette.muted,
-                              size: 21,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          AnimatedDefaultTextStyle(
-                            duration: const Duration(milliseconds: 200),
-                            curve: Curves.easeOut,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: selected
-                                  ? FontWeight.w900
-                                  : FontWeight.w700,
-                              color: selected
-                                  ? AppPalette.primary
-                                  : AppPalette.muted,
-                            ),
-                            child: Text(labels[i]),
-                          ),
-                        ],
-                      ),
+      minimum: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Glass(
+        radius: 26,
+        accent: AppPalette.primary,
+        frosted: true,
+        depth: 1.58,
+        // The navigator stays above the page, but the page is intentionally
+        // visible underneath it instead of being hidden by an opaque bar.
+        opacity: .64,
+        padding: const EdgeInsets.all(5),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.maxWidth / indexes.length;
+            final active = indexes.indexOf(index);
+            final duration = MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : const Duration(milliseconds: 350);
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                AnimatedPositionedDirectional(
+                  duration: duration,
+                  curve: Curves.easeOutBack,
+                  start: max(0, active) * width + 2,
+                  top: 1,
+                  bottom: 1,
+                  width: max(0.0, width - 4),
+                  child: IgnorePointer(
+                    child: AnimatedOpacity(
+                      opacity: active < 0 ? 0 : 1,
+                      duration: duration,
+                      child: const _AtelierNavCapsule(),
                     ),
-                  );
-                }),
-              ),
-            ),
-          ),
+                  ),
+                ),
+                Row(
+                  children: [
+                    for (final pageIndex in indexes)
+                      Expanded(
+                        child: _AtelierNavItem(
+                          label: _labels[pageIndex],
+                          icon: _icons[pageIndex],
+                          selected: pageIndex == index,
+                          onTap: () => onTap(pageIndex),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
+  }
+}
+
+/// Desktop-only workspace.  The phone keeps the compact bottom navigation,
+/// while Windows gets a persistent rail and a calmer, card-based canvas.
+class WindowsWorkspaceShell extends StatefulWidget {
+  const WindowsWorkspaceShell({
+    super.key,
+    required this.title,
+    required this.user,
+    required this.section,
+    required this.onSectionChanged,
+    required this.onLogout,
+    required this.onOpenTeam,
+    required this.onOpenBackups,
+    required this.onOpenAnalytics,
+    required this.canAccessAnalytics,
+    required this.canExport,
+    required this.onOpenExport,
+    required this.onOpenDeveloper,
+    required this.child,
+  });
+
+  final String title;
+  final AppUser user;
+  final int section;
+  final ValueChanged<int> onSectionChanged;
+  final VoidCallback onLogout;
+  final VoidCallback onOpenTeam;
+  final VoidCallback onOpenBackups;
+  final VoidCallback onOpenAnalytics;
+  final bool canAccessAnalytics;
+  final bool canExport;
+  final VoidCallback onOpenExport;
+  final VoidCallback onOpenDeveloper;
+  final Widget child;
+
+  @override
+  State<WindowsWorkspaceShell> createState() => _WindowsWorkspaceShellState();
+}
+
+class _WindowsWorkspaceShellState extends State<WindowsWorkspaceShell> {
+  var collapsed = false;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      _WindowsNavigationRail(
+        user: widget.user,
+        selectedIndex: widget.section,
+        compact: collapsed,
+        onToggle: () => setState(() => collapsed = !collapsed),
+        onSelected: widget.onSectionChanged,
+        onLogout: widget.onLogout,
+      ),
+      Expanded(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 12, 22, 18),
+          child: Column(
+            children: [
+              _WindowsTopBar(
+                title: widget.title,
+                user: widget.user,
+                onOpenAnalytics: widget.onOpenAnalytics,
+                canAccessAnalytics: widget.canAccessAnalytics,
+                canExport: widget.canExport,
+                onOpenExport: widget.onOpenExport,
+                onOpenProfile: () => _showWindowsProfile(context),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 380),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  transitionBuilder: (page, animation) => FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(.022, 0),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: page,
+                    ),
+                  ),
+                  child: KeyedSubtree(
+                    key: ValueKey(widget.section),
+                    child: widget.child,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+
+  void _showWindowsProfile(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      constraints: const BoxConstraints(maxWidth: 460),
+      builder: (sheetContext) {
+        VoidCallback closeThen(VoidCallback action) => () {
+          Navigator.pop(sheetContext);
+          action();
+        };
+        return ProfileSheet(
+          user: widget.user,
+          onOpenTeam: closeThen(widget.onOpenTeam),
+          onOpenBackups: closeThen(widget.onOpenBackups),
+          onOpenExport: widget.canExport ? closeThen(widget.onOpenExport) : null,
+          onOpenDeveloper: widget.user.isDeveloper
+              ? closeThen(widget.onOpenDeveloper)
+              : null,
+          onLogout: closeThen(widget.onLogout),
+        );
+      },
+    );
+  }
+}
+
+class _WindowsTopBar extends StatefulWidget {
+  const _WindowsTopBar({
+    required this.title,
+    required this.user,
+    required this.onOpenAnalytics,
+    required this.canAccessAnalytics,
+    required this.canExport,
+    required this.onOpenExport,
+    required this.onOpenProfile,
+  });
+
+  final String title;
+  final AppUser user;
+  final VoidCallback onOpenAnalytics;
+  final bool canAccessAnalytics;
+  final bool canExport;
+  final VoidCallback onOpenExport;
+  final VoidCallback onOpenProfile;
+
+  @override
+  State<_WindowsTopBar> createState() => _WindowsTopBarState();
+}
+
+class _WindowsTopBarState extends State<_WindowsTopBar> {
+  final searchFocus = FocusNode();
+
+  @override
+  void dispose() {
+    searchFocus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CallbackShortcuts(
+    bindings: {
+      const SingleActivator(LogicalKeyboardKey.keyK, control: true):
+          searchFocus.requestFocus,
+    },
+    child: Focus(
+      autofocus: true,
+      child: Glass(
+        radius: 28,
+        accent: AppPalette.primary,
+        frosted: true,
+        // A lighter lens makes the wallpaper visibly refract under the
+        // desktop header instead of reading as a plain white panel.
+        depth: 1.72,
+        opacity: .70,
+        padding: const EdgeInsets.fromLTRB(18, 8, 10, 8),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 150,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    widget.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      letterSpacing: -.6,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  Text(
+                    widget.user.effectiveRole.label,
+                    style: const TextStyle(
+                      color: AppPalette.muted,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 470),
+                  child: SizedBox(
+                    height: 42,
+                    child: TextField(
+                      focusNode: searchFocus,
+                      textInputAction: TextInputAction.search,
+                      style: const TextStyle(fontSize: 13),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        hintText: 'Rechercher un produit, une machine, …',
+                        hintStyle: const TextStyle(
+                          color: AppPalette.muted,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                        suffixIcon: SizedBox(
+                          width: 58,
+                          child: Container(
+                            margin: const EdgeInsets.all(7),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: AppPalette.primary.withValues(alpha: .18),
+                              borderRadius: BorderRadius.circular(7),
+                              border: Border.all(
+                                color: AppPalette.primary.withValues(alpha: .42),
+                              ),
+                            ),
+                            child: const Text(
+                              'Ctrl K',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                color: AppPalette.text,
+                              ),
+                            ),
+                          ),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 9,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            if (widget.canExport)
+              _DashboardHeaderButton(
+                label: 'Exporter vers Excel',
+                onTap: widget.onOpenExport,
+                child: const Icon(Icons.table_view_rounded, size: 21),
+              ),
+            if (widget.canAccessAnalytics) ...[
+              const SizedBox(width: 7),
+              _DashboardHeaderButton(
+                label: 'Analyses',
+                onTap: widget.onOpenAnalytics,
+                child: const Icon(Icons.bar_chart_rounded, size: 21),
+              ),
+            ],
+            const SizedBox(width: 7),
+            _DashboardHeaderButton(
+              label: 'Profil',
+              onTap: widget.onOpenProfile,
+              child: Text(
+                widget.user.fullName.characters.first.toUpperCase(),
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _WindowsNavigationRail extends StatelessWidget {
+  const _WindowsNavigationRail({
+    required this.user,
+    required this.selectedIndex,
+    required this.compact,
+    required this.onToggle,
+    required this.onSelected,
+    required this.onLogout,
+  });
+
+  final AppUser user;
+  final int selectedIndex;
+  final bool compact;
+  final VoidCallback onToggle;
+  final ValueChanged<int> onSelected;
+  final VoidCallback onLogout;
+
+  static const _entries = <_DesktopNavigationEntry>[
+    _DesktopNavigationEntry('Vue générale', Icons.grid_view_rounded),
+    _DesktopNavigationEntry('Produits', Icons.view_in_ar_outlined),
+    _DesktopNavigationEntry('Stock', Icons.inventory_2_rounded),
+    _DesktopNavigationEntry('Machines', Icons.precision_manufacturing_rounded),
+    _DesktopNavigationEntry('Équipe', Icons.groups_outlined),
+    _DesktopNavigationEntry('Validations', Icons.verified_user_outlined),
+  ];
+
+  @override
+  Widget build(BuildContext context) => AnimatedContainer(
+    duration: MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : const Duration(milliseconds: 280),
+    curve: Curves.easeOutCubic,
+    width: compact ? 76 : 246,
+    margin: const EdgeInsets.fromLTRB(14, 12, 0, 18),
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: AppPalette.line.withValues(alpha: .72)),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            AppPalette.surface.withValues(alpha: .78),
+            const Color(0xFFB9E0FA).withValues(alpha: .62),
+            AppPalette.surfaceRaised.withValues(alpha: .70),
+          ],
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: AppPalette.primary.withValues(alpha: .12),
+            blurRadius: 24,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          compact ? 8 : 12,
+          12,
+          compact ? 8 : 12,
+          12,
+        ),
+        child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+        _DesktopBrand(compact: compact, onToggle: onToggle),
+        SizedBox(height: compact ? 20 : 26),
+        if (!compact) ...[
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 10),
+            child: Text(
+              'ESPACE DE TRAVAIL',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w900,
+                color: AppPalette.muted,
+                letterSpacing: 1.25,
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
+        ..._entries.indexed
+            .where((entry) {
+              final index = entry.$1;
+              if (index == 4 && !user.isAdmin) return false;
+              return user.canAccess(AppPage.values[index]);
+            })
+            .map(
+              (entry) => _DesktopNavigationButton(
+                entry: entry.$2,
+                selected: selectedIndex == entry.$1,
+                compact: compact,
+                onTap: () => onSelected(entry.$1),
+              ),
+            ),
+        const Spacer(),
+        Container(
+          padding: EdgeInsets.all(compact ? 7 : 12),
+          decoration: BoxDecoration(
+            color: AppPalette.surface.withValues(alpha: .70),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: AppPalette.line.withValues(alpha: .75)),
+          ),
+          child: compact
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 17,
+                      backgroundColor: AppPalette.desktopAccentSoft,
+                      foregroundColor: AppPalette.desktopAccent,
+                      child: Text(
+                        user.fullName.substring(0, 1).toUpperCase(),
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    IconButton(
+                      tooltip: 'Déconnexion',
+                      onPressed: onLogout,
+                      icon: const Icon(Icons.logout_rounded, size: 18),
+                      color: AppPalette.muted,
+                    ),
+                  ],
+                )
+              : Row(
+                  children: [
+              CircleAvatar(
+                radius: 17,
+                backgroundColor: AppPalette.desktopAccentSoft,
+                foregroundColor: AppPalette.desktopAccent,
+                child: Text(
+                  user.fullName.substring(0, 1).toUpperCase(),
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      user.fullName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      user.effectiveRole.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppPalette.muted,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Déconnexion',
+                onPressed: onLogout,
+                icon: const Icon(Icons.logout_rounded, size: 18),
+                color: AppPalette.muted,
+              ),
+                  ],
+                ),
+        ),
+        ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _DesktopBrand extends StatelessWidget {
+  const _DesktopBrand({required this.compact, required this.onToggle});
+  final bool compact;
+  final VoidCallback onToggle;
+
+  Widget _mark() => Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: AppPalette.desktopAccent,
+          borderRadius: BorderRadius.circular(13),
+          boxShadow: [
+            BoxShadow(
+              color: AppPalette.desktopAccent.withValues(alpha: .26),
+              blurRadius: 18,
+            ),
+          ],
+        ),
+        child: const Icon(
+          Icons.precision_manufacturing_rounded,
+          color: AppPalette.background,
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) => Glass(
+    radius: 20,
+    accent: AppPalette.primary,
+    frosted: true,
+    depth: 1.34,
+    opacity: .72,
+    padding: const EdgeInsets.all(6),
+    child: compact
+      ? SizedBox(
+          height: 84,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Align(
+                alignment: Alignment.centerRight,
+                child: IconButton(
+                  tooltip: 'Agrandir le menu',
+                  onPressed: onToggle,
+                  icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
+                  iconSize: 16,
+                  color: AppPalette.muted,
+                ),
+              ),
+              _mark(),
+            ],
+          ),
+        )
+      : Row(
+          children: [
+            _mark(),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'FORAGE',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+            ),
+            Text(
+              'WORKSPACE',
+              style: TextStyle(
+                fontSize: 10,
+                color: AppPalette.desktopAccent,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 1.3,
+              ),
+            ),
+          ],
+        ),
+            ),
+            IconButton(
+              tooltip: 'Réduire le menu',
+              onPressed: onToggle,
+              icon: const Icon(Icons.keyboard_double_arrow_left_rounded),
+              iconSize: 16,
+              color: AppPalette.muted,
+            ),
+          ],
+        ),
+  );
+}
+
+class _DesktopNavigationEntry {
+  const _DesktopNavigationEntry(this.label, this.icon);
+  final String label;
+  final IconData icon;
+}
+
+class _DesktopNavigationButton extends StatelessWidget {
+  const _DesktopNavigationButton({
+    required this.entry,
+    required this.selected,
+    required this.compact,
+    required this.onTap,
+  });
+
+  final _DesktopNavigationEntry entry;
+  final bool selected;
+  final bool compact;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final button = Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: _LiquidTapTarget(
+      radius: 14,
+      selected: selected,
+      accent: selected ? AppPalette.primary : AppPalette.secondary,
+      idleOpacity: .16,
+      selectedOpacity: .72,
+      onTap: onTap,
+      child: Padding(
+        padding: compact
+            ? const EdgeInsets.symmetric(vertical: 11)
+            : const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        child: compact
+            ? Center(
+                child: AnimatedScale(
+                  duration: const Duration(milliseconds: 240),
+                  curve: Curves.easeOutBack,
+                  scale: selected ? 1.1 : 1,
+                  child: Icon(
+                    entry.icon,
+                    color: selected
+                        ? AppPalette.desktopAccent
+                        : AppPalette.muted,
+                    size: 21,
+                  ),
+                ),
+              )
+            : Row(
+          children: [
+            AnimatedScale(
+              duration: const Duration(milliseconds: 240),
+              curve: Curves.easeOutBack,
+              scale: selected ? 1.08 : 1,
+              child: Icon(
+                entry.icon,
+                color: selected ? AppPalette.desktopAccent : AppPalette.muted,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 12),
+            AnimatedOpacity(
+              duration: const Duration(milliseconds: 180),
+              opacity: selected ? 1 : .86,
+              child: Text(
+                entry.label,
+                style: TextStyle(
+                  color: selected ? AppPalette.text : AppPalette.muted,
+                  fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            const Spacer(),
+            AnimatedOpacity(
+              duration: const Duration(milliseconds: 160),
+              opacity: selected ? 1 : 0,
+              child: Container(
+                width: 6,
+                height: 6,
+                decoration: const BoxDecoration(
+                  color: AppPalette.desktopAccent,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ),
+          ],
+              ),
+        ),
+      ),
+    );
+    return compact ? Tooltip(message: entry.label, child: button) : button;
   }
 }
 
@@ -6534,15 +9276,20 @@ class Page extends StatelessWidget {
   const Page({super.key, required this.child});
   final Widget child;
   @override
-  Widget build(BuildContext context) => SingleChildScrollView(
-    padding: const EdgeInsets.fromLTRB(22, 14, 22, 115),
-    child: Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1050),
-        child: AppEntrance(child: child),
+  Widget build(BuildContext context) {
+    final isWindows = _usesWorkspaceRail(context);
+    return SingleChildScrollView(
+      padding: isWindows
+          ? const EdgeInsets.fromLTRB(28, 8, 28, 32)
+          : const EdgeInsets.fromLTRB(16, 13, 16, 100),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: isWindows ? 1260 : 1050),
+          child: AppEntrance(child: child),
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class SectionHero extends StatelessWidget {
@@ -6559,25 +9306,15 @@ class SectionHero extends StatelessWidget {
   final Widget? trailing;
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(18),
-    decoration: BoxDecoration(
-      color: AppPalette.surface,
-      borderRadius: BorderRadius.circular(24),
-      border: Border.all(color: AppPalette.line),
-    ),
+  Widget build(BuildContext context) => Glass(
+    padding: const EdgeInsets.all(17),
+    radius: 26,
+    accent: AppPalette.primary,
+    frosted: true,
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: AppPalette.primary,
-            borderRadius: BorderRadius.circular(15),
-          ),
-          child: Icon(icon, color: AppPalette.background),
-        ),
+        _AtelierIcon(icon, size: 47),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
@@ -6621,23 +9358,11 @@ class ManagementScreen extends StatelessWidget {
       child: SafeArea(
         child: Column(
           children: [
-            SizedBox(
-              height: 126,
-              child: Align(
-                alignment: Alignment.topLeft,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 0, 0),
-                  child: IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.arrow_back_rounded),
-                    color: AppPalette.primary,
-                    style: IconButton.styleFrom(
-                      backgroundColor: AppPalette.surface,
-                      side: const BorderSide(color: AppPalette.line),
-                    ),
-                    tooltip: 'Retour à $title',
-                  ),
-                ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 2),
+                child: _AtelierBackButton(tooltip: 'Retour à $title'),
               ),
             ),
             Expanded(child: child),
@@ -6660,8 +9385,28 @@ class _AppEntranceState extends State<AppEntrance>
     with SingleTickerProviderStateMixin {
   late final AnimationController controller = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 380),
-  )..forward();
+    duration: const Duration(milliseconds: 320),
+  );
+  late final Animation<double> opacity = controller.drive(
+    CurveTween(curve: Curves.easeOutCubic),
+  );
+  late final Animation<Offset> position = controller.drive(
+    Tween(
+      begin: const Offset(0, .018),
+      end: Offset.zero,
+    ).chain(CurveTween(curve: Curves.easeOutBack)),
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      controller.value = 1;
+    } else if (controller.isDismissed) {
+      controller.forward();
+    }
+  }
+
   @override
   void dispose() {
     controller.dispose();
@@ -6670,14 +9415,8 @@ class _AppEntranceState extends State<AppEntrance>
 
   @override
   Widget build(BuildContext context) => FadeTransition(
-    opacity: CurvedAnimation(parent: controller, curve: Curves.easeOut),
-    child: SlideTransition(
-      position: Tween<Offset>(begin: const Offset(0, .025), end: Offset.zero)
-          .animate(
-            CurvedAnimation(parent: controller, curve: Curves.easeOutCubic),
-          ),
-      child: widget.child,
-    ),
+    opacity: opacity,
+    child: SlideTransition(position: position, child: widget.child),
   );
 }
 
@@ -6771,6 +9510,7 @@ class ProductsPage extends StatefulWidget {
     super.key,
     required this.products,
     required this.categories,
+    this.catalogFamilies = const [],
     required this.stock,
     required this.depots,
     required this.depotStock,
@@ -6781,6 +9521,7 @@ class ProductsPage extends StatefulWidget {
   });
   final List<Product> products;
   final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final int Function(String) stock;
   final List<Depot> depots;
   final int Function(String, String) depotStock;
@@ -6797,6 +9538,8 @@ class _ProductsPageState extends State<ProductsPage> {
   String? categoryId;
   var showFilters = false;
 
+  bool get hasFilters => categoryId != null || search.text.trim().isNotEmpty;
+
   List<Product> get filteredProducts {
     final query = search.text.trim().toLowerCase();
     final allowed = categoryId == null
@@ -6810,7 +9553,9 @@ class _ProductsPageState extends State<ProductsPage> {
       // of competing with the normal catalogue.
       return !product.isManufacturedVariant &&
           (query.isEmpty ||
-              product.displayReference.toLowerCase().contains(query)) &&
+              '${product.name} ${product.displayReference}'
+                  .toLowerCase()
+                  .contains(query)) &&
           (allowed == null || allowed.contains(product.id));
     }).toList();
   }
@@ -6852,19 +9597,8 @@ class _ProductsPageState extends State<ProductsPage> {
             OutlinedButton.icon(
               onPressed: widget.onOpenCategories,
               icon: const Icon(Icons.category_outlined),
-              label: const Text('Catégories'),
+              label: const Text('Familles'),
             ),
-            const SizedBox(width: 6),
-            IconButton.filledTonal(
-              onPressed: () => PdfReports.printAllProducts(
-                products: widget.products,
-                depots: widget.depots,
-                depotStock: widget.depotStock,
-              ),
-              icon: const Icon(Icons.print_outlined),
-              tooltip: 'Imprimer tous les produits',
-            ),
-            const SizedBox(width: 6),
             if (widget.canEdit)
               IconButton.filled(
                 onPressed: widget.onAdd,
@@ -6892,7 +9626,7 @@ class _ProductsPageState extends State<ProductsPage> {
                           ),
                         ),
                         const SizedBox(height: 10),
-                        DropdownButtonFormField<String>(
+                        LiquidSelectFormField<String>(
                           initialValue: categoryId,
                           decoration: const InputDecoration(
                             labelText: 'Filtrer par catégorie',
@@ -6920,77 +9654,84 @@ class _ProductsPageState extends State<ProductsPage> {
               : const SizedBox.shrink(),
         ),
         const SizedBox(height: 16),
-        if (widget.products.isEmpty)
+        if (widget.products.isEmpty && widget.categories.isEmpty)
           const Empty(
             icon: Icons.photo_library_outlined,
             title: 'Aucun produit',
             detail: 'Ajoutez votre premier produit.',
           )
-        else if (filteredProducts.isEmpty)
+        else if (filteredProducts.isEmpty && hasFilters)
           const Empty(
             icon: Icons.search_off_rounded,
             title: 'Aucun résultat',
             detail: 'Modifiez le nom ou la catégorie sélectionnée.',
           )
         else
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final compact = constraints.maxWidth < 400;
-              const spacing = 12.0;
-              final cardWidth = compact
-                  ? (constraints.maxWidth - spacing) / 2
-                  : 180.0;
-              return Wrap(
-                spacing: compact ? spacing : 14,
-                runSpacing: compact ? spacing : 14,
-                children: filteredProducts
-                    .map(
-                      (product) => SizedBox(
-                        width: cardWidth,
-                        child: ProductCard(
-                          product: product,
-                          onTap: () => Navigator.of(context).push(
-                            PageRouteBuilder<void>(
-                              pageBuilder:
-                                  (context, animation, secondaryAnimation) =>
-                                      ProductDetailsPage(
-                                        product: product,
-                                        stockPieces: widget.stock(product.id),
-                                        allProducts: widget.products,
-                                        stock: widget.stock,
-                                        categories: widget.categories,
-                                        depots: widget.depots,
-                                        depotStock: widget.depotStock,
-                                        canEdit: widget.canEdit,
-                                        onAddStock: widget.onAddStock,
-                                      ),
-                              transitionsBuilder:
-                                  (
-                                    context,
-                                    animation,
-                                    secondaryAnimation,
-                                    child,
-                                  ) => FadeTransition(
-                                    opacity: animation,
-                                    child: ScaleTransition(
-                                      scale: Tween<double>(begin: .92, end: 1)
-                                          .animate(
-                                            CurvedAnimation(
-                                              parent: animation,
-                                              curve: Curves.easeOutCubic,
+          CatalogProductBrowser(
+            key: ValueKey((categoryId, search.text.trim().toLowerCase())),
+            products: filteredProducts,
+            categories: widget.categories,
+            catalogFamilies: widget.catalogFamilies,
+            showEmptyCategories: !hasFilters,
+            buildProducts: (products) => LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxWidth < 400;
+                const spacing = 12.0;
+                final cardWidth = compact
+                    ? (constraints.maxWidth - spacing) / 2
+                    : 180.0;
+                return Wrap(
+                  spacing: compact ? spacing : 14,
+                  runSpacing: compact ? spacing : 14,
+                  children: products
+                      .map(
+                        (product) => SizedBox(
+                          width: cardWidth,
+                          child: ProductCard(
+                            product: product,
+                            onTap: () => Navigator.of(context).push(
+                              PageRouteBuilder<void>(
+                                pageBuilder:
+                                    (context, animation, secondaryAnimation) =>
+                                        ProductDetailsPage(
+                                          product: product,
+                                          stockPieces: widget.stock(product.id),
+                                          allProducts: widget.products,
+                                          stock: widget.stock,
+                                          categories: widget.categories,
+                                          depots: widget.depots,
+                                          depotStock: widget.depotStock,
+                                          canEdit: widget.canEdit,
+                                          onAddStock: widget.onAddStock,
+                                        ),
+                                transitionsBuilder:
+                                    (
+                                      context,
+                                      animation,
+                                      secondaryAnimation,
+                                      child,
+                                    ) => FadeTransition(
+                                      opacity: animation,
+                                      child: ScaleTransition(
+                                        scale: Tween<double>(begin: .92, end: 1)
+                                            .animate(
+                                              CurvedAnimation(
+                                                parent: animation,
+                                                curve: Curves.easeOutCubic,
+                                              ),
                                             ),
-                                          ),
-                                      child: child,
+                                        child: child,
+                                      ),
                                     ),
-                                  ),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    )
-                    .toList(),
-              );
-            },
+                      )
+                      .toList(),
+                );
+              },
+            ),
           ),
       ],
     ),
@@ -7034,7 +9775,7 @@ class ProductCard extends StatelessWidget {
             const SizedBox(height: 3),
             Text(
               productSpecification(product),
-              style: const TextStyle(color: Color(0xFF725280), fontSize: 12),
+              style: const TextStyle(color: AppPalette.muted, fontSize: 12),
             ),
           ],
         ),
@@ -7062,12 +9803,12 @@ class ProductImage extends StatelessWidget {
           ? DecoratedBox(
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [Color(0xFFCE93F9), Color(0xFF6B21A8)],
+                  colors: [AppPalette.desktopAccentSoft, AppPalette.surface],
                 ),
               ),
               child: const Icon(
                 Icons.layers_rounded,
-                color: Colors.white,
+                color: AppPalette.primary,
                 size: 44,
               ),
             )
@@ -7094,10 +9835,10 @@ class CategoryImage extends StatelessWidget {
           ? const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [Color(0xFFDDD6FE), Color(0xFF7E22CE)],
+                  colors: [AppPalette.surfaceRaised, AppPalette.background],
                 ),
               ),
-              child: Icon(Icons.category_rounded, color: Colors.white),
+              child: Icon(Icons.category_rounded, color: AppPalette.secondary),
             )
           : Image.memory(category.image, fit: BoxFit.cover),
     ),
@@ -7189,16 +9930,6 @@ class ProductDetailsPage extends StatelessWidget {
                         ),
                       ),
                     ),
-                    IconButton.filledTonal(
-                      onPressed: () => PdfReports.printProductDetails(
-                        product: product,
-                        categories: categories,
-                        depots: depots,
-                        depotStock: depotStock,
-                      ),
-                      icon: const Icon(Icons.print_outlined),
-                      tooltip: 'Imprimer la fiche produit',
-                    ),
                   ],
                 ),
               ),
@@ -7234,7 +9965,7 @@ class ProductDetailsPage extends StatelessWidget {
                             const SizedBox(height: 4),
                             Text(
                               product.kind.label,
-                              style: const TextStyle(color: Color(0xFF725280)),
+                              style: const TextStyle(color: AppPalette.muted),
                             ),
                             if (product.reference.isNotEmpty) ...[
                               const SizedBox(height: 10),
@@ -7450,9 +10181,9 @@ class _DerivedProductTile extends StatelessWidget {
       child: Ink(
         padding: const EdgeInsets.all(9),
         decoration: BoxDecoration(
-          color: const Color(0xFFF7F4FF),
+          color: AppPalette.surfaceRaised,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFE4D9FF)),
+          border: Border.all(color: AppPalette.line),
         ),
         child: Row(
           children: [
@@ -7596,21 +10327,13 @@ class AnalyticsPage extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(12, 12, 22, 16),
                 child: Row(
                   children: [
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                      color: AppPalette.primary,
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white,
-                      ),
-                      tooltip: 'Retour',
-                    ),
+                    const _AtelierBackButton(),
                     const SizedBox(width: 12),
                     const Expanded(
                       child: Text(
                         'Analyses',
                         style: TextStyle(
-                          color: Colors.white,
+                          color: AppPalette.text,
                           fontSize: 23,
                           fontWeight: FontWeight.w900,
                         ),
@@ -7624,38 +10347,25 @@ class AnalyticsPage extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        width: double.infinity,
+                      Glass(
+                        radius: 28,
                         padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [Color(0xFF243B7A), Color(0xFF7B6BE3)],
-                          ),
-                          borderRadius: BorderRadius.circular(28),
-                        ),
+                        accent: AppPalette.secondary,
+                        frosted: true,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Row(
                               children: [
-                                Container(
-                                  padding: const EdgeInsets.all(10),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: .18),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(
-                                    Icons.insights_rounded,
-                                    color: Colors.white,
-                                  ),
+                                const _AtelierIcon(
+                                  Icons.insights_rounded,
+                                  color: AppPalette.secondary,
                                 ),
                                 const Spacer(),
                                 Text(
                                   '$available produits disponibles',
                                   style: const TextStyle(
-                                    color: Color(0xFFE9E7FF),
+                                    color: AppPalette.secondary,
                                     fontWeight: FontWeight.w800,
                                   ),
                                 ),
@@ -7665,7 +10375,7 @@ class AnalyticsPage extends StatelessWidget {
                             const Text(
                               'Vue d’ensemble de l’atelier',
                               style: TextStyle(
-                                color: Colors.white,
+                                color: AppPalette.text,
                                 fontSize: 23,
                                 fontWeight: FontWeight.w900,
                               ),
@@ -7673,7 +10383,7 @@ class AnalyticsPage extends StatelessWidget {
                             const SizedBox(height: 5),
                             Text(
                               '$totalPieces unités actuellement suivies dans le stock.',
-                              style: const TextStyle(color: Color(0xFFE9E7FF)),
+                              style: const TextStyle(color: AppPalette.muted),
                             ),
                           ],
                         ),
@@ -8140,6 +10850,8 @@ class StockPage extends StatelessWidget {
   const StockPage({
     super.key,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.stock,
     required this.draftCount,
     required this.canEdit,
@@ -8150,6 +10862,8 @@ class StockPage extends StatelessWidget {
     required this.onOpenPayments,
   });
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final int Function(String) stock;
   final int draftCount;
   final bool canEdit;
@@ -8172,85 +10886,47 @@ class StockPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF292929), Color(0xFF161616)],
-              ),
-              borderRadius: BorderRadius.circular(28),
-            ),
+          Glass(
+            padding: const EdgeInsets.all(18),
+            radius: 28,
+            accent: AppPalette.primary,
+            frosted: true,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: .20),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.inventory_2_rounded,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const Spacer(),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 11,
-                        vertical: 7,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: .19),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: .22),
-                        ),
-                      ),
-                      child: Text(
-                        '$availableProducts disponibles',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w800,
-                          fontSize: 12,
-                        ),
+                    const _AtelierIcon(Icons.inventory_2_outlined, size: 42),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Inventaire',
+                            style: TextStyle(
+                              fontSize: 23,
+                              letterSpacing: -.5,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          Text(
+                            '$availableProducts disponibles sur ${products.length}',
+                            style: const TextStyle(color: AppPalette.muted),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 20),
-                const Text(
-                  'Stock',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 27,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '${products.length} produits suivis dans votre atelier',
-                  style: const TextStyle(
-                    color: Color(0xFFF7F3FF),
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 18),
+                const SizedBox(height: 17),
+                const Divider(height: 1),
+                const SizedBox(height: 14),
                 Row(
                   children: [
                     _StockMetric(
                       value: '$totalPieces',
                       label: 'Unités en stock',
-                    ),
-                    Container(
-                      width: 1,
-                      height: 36,
-                      color: Colors.white.withValues(alpha: .25),
                     ),
                     _StockMetric(value: '$draftCount', label: 'En attente'),
                   ],
@@ -8275,8 +10951,7 @@ class StockPage extends StatelessWidget {
                     icon: Icons.add_shopping_cart_rounded,
                     title: 'Nouvel achat',
                     subtitle: 'Entrée de stock',
-                    colors: const [Color(0xFFFFD100), Color(0xFFC49F00)],
-                    foreground: const Color(0xFF151515),
+                    accent: AppPalette.primary,
                     onTap: onPurchase,
                   ),
                 ),
@@ -8286,7 +10961,7 @@ class StockPage extends StatelessWidget {
                     icon: Icons.point_of_sale_rounded,
                     title: 'Nouvelle vente',
                     subtitle: 'Sortie de stock',
-                    colors: const [Color(0xFF2A2A2A), Color(0xFF1C1C1C)],
+                    accent: AppPalette.secondary,
                     onTap: onSale,
                   ),
                 ),
@@ -8359,13 +11034,21 @@ class StockPage extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          ...products.map(
-            (product) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _StockProductTile(
-                product: product,
-                pieces: stock(product.id),
-              ),
+          CatalogProductBrowser(
+            products: products,
+            categories: categories,
+            catalogFamilies: catalogFamilies,
+            buildProducts: (items) => Column(
+              children: [
+                for (final product in items)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: _StockProductTile(
+                      product: product,
+                      pieces: stock(product.id),
+                    ),
+                  ),
+              ],
             ),
           ),
         ],
@@ -8396,7 +11079,8 @@ class TransactionPaymentsPage extends StatefulWidget {
   final String Function(String id) depotName;
 
   @override
-  State<TransactionPaymentsPage> createState() => _TransactionPaymentsPageState();
+  State<TransactionPaymentsPage> createState() =>
+      _TransactionPaymentsPageState();
 }
 
 class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
@@ -8504,12 +11188,24 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _PaymentDetail(label: 'Produit', value: product?.displayReference ?? 'Produit supprimé'),
-              _PaymentDetail(label: isSale ? 'Client' : 'Fournisseur', value: partner),
+              _PaymentDetail(
+                label: 'Produit',
+                value: product?.displayReference ?? 'Produit supprimé',
+              ),
+              _PaymentDetail(
+                label: isSale ? 'Client' : 'Fournisseur',
+                value: partner,
+              ),
               _PaymentDetail(label: 'Dépôt', value: widget.depotName(depotId)),
-              _PaymentDetail(label: 'Quantité', value: formatQuantity(quantity, unit)),
+              _PaymentDetail(
+                label: 'Quantité',
+                value: formatQuantity(quantity, unit),
+              ),
               _PaymentDetail(label: 'Transport', value: transport.label),
-              _PaymentDetail(label: 'Date de l’opération', value: dateText(date)),
+              _PaymentDetail(
+                label: 'Date de l’opération',
+                value: dateText(date),
+              ),
               _PaymentDetail(
                 label: 'Statut',
                 value: draft ? 'Brouillon à valider' : 'Validé',
@@ -8521,15 +11217,21 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                       ? 'Non renseigné'
                       : receiptNumber,
                 ),
+              _PaymentDetail(label: 'Photos jointes', value: '$photoCount'),
               _PaymentDetail(
-                label: 'Photos jointes',
-                value: '$photoCount',
+                label: 'Source de paiement',
+                value: payment.source.label,
               ),
-              _PaymentDetail(label: 'Source de paiement', value: payment.source.label),
               if (payment.source == PaymentSource.competitor)
-                _PaymentDetail(label: 'Compétiteur', value: competitorName(payment.competitorId)),
+                _PaymentDetail(
+                  label: 'Compétiteur',
+                  value: competitorName(payment.competitorId),
+                ),
               _PaymentDetail(label: 'Mode de paiement', value: payment.mode),
-              _PaymentDetail(label: 'Montant', value: '${formatNumber(payment.amount)} DH'),
+              _PaymentDetail(
+                label: 'Montant',
+                value: '${formatNumber(payment.amount)} DH',
+              ),
             ],
           ),
         ),
@@ -8547,9 +11249,15 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
   Widget build(BuildContext context) {
     final visible = selectedSource == null
         ? const <TransactionPayment>[]
-        : widget.payments.where((payment) =>
-            payment.source == selectedSource &&
-            (showSales ? payment.saleId != null : payment.stockAdditionId != null)).toList();
+        : widget.payments
+              .where(
+                (payment) =>
+                    payment.source == selectedSource &&
+                    (showSales
+                        ? payment.saleId != null
+                        : payment.stockAdditionId != null),
+              )
+              .toList();
     return FormShell(
       title: selectedSource == null ? 'Paiements' : selectedSource!.label,
       child: Column(
@@ -8561,14 +11269,16 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
               style: TextStyle(color: AppPalette.muted),
             ),
             const SizedBox(height: 16),
-            ...PaymentSource.values.map((source) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _PaymentSourceCard(
-                source: source,
-                total: totalFor(source),
-                onTap: () => setState(() => selectedSource = source),
+            ...PaymentSource.values.map(
+              (source) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _PaymentSourceCard(
+                  source: source,
+                  total: totalFor(source),
+                  onTap: () => setState(() => selectedSource = source),
+                ),
               ),
-            )),
+            ),
           ] else ...[
             TextButton.icon(
               onPressed: () => setState(() => selectedSource = null),
@@ -8580,12 +11290,18 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  const Icon(Icons.account_balance_wallet_rounded, color: AppPalette.primary),
+                  const Icon(
+                    Icons.account_balance_wallet_rounded,
+                    color: AppPalette.primary,
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
                       'Total : ${formatNumber(totalFor(selectedSource!))} DH',
-                      style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 18,
+                      ),
                     ),
                   ),
                 ],
@@ -8594,11 +11310,20 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
             const SizedBox(height: 14),
             SegmentedButton<bool>(
               segments: const [
-                ButtonSegment(value: true, icon: Icon(Icons.point_of_sale_rounded), label: Text('Ventes')),
-                ButtonSegment(value: false, icon: Icon(Icons.add_shopping_cart_rounded), label: Text('Achats')),
+                ButtonSegment(
+                  value: true,
+                  icon: Icon(Icons.point_of_sale_rounded),
+                  label: Text('Ventes'),
+                ),
+                ButtonSegment(
+                  value: false,
+                  icon: Icon(Icons.add_shopping_cart_rounded),
+                  label: Text('Achats'),
+                ),
               ],
               selected: {showSales},
-              onSelectionChanged: (value) => setState(() => showSales = value.first),
+              onSelectionChanged: (value) =>
+                  setState(() => showSales = value.first),
             ),
             const SizedBox(height: 14),
             if (visible.isEmpty)
@@ -8626,7 +11351,9 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                         child: Row(
                           children: [
                             Icon(
-                              sale != null ? Icons.point_of_sale_rounded : Icons.add_shopping_cart_rounded,
+                              sale != null
+                                  ? Icons.point_of_sale_rounded
+                                  : Icons.add_shopping_cart_rounded,
                               color: AppPalette.primary,
                             ),
                             const SizedBox(width: 12),
@@ -8634,14 +11361,41 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(productId == null ? 'Opération supprimée' : productFor(productId)?.displayReference ?? 'Produit', style: const TextStyle(fontWeight: FontWeight.w900)),
+                                  Text(
+                                    productId == null
+                                        ? 'Opération supprimée'
+                                        : productFor(productId)
+                                                  ?.displayReference ??
+                                              'Produit',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
                                   const SizedBox(height: 3),
-                                  Text('$partner · ${dateText(payment.createdAt)}', style: const TextStyle(color: AppPalette.muted, fontSize: 12)),
-                                  Text(payment.mode, style: const TextStyle(color: AppPalette.muted, fontSize: 12)),
+                                  Text(
+                                    '$partner · ${dateText(payment.createdAt)}',
+                                    style: const TextStyle(
+                                      color: AppPalette.muted,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                  Text(
+                                    payment.mode,
+                                    style: const TextStyle(
+                                      color: AppPalette.muted,
+                                      fontSize: 12,
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
-                            Text('${formatNumber(payment.amount)} DH', style: const TextStyle(fontWeight: FontWeight.w900, color: AppPalette.primary)),
+                            Text(
+                              '${formatNumber(payment.amount)} DH',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: AppPalette.primary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -8657,7 +11411,11 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
 }
 
 class _PaymentSourceCard extends StatelessWidget {
-  const _PaymentSourceCard({required this.source, required this.total, required this.onTap});
+  const _PaymentSourceCard({
+    required this.source,
+    required this.total,
+    required this.onTap,
+  });
   final PaymentSource source;
   final double total;
   final VoidCallback onTap;
@@ -8670,18 +11428,37 @@ class _PaymentSourceCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(22),
       child: Glass(
         padding: const EdgeInsets.all(16),
-        child: Row(children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(color: AppPalette.primary.withValues(alpha: .14), shape: BoxShape.circle),
-            child: const Icon(Icons.payments_rounded, color: AppPalette.primary),
-          ),
-          const SizedBox(width: 12),
-          Expanded(child: Text(source.label, style: const TextStyle(fontWeight: FontWeight.w900))),
-          Text('${formatNumber(total)} DH', style: const TextStyle(fontWeight: FontWeight.w900, color: AppPalette.primary)),
-          const SizedBox(width: 4),
-          const Icon(Icons.chevron_right_rounded, color: AppPalette.muted),
-        ]),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppPalette.primary.withValues(alpha: .14),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.payments_rounded,
+                color: AppPalette.primary,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                source.label,
+                style: const TextStyle(fontWeight: FontWeight.w900),
+              ),
+            ),
+            Text(
+              '${formatNumber(total)} DH',
+              style: const TextStyle(
+                fontWeight: FontWeight.w900,
+                color: AppPalette.primary,
+              ),
+            ),
+            const SizedBox(width: 4),
+            const Icon(Icons.chevron_right_rounded, color: AppPalette.muted),
+          ],
+        ),
       ),
     ),
   );
@@ -8695,10 +11472,16 @@ class _PaymentDetail extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.only(bottom: 10),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(label, style: const TextStyle(color: AppPalette.muted, fontSize: 12)),
-      Text(value, style: const TextStyle(fontWeight: FontWeight.w800)),
-    ]),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+        ),
+        Text(value, style: const TextStyle(fontWeight: FontWeight.w800)),
+      ],
+    ),
   );
 }
 
@@ -8707,62 +11490,40 @@ class _StockActionButton extends StatelessWidget {
     required this.icon,
     required this.title,
     required this.subtitle,
-    required this.colors,
+    required this.accent,
     required this.onTap,
-    this.foreground = Colors.white,
   });
   final IconData icon;
   final String title;
   final String subtitle;
-  final List<Color> colors;
+  final Color accent;
   final VoidCallback onTap;
-  final Color foreground;
 
   @override
-  Widget build(BuildContext context) => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(22),
-      child: Ink(
-        height: 112,
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: colors,
+  Widget build(BuildContext context) => _LiquidTapTarget(
+    radius: 22,
+    accent: accent,
+    onTap: onTap,
+    child: Padding(
+      padding: const EdgeInsets.all(13),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _AtelierIcon(icon, color: accent, size: 36),
+          const SizedBox(height: 12),
+          Text(
+            title,
+            style: const TextStyle(
+              color: AppPalette.text,
+              fontWeight: FontWeight.w800,
+            ),
           ),
-          borderRadius: BorderRadius.circular(22),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(7),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: .20),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(icon, color: foreground, size: 20),
-            ),
-            const Spacer(),
-            Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: foreground,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              subtitle,
-              style: TextStyle(color: foreground.withValues(alpha: .78), fontSize: 11),
-            ),
-          ],
-        ),
+          const SizedBox(height: 3),
+          Text(
+            subtitle,
+            style: const TextStyle(color: AppPalette.muted, fontSize: 11),
+          ),
+        ],
       ),
     ),
   );
@@ -8783,7 +11544,7 @@ class _StockMetric extends StatelessWidget {
           Text(
             value,
             style: const TextStyle(
-              color: Colors.white,
+              color: AppPalette.text,
               fontSize: 20,
               fontWeight: FontWeight.w900,
             ),
@@ -8792,7 +11553,7 @@ class _StockMetric extends StatelessWidget {
           Text(
             label,
             style: const TextStyle(
-              color: Color(0xFFF6F2FF),
+              color: AppPalette.muted,
               fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
@@ -8816,19 +11577,14 @@ class _StockSecondaryAction extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: Ink(
-        height: 66,
+  Widget build(BuildContext context) => _LiquidTapTarget(
+    radius: 20,
+    accent: color,
+    onTap: onTap,
+    child: SizedBox(
+      height: 66,
+      child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 13),
-        decoration: BoxDecoration(
-          color: AppPalette.surfaceRaised,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppPalette.line),
-        ),
         child: Row(
           children: [
             Container(
@@ -8935,6 +11691,8 @@ class StockRecordsPage extends StatefulWidget {
     required this.products,
     required this.additions,
     required this.sales,
+    required this.transfers,
+    required this.depots,
     required this.saleReturns,
     required this.suppliers,
     required this.clients,
@@ -8948,6 +11706,8 @@ class StockRecordsPage extends StatefulWidget {
   final List<Product> products;
   final List<StockAddition> additions;
   final List<Sale> sales;
+  final List<StockTransfer> transfers;
+  final List<Depot> depots;
   final List<SaleReturn> saleReturns;
   final List<Supplier> suppliers;
   final List<Client> clients;
@@ -8962,10 +11722,69 @@ class StockRecordsPage extends StatefulWidget {
   State<StockRecordsPage> createState() => _StockRecordsPageState();
 }
 
+enum _StockRecordSection { purchases, sales, transfers }
+
 class _StockRecordsPageState extends State<StockRecordsPage> {
-  bool purchasesSelected = true;
+  _StockRecordSection section = _StockRecordSection.purchases;
+  final activeFilters = <_StockRecordSection>{};
+  Set<String> supplierFilter = {};
+  Set<String> clientFilter = {};
+  String? firstDepot;
+  String? secondDepot;
   late List<SaleReturn> saleReturns;
   late List<StockAddition> additions;
+
+  Widget recordFilters() => switch (section) {
+    _StockRecordSection.purchases => SearchChoiceField(
+      label: 'Fournisseurs',
+      options: _choices(
+        widget.suppliers,
+        (item) => item.id,
+        (item) => _partnerLabel(item.name, item.company),
+      ),
+      selected: supplierFilter,
+      multiple: true,
+      onChanged: (ids) => setState(() => supplierFilter = ids),
+    ),
+    _StockRecordSection.sales => SearchChoiceField(
+      label: 'Clients',
+      options: _choices(
+        widget.clients,
+        (item) => item.id,
+        (item) => _partnerLabel(item.name, item.company),
+      ),
+      selected: clientFilter,
+      multiple: true,
+      onChanged: (ids) => setState(() => clientFilter = ids),
+    ),
+    _StockRecordSection.transfers => _TransferDepotFields(
+      depots: widget.depots,
+      first: firstDepot,
+      second: secondDepot,
+      onChanged: (first, second) => setState(() {
+        firstDepot = first;
+        secondDepot = second;
+      }),
+    ),
+  };
+
+  Widget _transferTile(StockTransfer item) {
+    final itemProduct = product(item.productId);
+    return ListTile(
+      leading: const Icon(Icons.swap_horiz),
+      title: Text(itemProduct?.displayReference ?? 'Produit'),
+      subtitle: Text(
+        '${widget.depotName(item.sourceDepotId)} → ${widget.depotName(item.destinationDepotId)}\n'
+        '${dateText(item.createdAt)} · ${item.draft ? 'Brouillon' : 'Validé'}',
+      ),
+      isThreeLine: true,
+      trailing: Text(
+        itemProduct == null
+            ? '${item.pieces} pièces'
+            : productQuantityLabel(itemProduct, item.pieces),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -9009,9 +11828,38 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final hasRecords = purchasesSelected
-        ? additions.isNotEmpty
-        : widget.sales.isNotEmpty;
+    final filtering = activeFilters.contains(section);
+    final records = switch (section) {
+      _StockRecordSection.purchases =>
+        additions
+            .where(
+              (item) =>
+                  !filtering ||
+                  supplierFilter.isEmpty ||
+                  supplierFilter.contains(item.supplierId),
+            )
+            .map(_purchaseTile)
+            .toList(),
+      _StockRecordSection.sales =>
+        widget.sales
+            .where(
+              (item) =>
+                  !filtering ||
+                  clientFilter.isEmpty ||
+                  clientFilter.contains(item.clientId),
+            )
+            .map(_saleTile)
+            .toList(),
+      _StockRecordSection.transfers =>
+        widget.transfers
+            .where(
+              (item) =>
+                  !filtering ||
+                  transferMatchesDepots(item, firstDepot, secondDepot),
+            )
+            .map(_transferTile)
+            .toList(),
+    };
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: Aura(
@@ -9024,15 +11872,7 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                   padding: const EdgeInsets.fromLTRB(12, 12, 22, 20),
                   child: Row(
                     children: [
-                      IconButton(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.arrow_back_rounded),
-                        color: AppPalette.primary,
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.white,
-                        ),
-                        tooltip: 'Retour',
-                      ),
+                      const _AtelierBackButton(),
                       const SizedBox(width: 12),
                       const Expanded(
                         child: Column(
@@ -9044,13 +11884,13 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                               style: TextStyle(
                                 fontSize: 21,
                                 fontWeight: FontWeight.w900,
-                                color: Colors.white,
+                                color: AppPalette.text,
                               ),
                             ),
                             SizedBox(height: 3),
                             Text(
-                              'Consultez séparément les achats et les ventes.',
-                              style: TextStyle(color: Color(0xFFE9E7FF)),
+                              'Achats, ventes et transferts entre dépôts.',
+                              style: TextStyle(color: AppPalette.muted),
                             ),
                           ],
                         ),
@@ -9065,46 +11905,47 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Center(
-                        child: SegmentedButton<bool>(
+                        child: SegmentedButton<_StockRecordSection>(
                           segments: const [
                             ButtonSegment(
-                              value: true,
-                              icon: Icon(Icons.shopping_cart_checkout_rounded),
+                              value: _StockRecordSection.purchases,
                               label: Text('Achats'),
                             ),
                             ButtonSegment(
-                              value: false,
-                              icon: Icon(Icons.point_of_sale_rounded),
+                              value: _StockRecordSection.sales,
                               label: Text('Ventes'),
                             ),
+                            ButtonSegment(
+                              value: _StockRecordSection.transfers,
+                              label: Text('Transferts'),
+                            ),
                           ],
-                          selected: {purchasesSelected},
-                          onSelectionChanged: (selection) => setState(
-                            () => purchasesSelected = selection.first,
-                          ),
+                          selected: {section},
+                          onSelectionChanged: (selection) =>
+                              setState(() => section = selection.first),
                         ),
                       ),
-                      const SizedBox(height: 18),
-                      if (!hasRecords)
-                        Empty(
-                          icon: purchasesSelected
-                              ? Icons.shopping_cart_outlined
-                              : Icons.point_of_sale_outlined,
-                          title: purchasesSelected
-                              ? 'Aucun achat enregistré'
-                              : 'Aucune vente enregistrée',
-                          detail: purchasesSelected
-                              ? 'Les prochains achats apparaîtront dans ce registre.'
-                              : 'Les prochaines ventes apparaîtront dans ce registre.',
+                      CheckboxListTile(
+                        value: filtering,
+                        title: const Text('Filtrer cette section'),
+                        onChanged: (enabled) => setState(() {
+                          if (enabled == true) {
+                            activeFilters.add(section);
+                          } else {
+                            activeFilters.remove(section);
+                          }
+                        }),
+                      ),
+                      if (filtering) recordFilters(),
+                      const SizedBox(height: 12),
+                      if (records.isEmpty)
+                        const Empty(
+                          icon: Icons.receipt_long_outlined,
+                          title: 'Aucun enregistrement',
+                          detail: 'Les enregistrements correspondant à cette section apparaîtront ici.',
                         )
                       else
-                        Glass(
-                          child: Column(
-                            children: purchasesSelected
-                                ? additions.map(_purchaseTile).toList()
-                                : widget.sales.map(_saleTile).toList(),
-                          ),
-                        ),
+                        Glass(child: Column(children: records)),
                     ],
                   ),
                 ),
@@ -9317,6 +12158,8 @@ class DepotsPage extends StatelessWidget {
     super.key,
     required this.depots,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.stock,
     required this.canEdit,
     required this.canTransfer,
@@ -9325,6 +12168,8 @@ class DepotsPage extends StatelessWidget {
   });
   final List<Depot> depots;
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final int Function(String, String) stock;
   final bool canEdit;
   final bool canTransfer;
@@ -9388,6 +12233,8 @@ class DepotsPage extends StatelessWidget {
                         builder: (_) => DepotDetailsPage(
                           depot: depot,
                           products: products,
+                          categories: categories,
+                          catalogFamilies: catalogFamilies,
                           stock: stock,
                         ),
                       ),
@@ -9413,7 +12260,7 @@ class DepotsPage extends StatelessWidget {
                                 Text(
                                   '$pieces pièce(s)',
                                   style: const TextStyle(
-                                    color: Color(0xFF725280),
+                                    color: AppPalette.muted,
                                   ),
                                 ),
                               ],
@@ -9449,10 +12296,14 @@ class DepotDetailsPage extends StatelessWidget {
     super.key,
     required this.depot,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.stock,
   });
   final Depot depot;
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final int Function(String, String) stock;
 
   @override
@@ -9503,36 +12354,41 @@ class DepotDetailsPage extends StatelessWidget {
                         'Aucun stock n’est actuellement attribué à ce dépôt.',
                   )
                 else
-                  Glass(
-                    child: Column(
-                      children: stored
-                          .map(
-                            (product) => ListTile(
-                              leading: SizedBox(
-                                width: 48,
-                                child: ProductImage(
-                                  product: product,
-                                  height: 48,
+                  CatalogProductBrowser(
+                    products: stored,
+                    categories: categories,
+                    catalogFamilies: catalogFamilies,
+                    buildProducts: (items) => Glass(
+                      child: Column(
+                        children: items
+                            .map(
+                              (product) => ListTile(
+                                leading: SizedBox(
+                                  width: 48,
+                                  child: ProductImage(
+                                    product: product,
+                                    height: 48,
+                                  ),
+                                ),
+                                title: Text(
+                                  product.displayReference,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  '${formatNumber(stock(product.id, depot.id) * product.lengthMeters)} m',
+                                ),
+                                trailing: Text(
+                                  '${stock(product.id, depot.id)} pièces',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                  ),
                                 ),
                               ),
-                              title: Text(
-                                product.displayReference,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                              subtitle: Text(
-                                '${formatNumber(stock(product.id, depot.id) * product.lengthMeters)} m',
-                              ),
-                              trailing: Text(
-                                '${stock(product.id, depot.id)} pièces',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                            ),
-                          )
-                          .toList(),
+                            )
+                            .toList(),
+                      ),
                     ),
                   ),
               ],
@@ -9720,11 +12576,11 @@ class MachinesPage extends StatelessWidget {
                               m.temporary
                                   ? 'Fin prévue : ${m.deadline == null ? 'non définie' : dateText(m.deadline!)} · ${m.type == MachineType.roulage ? 'Roulage' : 'Standard'}'
                                   : 'Exemplaire ${unit.usable ? 'disponible' : 'indisponible'} · ${m.type == MachineType.roulage ? 'Roulage' : 'Standard'}',
-                              style: const TextStyle(color: Color(0xFF725280)),
+                              style: const TextStyle(color: AppPalette.muted),
                             ),
                             Text(
                               'Catégorie : ${categoryName(m.categoryId)}',
-                              style: const TextStyle(color: Color(0xFF725280)),
+                              style: const TextStyle(color: AppPalette.muted),
                             ),
                             Text(
                               'Produit fabriqué : ${productName(m.outputId)}',
@@ -9778,7 +12634,7 @@ class MachinesPage extends StatelessWidget {
                               const Text(
                                 'Accès réservé à l’opérateur assigné',
                                 style: TextStyle(
-                                  color: Color(0xFF725280),
+                                  color: AppPalette.muted,
                                   fontSize: 12,
                                 ),
                               ),
@@ -9866,84 +12722,6 @@ class MachinesPage extends StatelessWidget {
   );
 }
 
-class CategoriesPage extends StatelessWidget {
-  const CategoriesPage({
-    super.key,
-    required this.categories,
-    required this.products,
-    required this.admin,
-    required this.onAdd,
-    required this.onEdit,
-  });
-  final List<ProductCategory> categories;
-  final List<Product> products;
-  final bool admin;
-  final VoidCallback onAdd;
-  final ValueChanged<ProductCategory> onEdit;
-
-  @override
-  Widget build(BuildContext context) => Page(
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SectionHero(
-          icon: Icons.category_rounded,
-          title: 'Catégories',
-          subtitle: 'Organisez les produits utilisés par vos machines.',
-          trailing: admin
-              ? IconButton.filled(
-                  onPressed: onAdd,
-                  icon: const Icon(Icons.add),
-                  tooltip: 'Ajouter une catégorie',
-                )
-              : null,
-        ),
-        const SizedBox(height: 16),
-        if (categories.isEmpty)
-          const Empty(
-            icon: Icons.category_outlined,
-            title: 'Aucune catégorie',
-            detail: 'Créez une catégorie puis sélectionnez ses produits.',
-          )
-        else
-          ...categories.map((category) {
-            final names = products
-                .where(
-                  (product) =>
-                      product.canBeUsedInMachine &&
-                      category.productIds.contains(product.id),
-                )
-                .map((product) => product.displayReference)
-                .join(' · ');
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Glass(
-                child: ListTile(
-                  leading: CategoryImage(category: category, size: 48),
-                  title: Text(
-                    category.name,
-                    style: const TextStyle(fontWeight: FontWeight.w900),
-                  ),
-                  subtitle: Text(
-                    names.isEmpty ? 'Aucun produit sélectionné' : names,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: admin
-                      ? IconButton.filledTonal(
-                          icon: const Icon(Icons.edit_outlined),
-                          onPressed: () => onEdit(category),
-                          tooltip: 'Modifier',
-                        )
-                      : null,
-                ),
-              ),
-            );
-          }),
-      ],
-    ),
-  );
-}
 
 class CategoryForm extends StatefulWidget {
   const CategoryForm({super.key, this.initial});
@@ -9964,6 +12742,12 @@ class _CategoryFormState extends State<CategoryForm> {
     }
   }
 
+  @override
+  void dispose() {
+    name.dispose();
+    super.dispose();
+  }
+
   Future<void> pickImage() async {
     final file = await ImagePicker().pickImage(
       source: ImageSource.gallery,
@@ -9971,13 +12755,20 @@ class _CategoryFormState extends State<CategoryForm> {
       maxWidth: 1600,
     );
     if (file == null) return;
-    final bytes = await file.readAsBytes();
-    if (mounted) setState(() => image = bytes);
+    final bytes = await readAcceptedImage(file, maximumBytes: 600 * 1024);
+    if (!mounted) return;
+    if (bytes == null) {
+      return message(
+        context,
+        'Cette image est trop grande. Choisissez-en une autre.',
+      );
+    }
+    setState(() => image = bytes);
   }
 
   void save() {
-    if (name.text.trim().isEmpty || image == null) {
-      message(context, 'Ajoutez une photo et un nom.');
+    if (name.text.trim().isEmpty) {
+      message(context, 'Indiquez le nom de la catégorie.');
       return;
     }
     Navigator.pop(
@@ -9988,7 +12779,8 @@ class _CategoryFormState extends State<CategoryForm> {
             DateTime.now().microsecondsSinceEpoch.toString(),
         name: name.text.trim(),
         productIds: widget.initial?.productIds ?? const [],
-        image: image!,
+        image: image ?? Uint8List(0),
+        families: widget.initial?.families ?? const [],
       ),
     );
   }
@@ -10008,14 +12800,10 @@ class _CategoryFormState extends State<CategoryForm> {
         const SizedBox(height: 14),
         ImageInput(
           bytes: image,
-          label: 'Photo de la catégorie *',
+          label: 'Photo de la catégorie',
           onTap: pickImage,
         ),
         const SizedBox(height: 12),
-        const Text(
-          'Les produits bruts seront rattachés à cette catégorie lors de leur ajout.',
-          style: TextStyle(color: Color(0xFF725280), fontSize: 12),
-        ),
         const SizedBox(height: 20),
         SizedBox(
           width: double.infinity,
@@ -10336,7 +13124,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
                       ],
                       if (widget.admin) ...[
                         const SizedBox(height: 12),
-                        DropdownButtonFormField<String>(
+                        LiquidSelectFormField<String>(
                           initialValue: selectedDepots[operation.id],
                           decoration: const InputDecoration(
                             labelText:
@@ -10777,7 +13565,7 @@ class ValidationPage extends StatelessWidget {
               OutlinedButton.icon(
                 onPressed: () async => onCancel(),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFFB91C1C),
+                  foregroundColor: AppPalette.coral,
                 ),
                 icon: const Icon(Icons.cancel_outlined, size: 18),
                 label: const Text('Annuler'),
@@ -11225,7 +14013,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: Text(title),
-          content: DropdownButtonFormField<T>(
+          content: LiquidSelectFormField<T>(
             isExpanded: true,
             decoration: const InputDecoration(labelText: 'Élément'),
             items: values
@@ -11247,9 +14035,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
               onPressed: selected == null
                   ? null
                   : () => Navigator.pop(context, selected),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFB91C1C),
-              ),
+              style: _criticalActionStyle,
               child: const Text('Continuer'),
             ),
           ],
@@ -11271,9 +14057,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFB91C1C),
-              ),
+              style: _criticalActionStyle,
               child: const Text('Supprimer'),
             ),
           ],
@@ -11455,12 +14239,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
     );
     if (name == null || name.isEmpty) return;
     await widget.database.updateCategory(
-      ProductCategory(
-        id: item.id,
-        name: name,
-        productIds: item.productIds,
-        image: item.image,
-      ),
+      item.copyWith(name: name),
     );
     await _finish('Catégorie modifiée.');
   }
@@ -11741,7 +14520,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              DropdownButtonFormField<Product>(
+              LiquidSelectFormField<Product>(
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Produit'),
                 items: widget.products
@@ -11758,7 +14537,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                 onChanged: (value) => setDialogState(() => product = value),
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<Depot>(
+              LiquidSelectFormField<Depot>(
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Dépôt'),
                 items: widget.depots
@@ -11820,20 +14599,20 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
             children: [
               IconButton(
                 onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.arrow_back, color: Colors.white),
+                icon: const Icon(Icons.arrow_back, color: AppPalette.primary),
               ),
               const Text(
                 'Mode développeur',
                 style: TextStyle(
                   fontSize: 26,
                   fontWeight: FontWeight.w900,
-                  color: Colors.white,
+                  color: AppPalette.text,
                 ),
               ),
               const SizedBox(height: 6),
               const Text(
                 'Zone réservée au propriétaire. Modifiez ou supprimez tout élément ; les suppressions sont définitives.',
-                style: TextStyle(color: Color(0xFFFEE2E2)),
+                style: TextStyle(color: AppPalette.coral),
               ),
               const SizedBox(height: 22),
               Glass(
@@ -12023,6 +14802,209 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
   );
 }
 
+class DeviceRequestsPage extends StatefulWidget {
+  const DeviceRequestsPage({super.key, required this.userName});
+
+  final String Function(String userId) userName;
+
+  @override
+  State<DeviceRequestsPage> createState() => _DeviceRequestsPageState();
+}
+
+class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
+  late Future<List<DeviceAccessRequest>> requests;
+  late Future<List<TrustedDevice>> devices;
+
+  @override
+  void initState() {
+    super.initState();
+    requests = SupabaseAccounts.pendingDeviceRequests();
+    devices = SupabaseAccounts.trustedDevices();
+  }
+
+  void reload() => setState(() {
+    requests = SupabaseAccounts.pendingDeviceRequests();
+    devices = SupabaseAccounts.trustedDevices();
+  });
+
+  Future<void> changeStatus(TrustedDevice device, String status) async {
+    await SupabaseAccounts.setDeviceStatus(device.id, status);
+    reload();
+  }
+
+  Future<void> decide(
+    DeviceAccessRequest request, {
+    required bool approve,
+    bool makePrimary = false,
+  }) async {
+    try {
+      await SupabaseAccounts.decideDeviceRequest(
+        request,
+        approve: approve,
+        makePrimary: makePrimary,
+      );
+      if (mounted) {
+        message(
+          context,
+          approve
+              ? (makePrimary
+                    ? 'Appareil principal approuvé.'
+                    : 'Appareil secondaire autorisé.')
+              : 'Appareil refusé.',
+        );
+      }
+      reload();
+    } catch (_) {
+      if (mounted) {
+        message(
+          context,
+          'Impossible de traiter la demande. Vérifiez la limite de deux appareils principaux.',
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('Demandes d’appareil'),
+      actions: [
+        IconButton(onPressed: reload, icon: const Icon(Icons.refresh_rounded)),
+      ],
+    ),
+    body: FutureBuilder<List<DeviceAccessRequest>>(
+      future: requests,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return Center(
+            child: FilledButton.icon(
+              onPressed: reload,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Réessayer'),
+            ),
+          );
+        }
+        final values = snapshot.data ?? const <DeviceAccessRequest>[];
+        return ListView.separated(
+          padding: const EdgeInsets.all(16),
+          itemCount: values.length + 1,
+          separatorBuilder: (_, _) => const SizedBox(height: 10),
+          itemBuilder: (context, index) {
+            if (index == values.length) {
+              return FutureBuilder<List<TrustedDevice>>(
+                future: devices,
+                builder: (context, deviceSnapshot) {
+                  final items = deviceSnapshot.data ?? const <TrustedDevice>[];
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Appareils autorisés',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 18,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      if (items.isEmpty) const Text('Aucun appareil approuvé.'),
+                      ...items.map(
+                        (device) => Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Glass(
+                            radius: 22,
+                            frosted: true,
+                            padding: const EdgeInsets.all(4),
+                            child: ListTile(
+                            leading: Icon(
+                              device.primary
+                                  ? Icons.star_rounded
+                                  : Icons.phone_android_rounded,
+                            ),
+                            title: Text(device.label),
+                            subtitle: Text(
+                              '${device.email}\n'
+                              '${device.primary ? 'Principal' : 'Secondaire'} · ${device.status}\n'
+                              'Entrée : ${device.lastLoginAt == null ? '—' : dateText(device.lastLoginAt!)} · '
+                              'Sortie : ${device.lastLogoutAt == null ? 'En cours' : dateText(device.lastLogoutAt!)}',
+                            ),
+                            isThreeLine: true,
+                              trailing: PopupMenuButton<String>(
+                                onSelected: (value) =>
+                                    changeStatus(device, value),
+                                itemBuilder: (_) => const [
+                                  PopupMenuItem(
+                                    value: 'active',
+                                    child: Text('Autoriser'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'suspended',
+                                    child: Text('Suspendre'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'blocked',
+                                    child: Text('Bloquer'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              );
+            }
+            final request = values[index];
+            return Glass(
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Column(
+                  children: [
+                    ListTile(
+                      leading: const Icon(Icons.phonelink_lock_outlined),
+                      title: Text(widget.userName(request.userId)),
+                      subtitle: Text(
+                        '${request.deviceLabel}\nDemandé le ${dateText(request.requestedAt)}',
+                      ),
+                    ),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      alignment: WrapAlignment.end,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: () => decide(request, approve: false),
+                          icon: const Icon(Icons.close_rounded),
+                          label: const Text('Refuser'),
+                        ),
+                        FilledButton.icon(
+                          onPressed: () => decide(request, approve: true),
+                          icon: const Icon(Icons.check_rounded),
+                          label: const Text('Autoriser cet appareil'),
+                        ),
+                        FilledButton.icon(
+                          onPressed: () =>
+                              decide(request, approve: true, makePrimary: true),
+                          icon: const Icon(Icons.star_rounded),
+                          label: const Text('Rendre principal'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    ),
+  );
+}
+
 class UsersPage extends StatefulWidget {
   const UsersPage({
     super.key,
@@ -12032,13 +15014,15 @@ class UsersPage extends StatefulWidget {
     required this.onUpdate,
     required this.onLoadSessions,
     required this.onOpenPayroll,
+    required this.onOpenDeviceRequests,
   });
   final List<AppUser> users;
   final bool admin;
-  final Future<void> Function(AppUser) onAdd;
+  final Future<AppUser> Function(AppUser) onAdd;
   final Future<void> Function(AppUser) onUpdate;
   final Future<List<UserSession>> Function(String) onLoadSessions;
   final VoidCallback onOpenPayroll;
+  final VoidCallback onOpenDeviceRequests;
   @override
   State<UsersPage> createState() => _UsersPageState();
 }
@@ -12095,19 +15079,35 @@ class _UsersPageState extends State<UsersPage> {
             subtitle: '${visibleUsers.length} membre(s) de l’atelier.',
           ),
           const SizedBox(height: 16),
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              const Expanded(
-                child: Text(
-                  'Gérer les membres',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-                ),
+              const Text(
+                'Gérer les membres',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
               ),
               if (widget.admin) ...[
                 OutlinedButton.icon(
                   onPressed: widget.onOpenPayroll,
                   icon: const Icon(Icons.payments_outlined),
                   label: const Text('Paie'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: widget.onOpenDeviceRequests,
+                  icon: const Icon(Icons.phonelink_lock_outlined),
+                  label: const Text('Appareils'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const SecurityActivityPage(),
+                    ),
+                  ),
+                  icon: const Icon(Icons.security_rounded),
+                  label: const Text('Sécurité'),
                 ),
                 const SizedBox(width: 8),
                 FilledButton.icon(
@@ -12126,8 +15126,10 @@ class _UsersPageState extends State<UsersPage> {
                     (u) => ListTile(
                       onTap: () => open(u),
                       leading: CircleAvatar(
-                        backgroundColor: const Color(0xFFE9D5FF),
-                        foregroundColor: const Color(0xFF6B21A8),
+                        backgroundColor: AppPalette.primary.withValues(
+                          alpha: .16,
+                        ),
+                        foregroundColor: AppPalette.primaryDark,
                         child: Text(u.fullName.substring(0, 1).toUpperCase()),
                       ),
                       title: Text(
@@ -12148,7 +15150,8 @@ class _UsersPageState extends State<UsersPage> {
 }
 
 class DepotForm extends StatefulWidget {
-  const DepotForm({super.key});
+  const DepotForm({super.key, required this.allowGallery});
+  final bool allowGallery;
   @override
   State<DepotForm> createState() => _DepotFormState();
 }
@@ -12157,10 +15160,14 @@ class StockTransferForm extends StatefulWidget {
   const StockTransferForm({
     super.key,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.depots,
     required this.available,
   });
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final List<Depot> depots;
   final int Function(String productId, String depotId) available;
   @override
@@ -12176,9 +15183,12 @@ class _StockTransferFormState extends State<StockTransferForm> {
 
   void save() {
     if (!(form.currentState?.validate() ?? false)) return;
+    if (productId == null) {
+      message(context, 'Choisissez un produit.');
+      return;
+    }
     final quantity = int.tryParse(pieces.text) ?? 0;
-    if (productId == null ||
-        sourceDepotId == null ||
+    if (sourceDepotId == null ||
         destinationDepotId == null ||
         sourceDepotId == destinationDepotId ||
         quantity <= 0 ||
@@ -12207,23 +15217,26 @@ class _StockTransferFormState extends State<StockTransferForm> {
       key: form,
       child: Column(
         children: [
-          DropdownButtonFormField<String>(
-            initialValue: productId,
-            decoration: const InputDecoration(labelText: 'Produit *'),
-            items: widget.products
-                .map(
-                  (item) => DropdownMenuItem(
-                    value: item.id,
-                    child: Text(item.displayReference),
-                  ),
-                )
-                .toList(),
-            onChanged: (value) => setState(() => productId = value),
-            validator: (value) =>
-                value == null ? 'Choisissez un produit.' : null,
+          CatalogProductBrowser(
+            products: widget.products,
+            categories: widget.categories,
+            catalogFamilies: widget.catalogFamilies,
+            buildProducts: (products) => ProductPicker(
+              products: products,
+              selected: productId == null ? <String>{} : {productId!},
+              onTap: (product) => setState(() => productId = product.id),
+            ),
           ),
+          if (widget.products
+                  .where((product) => product.id == productId)
+                  .firstOrNull
+              case final product?)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text('Produit sélectionné : ${product.displayReference}'),
+            ),
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
+          LiquidSelectFormField<String>(
             initialValue: sourceDepotId,
             decoration: const InputDecoration(labelText: 'Dépôt de départ *'),
             items: widget.depots
@@ -12237,7 +15250,7 @@ class _StockTransferFormState extends State<StockTransferForm> {
                 value == null ? 'Choisissez le dépôt de départ.' : null,
           ),
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
+          LiquidSelectFormField<String>(
             initialValue: destinationDepotId,
             decoration: const InputDecoration(labelText: 'Dépôt d’arrivée *'),
             items: widget.depots
@@ -12287,18 +15300,28 @@ class _DepotFormState extends State<DepotForm> {
 
   Future<void> pick() async {
     final file = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
+      source: widget.allowGallery ? ImageSource.gallery : ImageSource.camera,
       imageQuality: 82,
       maxWidth: 1600,
     );
     if (file != null) {
-      final bytes = await file.readAsBytes();
-      if (mounted) setState(() => image = bytes);
+      final bytes = await readAcceptedImage(file, maximumBytes: 600 * 1024);
+      if (!mounted) return;
+      if (bytes == null) {
+        return message(
+          context,
+          'Cette image est trop grande. Choisissez-en une autre.',
+        );
+      }
+      setState(() => image = bytes);
     }
   }
 
   void save() {
-    if (!(form.currentState?.validate() ?? false)) return;
+    if (!(form.currentState?.validate() ?? false) || image == null) {
+      message(context, 'Prenez une photo du dépôt avant de continuer.');
+      return;
+    }
     Navigator.pop(
       context,
       Depot(
@@ -12324,7 +15347,9 @@ class _DepotFormState extends State<DepotForm> {
           const SizedBox(height: 14),
           ImageInput(
             bytes: image,
-            label: 'Photo du dépôt (facultatif)',
+            label: widget.allowGallery
+                ? 'Photo du dépôt * (galerie)'
+                : 'Photo du dépôt * (caméra)',
             onTap: pick,
           ),
           const SizedBox(height: 20),
@@ -12408,10 +15433,12 @@ class ProductForm extends StatefulWidget {
     required this.kind,
     required this.depots,
     required this.categories,
+    this.catalogFamilies = const [],
   });
   final ProductKind kind;
   final List<Depot> depots;
   final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
 
   @override
   State<ProductForm> createState() => _ProductFormState();
@@ -12420,6 +15447,7 @@ class ProductForm extends StatefulWidget {
 class _ProductFormState extends State<ProductForm> {
   final form = GlobalKey<FormState>();
   final manufacturedName = TextEditingController();
+  final reference = TextEditingController();
   final length = TextEditingController();
   final width = TextEditingController();
   final metersPerPiece = TextEditingController();
@@ -12428,11 +15456,24 @@ class _ProductFormState extends State<ProductForm> {
   Uint8List? image;
   String? initialDepotId;
   String? categoryId;
+  String? familyId;
   MaterialType material = MaterialType.steel;
   LengthUnit lengthUnit = LengthUnit.meter;
   LengthUnit widthUnit = LengthUnit.meter;
   ThicknessUnit thicknessUnit = ThicknessUnit.millimeter;
   HoseUnit hoseUnit = HoseUnit.piece;
+
+  @override
+  void dispose() {
+    manufacturedName.dispose();
+    reference.dispose();
+    length.dispose();
+    width.dispose();
+    metersPerPiece.dispose();
+    thickness.dispose();
+    initialStock.dispose();
+    super.dispose();
+  }
 
   bool get isManufactured => widget.kind == ProductKind.manufactured;
   bool get hasStandardMeasurements => widget.kind == ProductKind.standard;
@@ -12463,27 +15504,58 @@ class _ProductFormState extends State<ProductForm> {
   double? get calculatedInsideDiameter => calculatedOutsideDiameter == null
       ? null
       : calculatedOutsideDiameter! - (2 * enteredThicknessCentimetres);
-  String get categoryName =>
-      widget.categories
-          .where((category) => category.id == categoryId)
-          .map((category) => category.name)
-          .firstOrNull ??
-      (isManufactured ? manufacturedName.text.trim() : 'Produit');
-  String get automaticReference {
+  List<_CatalogGroup> get groups =>
+      _catalogGroups(widget.categories, widget.catalogFamilies);
+  _CatalogGroup? get selectedGroup =>
+      groups.where((group) => group.id == familyId).firstOrNull;
+  _CatalogSection? get selectedSection => selectedGroup?.sections
+      .where((section) => section.category.id == categoryId)
+      .firstOrNull;
+
+  String get categoryName => selectedSection?.category.name ?? 'Produit';
+  String get productName {
+    if (isManufactured) return manufacturedName.text.trim();
     if (!usesDimensionFields) return categoryName;
     // Width is displayed as "Longueur" and length as "Largeur" in this UI.
     return '$categoryName ${formatNumber(widthMeters * 1000)}*${formatNumber(lengthMeters * 1000)}*${formatNumber(thicknessMillimetres)}';
   }
 
   Future<void> pick() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt_outlined),
+              title: const Text('Prendre une photo'),
+              onTap: () => Navigator.pop(sheetContext, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Choisir depuis le téléphone'),
+              onTap: () => Navigator.pop(sheetContext, ImageSource.gallery),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
     final file = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
+      source: source,
       imageQuality: 82,
       maxWidth: 1600,
     );
     if (file != null) {
-      final bytes = await file.readAsBytes();
-      if (mounted) setState(() => image = bytes);
+      final bytes = await readAcceptedImage(file, maximumBytes: 600 * 1024);
+      if (!mounted) return;
+      if (bytes == null) {
+        return message(
+          context,
+          'Cette image est trop grande. Choisissez-en une autre.',
+        );
+      }
+      setState(() => image = bytes);
     }
   }
 
@@ -12498,11 +15570,14 @@ class _ProductFormState extends State<ProductForm> {
     Navigator.pop(
       context,
       ProductCreation(
-        categoryId: isManufactured ? null : categoryId,
+        categoryId: categoryId,
+        familyId: selectedSection?.legacyFamilyId,
         product: Product(
           id: DateTime.now().microsecondsSinceEpoch.toString(),
-          name: automaticReference,
-          reference: automaticReference,
+          name: productName,
+          reference: hasStandardMeasurements
+              ? productName
+              : reference.text.trim(),
           width: usesDimensionFields ? widthMeters : 1.5,
           lengthMeters: lengthMeters,
           lengthUnit: isHose ? LengthUnit.meter : lengthUnit,
@@ -12534,21 +15609,45 @@ class _ProductFormState extends State<ProductForm> {
         children: [
           ImageInput(bytes: image, label: 'Photo du produit *', onTap: pick),
           const SizedBox(height: 14),
-          if (!isManufactured) ...[
-            DropdownButtonFormField<String>(
-              initialValue: categoryId,
-              decoration: const InputDecoration(labelText: 'Catégorie *'),
-              items: widget.categories
-                  .map(
-                    (category) => DropdownMenuItem(
-                      value: category.id,
-                      child: Text(category.name),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (value) => setState(() => categoryId = value),
-              validator: (value) =>
-                  value == null ? 'Choisissez une catégorie.' : null,
+          if (!isManufactured || widget.categories.isNotEmpty || widget.catalogFamilies.isNotEmpty) ...[
+            LiquidSelectFormField<String>(
+              initialValue: familyId,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Famille *'),
+              items: [
+                for (final family in groups)
+                  DropdownMenuItem(value: family.id, child: Text(family.name)),
+              ],
+              onChanged: (value) => setState(() {
+                familyId = value;
+                categoryId = null;
+              }),
+              validator: (value) => value == null ? 'Choisissez une famille.' : null,
+            ),
+            if (selectedGroup case final family?) ...[
+              const SizedBox(height: 14),
+              LiquidSelectFormField<String>(
+                key: ValueKey(family.id),
+                initialValue: categoryId,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Catégorie *'),
+                items: [
+                  for (final section in family.sections)
+                    DropdownMenuItem(value: section.category.id, child: Text(section.category.name)),
+                ],
+                onChanged: (value) => setState(() => categoryId = value),
+                validator: (value) => value == null ? 'Choisissez une catégorie.' : null,
+              ),
+              if (family.sections.isEmpty)
+                const Text('Ajoutez d’abord une catégorie à cette famille.'),
+            ],
+            const SizedBox(height: 14),
+          ],
+          if (!hasStandardMeasurements) ...[
+            TextFormField(
+              controller: reference,
+              decoration: const InputDecoration(labelText: 'Référence *'),
+              validator: required,
             ),
             const SizedBox(height: 14),
           ],
@@ -12661,7 +15760,7 @@ class _ProductFormState extends State<ProductForm> {
                 const SizedBox(width: 10),
                 SizedBox(
                   width: 112,
-                  child: DropdownButtonFormField<LengthUnit>(
+                  child: LiquidSelectFormField<LengthUnit>(
                     initialValue: widthUnit,
                     decoration: const InputDecoration(labelText: 'Unité'),
                     items: LengthUnit.values
@@ -12694,7 +15793,7 @@ class _ProductFormState extends State<ProductForm> {
                 const SizedBox(width: 10),
                 SizedBox(
                   width: 112,
-                  child: DropdownButtonFormField<LengthUnit>(
+                  child: LiquidSelectFormField<LengthUnit>(
                     initialValue: lengthUnit,
                     decoration: const InputDecoration(labelText: 'Unité'),
                     items: LengthUnit.values
@@ -12727,7 +15826,7 @@ class _ProductFormState extends State<ProductForm> {
                 const SizedBox(width: 10),
                 SizedBox(
                   width: 112,
-                  child: DropdownButtonFormField<ThicknessUnit>(
+                  child: LiquidSelectFormField<ThicknessUnit>(
                     initialValue: thicknessUnit,
                     decoration: const InputDecoration(labelText: 'Unité'),
                     items: ThicknessUnit.values
@@ -12755,8 +15854,8 @@ class _ProductFormState extends State<ProductForm> {
                           'Largeur : ${formatNumber(number(length.text))} ${lengthUnit.label} = ${formatNumber(enteredWidthCentimetres)} cm\n'
                           'Épaisseur : ${formatNumber(number(thickness.text))} ${thicknessUnit.label} = ${formatNumber(enteredThicknessCentimetres)} cm\n\n'
                           'Diamètre extérieur : ${formatNumber(enteredWidthCentimetres)} ÷ π = Ø ${formatNumber(calculatedOutsideDiameter!)} cm\n'
-                          'Diamètre intérieur : ${formatNumber(calculatedOutsideDiameter!)} − (2 × ${formatNumber(enteredThicknessCentimetres)}) = Ø ${formatNumber(calculatedInsideDiameter!)} cm\n\n'
-                          'Référence : $automaticReference',
+                          'Diamètre intérieur : ${formatNumber(calculatedOutsideDiameter!)} − (2 × ${formatNumber(enteredThicknessCentimetres)}) = Ø ${formatNumber(calculatedInsideDiameter!)} cm'
+                          '${hasStandardMeasurements ? '\n\nRéférence : $productName' : ''}',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
@@ -12789,7 +15888,7 @@ class _ProductFormState extends State<ProductForm> {
             },
           ),
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
+          LiquidSelectFormField<String>(
             initialValue: initialDepotId,
             decoration: const InputDecoration(
               labelText: 'Dépôt du stock initial *',
@@ -12823,17 +15922,23 @@ class StockForm extends StatefulWidget {
   const StockForm({
     super.key,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.stock,
     required this.depots,
     required this.suppliers,
     required this.onAddSupplier,
+    required this.allowGallery,
     this.initialProductId,
   });
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final int Function(String) stock;
   final List<Depot> depots;
   final List<Supplier> suppliers;
   final Future<Supplier?> Function() onAddSupplier;
+  final bool allowGallery;
   final String? initialProductId;
 
   @override
@@ -12862,9 +15967,13 @@ class _SupplierFormState extends State<SupplierForm> {
       maxWidth: 1600,
     );
     if (picked.isEmpty) return;
-    final bytes = await Future.wait(
-      picked.take(available).map((file) => file.readAsBytes()),
+    final selected = await Future.wait(
+      picked
+          .take(available)
+          .map((file) => readAcceptedImage(file, maximumBytes: 120 * 1024)),
     );
+    final bytes = selected.whereType<Uint8List>().toList();
+    if (bytes.isEmpty) return;
     if (mounted) setState(() => images.addAll(bytes));
     if (picked.length > available && mounted) {
       message(context, 'Maximum : 10 photos.');
@@ -12959,9 +16068,13 @@ class _ClientFormState extends State<ClientForm> {
       maxWidth: 1600,
     );
     if (picked.isEmpty) return;
-    final bytes = await Future.wait(
-      picked.take(available).map((file) => file.readAsBytes()),
+    final selected = await Future.wait(
+      picked
+          .take(available)
+          .map((file) => readAcceptedImage(file, maximumBytes: 120 * 1024)),
     );
+    final bytes = selected.whereType<Uint8List>().toList();
+    if (bytes.isEmpty) return;
     if (mounted) setState(() => images.addAll(bytes));
     if (picked.length > available && mounted) {
       message(context, 'Maximum : 10 photos.');
@@ -13050,16 +16163,22 @@ class SaleForm extends StatefulWidget {
   const SaleForm({
     super.key,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.depots,
     required this.clients,
     required this.available,
     required this.onAddClient,
+    required this.allowGallery,
   });
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final List<Depot> depots;
   final List<Client> clients;
   final int Function(String, String) available;
   final Future<Client?> Function() onAddClient;
+  final bool allowGallery;
 
   @override
   State<SaleForm> createState() => _SaleFormState();
@@ -13089,15 +16208,9 @@ class _SaleFormState extends State<SaleForm> {
     return null;
   }
 
-  List<Product> get visibleProducts => openedProductFamilyId == null
-      ? widget.products
-            .where((product) => !product.isManufacturedVariant)
-            .toList()
-      : widget.products
-            .where(
-              (product) => product.parentProductId == openedProductFamilyId,
-            )
-            .toList();
+  List<Product> get catalogProducts => widget.products
+      .where((product) => !product.isManufacturedVariant)
+      .toList();
 
   List<Product> derivedFrom(Product product) => widget.products
       .where((item) => item.parentProductId == product.id)
@@ -13119,11 +16232,9 @@ class _SaleFormState extends State<SaleForm> {
     setState(() {
       productId = product.id;
       depotId = null;
-      if (product.isHose) {
-        unit = product.hoseManagedByMeter
-            ? InventoryUnit.meter
-            : InventoryUnit.piece;
-      }
+      unit = product.hoseManagedByMeter
+          ? InventoryUnit.meter
+          : InventoryUnit.piece;
     });
   }
 
@@ -13147,14 +16258,29 @@ class _SaleFormState extends State<SaleForm> {
   Future<void> pickImages() async {
     final available = 10 - images.length;
     if (available <= 0) return message(context, 'Maximum : 10 photos.');
-    final picked = await ImagePicker().pickMultiImage(
-      imageQuality: 82,
-      maxWidth: 1600,
-    );
-    if (picked.isEmpty) return;
-    final bytes = await Future.wait(
-      picked.take(available).map((file) => file.readAsBytes()),
-    );
+    final selectedImages = widget.allowGallery
+        ? await Future.wait(
+            (await ImagePicker().pickMultiImage(
+                  imageQuality: 82,
+                  maxWidth: 1600,
+                ))
+                .take(available)
+                .map(
+                  (file) => readAcceptedImage(file, maximumBytes: 120 * 1024),
+                ),
+          )
+        : await (() async {
+            final file = await ImagePicker().pickImage(
+              source: ImageSource.camera,
+              imageQuality: 82,
+              maxWidth: 1600,
+            );
+            return file == null
+                ? <Uint8List?>[]
+                : [await readAcceptedImage(file, maximumBytes: 120 * 1024)];
+          })();
+    final bytes = selectedImages.whereType<Uint8List>().toList();
+    if (bytes.isEmpty) return;
     if (mounted) setState(() => images.addAll(bytes));
   }
 
@@ -13164,10 +16290,11 @@ class _SaleFormState extends State<SaleForm> {
         depotId == null ||
         clientId == null ||
         entered <= 0 ||
-        pieces <= 0) {
+        pieces <= 0 ||
+        images.isEmpty) {
       return message(
         context,
-        'Choisissez un client, un produit, un dépôt et une quantité valide.',
+        'Prenez une photo, puis choisissez un client, un produit, un dépôt et une quantité valide.',
       );
     }
     if (pieces > widget.available(productId!, depotId!)) {
@@ -13202,22 +16329,16 @@ class _SaleFormState extends State<SaleForm> {
         Row(
           children: [
             Expanded(
-              child: DropdownButtonFormField<String>(
-                initialValue: clientId,
-                decoration: const InputDecoration(labelText: 'Client *'),
-                items: widget.clients
-                    .map(
-                      (client) => DropdownMenuItem(
-                        value: client.id,
-                        child: Text(
-                          client.company.isEmpty
-                              ? client.name
-                              : '${client.name.isEmpty ? 'Client' : client.name} · ${client.company}',
-                        ),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (value) => setState(() => clientId = value),
+              child: SearchChoiceField(
+                label: 'Client *',
+                options: _choices(
+                  widget.clients,
+                  (client) => client.id,
+                  (client) => _partnerLabel(client.name, client.company),
+                ),
+                selected: {?clientId},
+                allowClear: false,
+                onChanged: (ids) => setState(() => clientId = ids.first),
               ),
             ),
             const SizedBox(width: 8),
@@ -13253,14 +16374,34 @@ class _SaleFormState extends State<SaleForm> {
           ],
         ),
         const SizedBox(height: 8),
-        ProductPicker(
-          products: visibleProducts,
-          selected: productId == null ? <String>{} : {productId!},
-          onTap: chooseProduct,
+        Visibility(
+          visible: openedProductFamily == null,
+          maintainState: true,
+          child: CatalogProductBrowser(
+            products: catalogProducts,
+            categories: widget.categories,
+            catalogFamilies: widget.catalogFamilies,
+            buildProducts: (products) => ProductPicker(
+              products: products,
+              selected: productId == null ? <String>{} : {productId!},
+              onTap: chooseProduct,
+            ),
+          ),
         ),
+        if (openedProductFamily case final product?)
+          ProductPicker(
+            products: derivedFrom(product),
+            selected: productId == null ? <String>{} : {productId!},
+            onTap: chooseProduct,
+          ),
+        if (selectedProduct case final product?)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text('Produit sélectionné : ${product.displayReference}'),
+          ),
         if (productId != null) ...[
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
+          LiquidSelectFormField<String>(
             initialValue: depotId,
             decoration: const InputDecoration(labelText: 'Dépôt de sortie *'),
             items: widget.depots
@@ -13301,7 +16442,7 @@ class _SaleFormState extends State<SaleForm> {
             const SizedBox(width: 10),
             SizedBox(
               width: 145,
-              child: DropdownButtonFormField<InventoryUnit>(
+              child: LiquidSelectFormField<InventoryUnit>(
                 initialValue: unit,
                 decoration: const InputDecoration(labelText: 'Unité'),
                 items: availableUnits
@@ -13329,27 +16470,29 @@ class _SaleFormState extends State<SaleForm> {
                   ? 'Sortie de stock : $pieces pièce(s) = ${formatNumber(pieces * selectedProduct!.lengthMeters)} m'
                   : 'Sortie de stock : $pieces pièce(s)',
               style: const TextStyle(
-                color: Color(0xFF725280),
+                color: AppPalette.muted,
                 fontWeight: FontWeight.w700,
               ),
             ),
           ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<TransportCharge>(
+        LiquidSelectFormField<TransportCharge>(
           initialValue: transportCharge,
           decoration: const InputDecoration(labelText: 'Transport *'),
           items: TransportCharge.values
-              .map((value) => DropdownMenuItem(
-                    value: value,
-                    child: Text(value.label),
-                  ))
+              .map(
+                (value) =>
+                    DropdownMenuItem(value: value, child: Text(value.label)),
+              )
               .toList(),
           onChanged: (value) => setState(() => transportCharge = value!),
         ),
         const SizedBox(height: 12),
         MultiImageInput(
           images: images,
-          label: 'Photos des pièces / accessoires (${images.length}/10)',
+          label: widget.allowGallery
+              ? 'Photos des pièces / accessoires * (${images.length}/10)'
+              : 'Prendre une photo * (${images.length}/10)',
           onTap: pickImages,
           onRemove: (index) => setState(() => images.removeAt(index)),
         ),
@@ -13408,21 +16551,30 @@ class _StockFormState extends State<StockForm> {
       message(context, 'Vous pouvez ajouter au maximum 10 photos.');
       return;
     }
-    final picked = await ImagePicker().pickMultiImage(
-      imageQuality: 82,
-      maxWidth: 1600,
-    );
-    if (picked.isEmpty) return;
-    final newImages = await Future.wait(
-      picked.take(available).map((file) => file.readAsBytes()),
-    );
+    final selectedImages = widget.allowGallery
+        ? await Future.wait(
+            (await ImagePicker().pickMultiImage(
+                  imageQuality: 82,
+                  maxWidth: 1600,
+                ))
+                .take(available)
+                .map(
+                  (file) => readAcceptedImage(file, maximumBytes: 120 * 1024),
+                ),
+          )
+        : await (() async {
+            final file = await ImagePicker().pickImage(
+              source: ImageSource.camera,
+              imageQuality: 82,
+              maxWidth: 1600,
+            );
+            return file == null
+                ? <Uint8List?>[]
+                : [await readAcceptedImage(file, maximumBytes: 120 * 1024)];
+          })();
+    final newImages = selectedImages.whereType<Uint8List>().toList();
+    if (newImages.isEmpty) return;
     if (mounted) setState(() => images.addAll(newImages));
-    if (picked.length > available && mounted) {
-      message(
-        context,
-        'Seules $available photo(s) ont été ajoutées (maximum : 10).',
-      );
-    }
   }
 
   @override
@@ -13446,10 +16598,11 @@ class _StockFormState extends State<StockForm> {
         depotId == null ||
         count <= 0 ||
         supplierId == null ||
-        receiptNumber.text.trim().isEmpty) {
+        receiptNumber.text.trim().isEmpty ||
+        images.isEmpty) {
       message(
         context,
-        'Choisissez un produit, un fournisseur, un dépôt, une quantité valide et le n° de bon.',
+        'Ajoutez une photo, puis choisissez un produit, un fournisseur, un dépôt, une quantité valide et le n° de bon.',
       );
       return;
     }
@@ -13481,38 +16634,41 @@ class _StockFormState extends State<StockForm> {
           style: TextStyle(fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 10),
-        ProductPicker(
+        CatalogProductBrowser(
           products: widget.products,
-          selected: selected == null ? <String>{} : <String>{selected!},
-          onTap: (product) => setState(() {
-            selected = product.id;
-            if (product.isHose) {
+          categories: widget.categories,
+          catalogFamilies: widget.catalogFamilies,
+          initialProductId: widget.initialProductId,
+          buildProducts: (products) => ProductPicker(
+            products: products,
+            selected: selected == null ? <String>{} : {selected!},
+            onTap: (product) => setState(() {
+              selected = product.id;
               unit = product.hoseManagedByMeter
                   ? InventoryUnit.meter
                   : InventoryUnit.piece;
-            }
-          }),
+            }),
+          ),
         ),
+        if (selectedProduct case final product?)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text('Produit sélectionné : ${product.displayReference}'),
+          ),
         const SizedBox(height: 16),
         Row(
           children: [
             Expanded(
-              child: DropdownButtonFormField<String>(
-                initialValue: supplierId,
-                decoration: const InputDecoration(labelText: 'Fournisseur *'),
-                items: widget.suppliers
-                    .map(
-                      (supplier) => DropdownMenuItem(
-                        value: supplier.id,
-                        child: Text(
-                          supplier.company.isEmpty
-                              ? supplier.name
-                              : '${supplier.name} · ${supplier.company}',
-                        ),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (value) => setState(() => supplierId = value),
+              child: SearchChoiceField(
+                label: 'Fournisseur *',
+                options: _choices(
+                  widget.suppliers,
+                  (supplier) => supplier.id,
+                  (supplier) => _partnerLabel(supplier.name, supplier.company),
+                ),
+                selected: {?supplierId},
+                allowClear: false,
+                onChanged: (ids) => setState(() => supplierId = ids.first),
               ),
             ),
             const SizedBox(width: 8),
@@ -13524,7 +16680,7 @@ class _StockFormState extends State<StockForm> {
           ],
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
+        LiquidSelectFormField<String>(
           initialValue: depotId,
           decoration: const InputDecoration(
             labelText: 'Dépôt de destination *',
@@ -13568,7 +16724,7 @@ class _StockFormState extends State<StockForm> {
             const SizedBox(width: 10),
             SizedBox(
               width: 145,
-              child: DropdownButtonFormField<InventoryUnit>(
+              child: LiquidSelectFormField<InventoryUnit>(
                 initialValue: unit,
                 decoration: const InputDecoration(labelText: 'Unité'),
                 items: availableUnits
@@ -13587,21 +16743,23 @@ class _StockFormState extends State<StockForm> {
           ],
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<TransportCharge>(
+        LiquidSelectFormField<TransportCharge>(
           initialValue: transportCharge,
           decoration: const InputDecoration(labelText: 'Transport *'),
           items: TransportCharge.values
-              .map((value) => DropdownMenuItem(
-                    value: value,
-                    child: Text(value.label),
-                  ))
+              .map(
+                (value) =>
+                    DropdownMenuItem(value: value, child: Text(value.label)),
+              )
               .toList(),
           onChanged: (value) => setState(() => transportCharge = value!),
         ),
         const SizedBox(height: 12),
         MultiImageInput(
           images: images,
-          label: 'Photos des pièces / accessoires (${images.length}/10)',
+          label: widget.allowGallery
+              ? 'Photos des pièces / accessoires * (${images.length}/10)'
+              : 'Prendre une photo * (${images.length}/10)',
           onTap: pickImages,
           onRemove: (index) => setState(() => images.removeAt(index)),
         ),
@@ -13652,7 +16810,7 @@ class _StockFormState extends State<StockForm> {
                   '${productQuantityLabel(selectedProduct!, widget.stock(selectedProduct!.id) + addedPieces)} au total',
                   style: const TextStyle(
                     fontSize: 12,
-                    color: Color(0xFF725280),
+                    color: AppPalette.muted,
                   ),
                 ),
               ],
@@ -13798,11 +16956,13 @@ class _PaymentFormState extends State<PaymentForm> {
       if (!selected) return true;
       final value = number(amount.text);
       if (mode.text.trim().isEmpty || value <= 0) return false;
-      allocations.add(PaymentAllocation(
-        source: source,
-        mode: mode.text.trim(),
-        amount: value,
-      ));
+      allocations.add(
+        PaymentAllocation(
+          source: source,
+          mode: mode.text.trim(),
+          amount: value,
+        ),
+      );
       return true;
     }
 
@@ -13822,18 +16982,22 @@ class _PaymentFormState extends State<PaymentForm> {
     }
     for (final line in competitorLines) {
       final value = number(line.amount.text);
-      if (line.competitorId == null || line.mode.text.trim().isEmpty || value <= 0) {
+      if (line.competitorId == null ||
+          line.mode.text.trim().isEmpty ||
+          value <= 0) {
         return message(
           context,
           'Chaque compétiteur doit avoir un nom, un mode et un montant.',
         );
       }
-      allocations.add(PaymentAllocation(
-        source: PaymentSource.competitor,
-        competitorId: line.competitorId,
-        mode: line.mode.text.trim(),
-        amount: value,
-      ));
+      allocations.add(
+        PaymentAllocation(
+          source: PaymentSource.competitor,
+          competitorId: line.competitorId,
+          mode: line.mode.text.trim(),
+          amount: value,
+        ),
+      );
     }
     if (allocations.isEmpty) {
       return message(context, 'Choisissez au moins une source de paiement.');
@@ -13886,8 +17050,10 @@ class _PaymentFormState extends State<PaymentForm> {
         Row(
           children: [
             const Expanded(
-              child: Text('Paiement par compétiteur',
-                  style: TextStyle(fontWeight: FontWeight.w900)),
+              child: Text(
+                'Paiement par compétiteur',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
             ),
             TextButton.icon(
               onPressed: addCompetitor,
@@ -13905,37 +17071,48 @@ class _PaymentFormState extends State<PaymentForm> {
               padding: const EdgeInsets.all(12),
               child: Column(
                 children: [
-                  Row(children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: line.competitorId,
-                        decoration: const InputDecoration(labelText: 'Compétiteur *'),
-                        items: allCompetitors
-                            .map((competitor) => DropdownMenuItem(
+                  Row(
+                    children: [
+                      Expanded(
+                        child: LiquidSelectFormField<String>(
+                          initialValue: line.competitorId,
+                          decoration: const InputDecoration(
+                            labelText: 'Compétiteur *',
+                          ),
+                          items: allCompetitors
+                              .map(
+                                (competitor) => DropdownMenuItem(
                                   value: competitor.id,
                                   child: Text(competitor.name),
-                                ))
-                            .toList(),
-                        onChanged: (value) => setState(() => line.competitorId = value),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (value) =>
+                              setState(() => line.competitorId = value),
+                        ),
                       ),
-                    ),
-                    IconButton(
-                      tooltip: 'Retirer',
-                      icon: const Icon(Icons.close_rounded),
-                      onPressed: () => setState(() {
-                        competitorLines.removeAt(index).dispose();
-                      }),
-                    ),
-                  ]),
+                      IconButton(
+                        tooltip: 'Retirer',
+                        icon: const Icon(Icons.close_rounded),
+                        onPressed: () => setState(() {
+                          competitorLines.removeAt(index).dispose();
+                        }),
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 10),
                   TextField(
                     controller: line.mode,
-                    decoration: const InputDecoration(labelText: 'Mode de paiement *'),
+                    decoration: const InputDecoration(
+                      labelText: 'Mode de paiement *',
+                    ),
                   ),
                   const SizedBox(height: 10),
                   TextField(
                     controller: line.amount,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
                     decoration: const InputDecoration(labelText: 'Montant *'),
                   ),
                 ],
@@ -13946,7 +17123,9 @@ class _PaymentFormState extends State<PaymentForm> {
         TextButton.icon(
           onPressed: allCompetitors.isEmpty
               ? addCompetitor
-              : () => setState(() => competitorLines.add(_CompetitorPaymentLine(null))),
+              : () => setState(
+                  () => competitorLines.add(_CompetitorPaymentLine(null)),
+                ),
           icon: const Icon(Icons.add_circle_outline_rounded),
           label: const Text('Ajouter un paiement compétiteur'),
         ),
@@ -13973,15 +17152,17 @@ class MachineForm extends StatefulWidget {
     required this.onUserAdded,
     required this.canManageUsers,
     required this.canCreateTemporary,
+    required this.allowGallery,
     required this.depots,
     required this.available,
   });
   final List<ProductCategory> categories;
   final List<Product> products;
   final List<AppUser> users;
-  final Future<void> Function(AppUser) onUserAdded;
+  final Future<AppUser> Function(AppUser) onUserAdded;
   final bool canManageUsers;
   final bool canCreateTemporary;
+  final bool allowGallery;
   final List<Depot> depots;
   final int Function(String, String) available;
   @override
@@ -14040,13 +17221,20 @@ class _MachineFormState extends State<MachineForm> {
 
   Future<void> pickUnitImage(int index) async {
     final file = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
+      source: widget.allowGallery ? ImageSource.gallery : ImageSource.camera,
       imageQuality: 82,
       maxWidth: 1600,
     );
     if (file != null) {
-      final bytes = await file.readAsBytes();
-      if (mounted) setState(() => unitImages[index] = bytes);
+      final bytes = await readAcceptedImage(file, maximumBytes: 600 * 1024);
+      if (!mounted) return;
+      if (bytes == null) {
+        return message(
+          context,
+          'Cette image est trop grande. Choisissez-en une autre.',
+        );
+      }
+      setState(() => unitImages[index] = bytes);
     }
   }
 
@@ -14067,9 +17255,9 @@ class _MachineFormState extends State<MachineForm> {
       MaterialPageRoute(builder: (_) => const UserForm()),
     );
     if (user != null && mounted) {
-      await widget.onUserAdded(user);
+      final created = await widget.onUserAdded(user);
       if (!mounted) return;
-      if (!user.isOperator) {
+      if (!created.isOperator) {
         message(
           context,
           'Seul un utilisateur avec le rôle Opérateur peut être affecté à une machine.',
@@ -14077,10 +17265,10 @@ class _MachineFormState extends State<MachineForm> {
         return;
       }
       setState(() {
-        if (!availableUsers.any((item) => item.id == user.id)) {
-          availableUsers.add(user);
+        if (!availableUsers.any((item) => item.id == created.id)) {
+          availableUsers.add(created);
         }
-        operators.add(user.id);
+        operators.add(created.id);
       });
     }
   }
@@ -14089,7 +17277,7 @@ class _MachineFormState extends State<MachineForm> {
     if (!(form.currentState?.validate() ?? false)) return;
     syncUnitImages();
     final missing = <String>[
-      if (!temporary && unitImages.any((image) => image == null))
+      if (unitImages.any((image) => image == null))
         'photo de chaque exemplaire',
       if (categoryId == null) 'catégorie',
       if (outputId == null) 'produit fabriqué',
@@ -14132,13 +17320,10 @@ class _MachineFormState extends State<MachineForm> {
         outputId: outputId!,
         units: List.generate(
           temporary ? 1 : int.parse(copies.text),
-          (index) => MachineUnit(
-            number: index + 1,
-            image: temporary ? null : unitImages[index],
-          ),
+          (index) => MachineUnit(number: index + 1, image: unitImages[index]),
         ),
         operatorIds: operators.toList(),
-        image: temporary ? null : unitImages.first,
+        image: unitImages.first,
         temporary: temporary,
         deadline: deadline,
         plannedPieces: temporary ? int.parse(plannedPieces.text) : null,
@@ -14208,15 +17393,25 @@ class _MachineFormState extends State<MachineForm> {
                   padding: const EdgeInsets.only(bottom: 12),
                   child: ImageInput(
                     bytes: unitImages[index],
-                    label: 'Photo de l’exemplaire n°${index + 1} *',
+                    label: widget.allowGallery
+                        ? 'Photo de l’exemplaire n°${index + 1} * (galerie)'
+                        : 'Photo de l’exemplaire n°${index + 1} * (caméra)',
                     onTap: () => pickUnitImage(index),
                   ),
                 ),
               ),
             ] else ...[
               const Text(
-                'À utiliser quand des pièces sont envoyées chez un voisin. Aucun opérateur ni photo n’est requis ; le stock ne sera crédité qu’après validation.',
+                'À utiliser quand des pièces sont envoyées chez un voisin. Une photo est requise ; le stock ne sera crédité qu’après validation.',
                 style: TextStyle(color: AppPalette.muted),
+              ),
+              const SizedBox(height: 12),
+              ImageInput(
+                bytes: unitImages.first,
+                label: widget.allowGallery
+                    ? 'Photo du travail externe * (galerie)'
+                    : 'Photo du travail externe * (caméra)',
+                onTap: () => pickUnitImage(0),
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -14288,7 +17483,7 @@ class _MachineFormState extends State<MachineForm> {
               temporary
                   ? 'Choisissez ensuite la matière envoyée : elle sera déduite du stock à la validation.'
                   : 'Le travailleur choisira le produit de cette catégorie au démarrage.',
-              style: const TextStyle(fontSize: 12, color: Color(0xFF725280)),
+              style: const TextStyle(fontSize: 12, color: AppPalette.muted),
             ),
             if (temporary && categoryId != null) ...[
               const SizedBox(height: 16),
@@ -14318,7 +17513,7 @@ class _MachineFormState extends State<MachineForm> {
                 ),
               if (temporaryInputProductId != null) ...[
                 const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
+                LiquidSelectFormField<String>(
                   initialValue: temporarySourceDepotId,
                   decoration: const InputDecoration(
                     labelText: 'Dépôt de départ *',
@@ -14454,17 +17649,17 @@ class ProductPicker extends StatelessWidget {
             padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
               color: isSelected
-                  ? const Color(0xFFE9D5FF)
-                  : Colors.white.withValues(alpha: .52),
+                  ? AppPalette.desktopAccentSoft
+                  : AppPalette.surfaceRaised.withValues(alpha: .56),
               borderRadius: BorderRadius.circular(18),
               border: Border.all(
-                color: isSelected ? const Color(0xFF9333EA) : Colors.white,
+                color: isSelected ? AppPalette.primary : AppPalette.line,
                 width: isSelected ? 2 : 1,
               ),
             ),
             child: AnimatedScale(
               duration: const Duration(milliseconds: 220),
-              scale: isSelected ? 1.03 : 1,
+              scale: isSelected ? 1.02 : 1,
               child: Column(
                 children: [
                   ProductImage(product: product, height: 68),
@@ -14482,6 +17677,203 @@ class ProductPicker extends StatelessWidget {
         ),
       );
     }).toList(),
+  );
+}
+
+class CatalogProductBrowser extends StatefulWidget {
+  const CatalogProductBrowser({
+    super.key,
+    required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
+    required this.buildProducts,
+    this.initialProductId,
+    this.showEmptyCategories = false,
+  });
+
+  final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
+  final Widget Function(List<Product> products) buildProducts;
+  final String? initialProductId;
+  final bool showEmptyCategories;
+
+  @override
+  State<CatalogProductBrowser> createState() => _CatalogProductBrowserState();
+}
+
+class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
+  String? familyId;
+  String? categoryId;
+
+  List<_CatalogGroup> get groups => _catalogGroups(
+    widget.categories,
+    widget.catalogFamilies,
+    products: widget.products,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    final product = widget.products
+        .where((item) => item.id == widget.initialProductId)
+        .firstOrNull;
+    if (product == null) return;
+    for (final group in groups) {
+      final section = group.sections
+          .where(
+            (item) => item.productIds.contains(_catalogMembershipId(product)),
+          )
+          .firstOrNull;
+      if (section == null) continue;
+      familyId = group.id;
+      categoryId = section.category.id;
+      break;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final availableIds = widget.products.map(_catalogMembershipId).toSet();
+    final allGroups = groups;
+    final family = allGroups.where((group) => group.id == familyId).firstOrNull;
+    if (family == null) {
+      return _catalogCards([
+        for (final group in allGroups)
+          if (widget.showEmptyCategories ||
+              group.sections.any(
+                (section) => section.productIds.any(availableIds.contains),
+              ))
+            _CatalogGroupCard(
+              name: group.name,
+              preview: group.sections
+                  .take(2)
+                  .map((section) => section.category.name)
+                  .toList(),
+              onTap: () => setState(() {
+                familyId = group.id;
+                categoryId = null;
+              }),
+            ),
+      ]);
+    }
+    final section = family.sections
+        .where((item) => item.category.id == categoryId)
+        .firstOrNull;
+    final products = section == null
+        ? const <Product>[]
+        : widget.products
+              .where(
+                (item) =>
+                    section.productIds.contains(_catalogMembershipId(item)),
+              )
+              .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextButton.icon(
+          icon: const Icon(Icons.arrow_back_rounded),
+          label: Text(section == null ? 'Familles' : 'Catégories'),
+          onPressed: () => setState(() {
+            if (section == null) familyId = null;
+            categoryId = null;
+          }),
+        ),
+        Text(
+          section == null
+              ? family.name
+              : '${family.name} · ${section.category.name}',
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 10),
+        if (section != null)
+          if (products.isEmpty)
+            const Text('Aucun produit dans cette catégorie.')
+          else
+            widget.buildProducts(products)
+        else if (family.sections.isEmpty)
+          const Text('Aucune catégorie dans cette famille.')
+        else
+          _catalogCards([
+            for (final item in family.sections)
+              _CatalogGroupCard(
+                name: item.category.name,
+                onTap: () => setState(() => categoryId = item.category.id),
+              ),
+          ]),
+      ],
+    );
+  }
+
+  Widget _catalogCards(List<_CatalogGroupCard> cards) => cards.isEmpty
+      ? const Text('Aucun produit disponible.')
+      : LayoutBuilder(
+          builder: (context, constraints) {
+            const gap = 12.0;
+            final width = min(144.0, (constraints.maxWidth - gap) / 2);
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: [
+                for (final card in cards) SizedBox(width: width, child: card),
+              ],
+            );
+          },
+        );
+}
+
+class _CatalogGroupCard extends StatelessWidget {
+  const _CatalogGroupCard({
+    required this.name,
+    required this.onTap,
+    this.preview = const [],
+  });
+
+  final String name;
+  final List<String> preview;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(16),
+    child: Column(
+      children: [
+        AspectRatio(
+          aspectRatio: 1,
+          child: Glass(
+            radius: 22,
+            accent: AppPalette.primary,
+            padding: const EdgeInsets.all(8),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const _AtelierIcon(Icons.folder_outlined, size: 38),
+                for (final label in preview)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 5),
+                    child: Text(
+                      label,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 5),
+        Text(
+          name,
+          textAlign: TextAlign.center,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w900),
+        ),
+      ],
+    ),
   );
 }
 
@@ -14503,22 +17895,13 @@ class CategoryPicker extends StatelessWidget {
       final isSelected = category.id == selected;
       return SizedBox(
         width: 145,
-        child: InkWell(
+        child: _LiquidTapTarget(
+          radius: 18,
+          selected: isSelected,
+          accent: isSelected ? AppPalette.primary : AppPalette.secondary,
           onTap: () => onTap(category),
-          borderRadius: BorderRadius.circular(18),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
+          child: Padding(
             padding: const EdgeInsets.all(7),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? const Color(0xFFE9D5FF)
-                  : Colors.white.withValues(alpha: .52),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(
-                color: isSelected ? const Color(0xFF9333EA) : Colors.white,
-                width: isSelected ? 2 : 1,
-              ),
-            ),
             child: Column(
               children: [
                 CategoryImage(category: category, size: 68),
@@ -14681,7 +18064,7 @@ class _StartOperationState extends State<StartOperation> {
           ),
           if (productId != null) ...[
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
+            LiquidSelectFormField<String>(
               initialValue: depotId,
               decoration: const InputDecoration(
                 labelText: 'Dépôt où se trouve le produit *',
@@ -14704,7 +18087,7 @@ class _StartOperationState extends State<StartOperation> {
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 'Stock disponible dans ce dépôt : ${widget.available(productId!, depotId!)} pièce(s)',
-                style: const TextStyle(color: Color(0xFF725280)),
+                style: const TextStyle(color: AppPalette.muted),
               ),
             ),
         ],
@@ -14750,7 +18133,7 @@ class _StartOperationState extends State<StartOperation> {
                 'Longueur calculée du cadous : ${formatNumber((int.parse(hopper.text)) * Operation.hopperSheetLengthMeters)} m '
                 '(${hopper.text} tôle(s) × ${formatNumber(Operation.hopperSheetLengthMeters)} m)',
                 style: const TextStyle(
-                  color: Color(0xFF725280),
+                  color: AppPalette.muted,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -14771,7 +18154,7 @@ class _StartOperationState extends State<StartOperation> {
         const SizedBox(height: 14),
         const Text(
           'Le stock sera réservé immédiatement et l’opération sera affichée comme « en cours ».',
-          style: TextStyle(fontSize: 12, color: Color(0xFF725280)),
+          style: TextStyle(fontSize: 12, color: AppPalette.muted),
         ),
         const SizedBox(height: 20),
         SizedBox(
@@ -14847,8 +18230,15 @@ class _FinishOperationState extends State<FinishOperation> {
       maxWidth: 1600,
     );
     if (file != null) {
-      final bytes = await file.readAsBytes();
-      if (mounted) setState(() => onPicked(bytes));
+      final bytes = await readAcceptedImage(file, maximumBytes: 600 * 1024);
+      if (!mounted) return;
+      if (bytes == null) {
+        return message(
+          context,
+          'Cette image est trop grande. Choisissez-en une autre.',
+        );
+      }
+      onPicked(bytes);
     }
   }
 
@@ -14928,7 +18318,7 @@ class _FinishOperationState extends State<FinishOperation> {
           ),
           if (made > 0) ...[
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
+            LiquidSelectFormField<String>(
               initialValue: outputDepotId,
               decoration: InputDecoration(
                 labelText: 'Dépôt du produit fini ${widget.output.name} *',
@@ -14977,7 +18367,7 @@ class _FinishOperationState extends State<FinishOperation> {
           ),
           if (remaining > 0) ...[
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
+            LiquidSelectFormField<String>(
               initialValue: remainderDepotId,
               decoration: const InputDecoration(
                 labelText: 'Dépôt qui reçoit les pièces restantes *',
@@ -15017,7 +18407,7 @@ class _FinishOperationState extends State<FinishOperation> {
           ),
           if (waste > 0) ...[
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
+            LiquidSelectFormField<String>(
               initialValue: scrapDepotId,
               decoration: const InputDecoration(
                 labelText: 'Dépôt qui reçoit les déchets *',
@@ -15122,10 +18512,9 @@ class Receipt extends StatelessWidget {
   final AppUser operator;
   @override
   Widget build(BuildContext context) => AlertDialog(
-    backgroundColor: const Color(0xFFFEFBFF),
     title: const Row(
       children: [
-        Icon(Icons.receipt_long_rounded, color: Color(0xFF7E22CE)),
+        Icon(Icons.receipt_long_rounded, color: AppPalette.primary),
         SizedBox(width: 8),
         Text('Bon de production'),
       ],
@@ -15252,9 +18641,11 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   late Set<AppPage> writablePages;
   late UserStatus status;
   DateTime? leaveUntil;
+  late bool canExport;
+  String? loginStartTime;
+  String? loginEndTime;
+  String? pendingPassword;
   late Future<List<UserSession>> sessions;
-  final newPassword = TextEditingController();
-  final passwordConfirmation = TextEditingController();
 
   @override
   void initState() {
@@ -15264,6 +18655,9 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
     writablePages = {...widget.user.writablePages};
     status = widget.user.status;
     leaveUntil = widget.user.leaveUntil;
+    canExport = widget.user.canExport;
+    loginStartTime = widget.user.loginStartTime;
+    loginEndTime = widget.user.loginEndTime;
     sessions = widget.loadSessions(widget.user.id);
   }
 
@@ -15282,11 +18676,91 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
     }
   }
 
-  @override
-  void dispose() {
-    newPassword.dispose();
-    passwordConfirmation.dispose();
-    super.dispose();
+  Future<void> setLoginTime(bool isStart) async {
+    final current = isStart ? loginStartTime : loginEndTime;
+    final parts = current?.split(':');
+    final initial = parts?.length == 3
+        ? TimeOfDay(hour: int.parse(parts![0]), minute: int.parse(parts[1]))
+        : const TimeOfDay(hour: 8, minute: 0);
+    final value = await showTimePicker(context: context, initialTime: initial);
+    if (value == null) return;
+    final text =
+        '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}:00';
+    setState(() {
+      if (isStart) {
+        loginStartTime = text;
+      } else {
+        loginEndTime = text;
+      }
+    });
+  }
+
+  String displayTime(String? value) =>
+      value == null ? 'Non défini' : value.substring(0, 5);
+
+  Future<void> setPassword() async {
+    final password = TextEditingController();
+    final confirmation = TextEditingController();
+    String? error;
+    final next = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Nouveau mot de passe'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Définissez un nouveau mot de passe pour ${widget.user.fullName}.',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: password,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Nouveau mot de passe'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: confirmation,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Confirmer le mot de passe'),
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 8),
+                Text(error!, style: const TextStyle(color: AppPalette.coral)),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Annuler'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final validation = securePasswordValidator(password.text);
+                if (validation != null) {
+                  setDialogState(() => error = validation);
+                  return;
+                }
+                if (password.text != confirmation.text) {
+                  setDialogState(
+                    () => error = 'Les mots de passe ne correspondent pas.',
+                  );
+                  return;
+                }
+                Navigator.pop(dialogContext, password.text);
+              },
+              child: const Text('Définir'),
+            ),
+          ],
+        ),
+      ),
+    );
+    password.dispose();
+    confirmation.dispose();
+    if (next != null && mounted) setState(() => pendingPassword = next);
   }
 
   void save() {
@@ -15294,28 +18768,20 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
       message(context, 'Choisissez au moins un rôle pour cet utilisateur.');
       return;
     }
-    final requestedPassword = newPassword.text;
-    if (requestedPassword.isNotEmpty) {
-      final validation = securePasswordValidator(requestedPassword);
-      if (validation != null) {
-        message(context, validation);
-        return;
-      }
-      if (requestedPassword != passwordConfirmation.text) {
-        message(context, 'Les mots de passe ne correspondent pas.');
-        return;
-      }
-    }
     Navigator.pop(
       context,
       widget.user.copyWith(
-        password: requestedPassword.isEmpty ? null : requestedPassword,
+        password: pendingPassword ?? widget.user.password,
         roles: roles,
         allowedPages: pages,
         writablePages: writablePages,
         status: status,
         leaveUntil: leaveUntil,
         clearLeaveUntil: status != UserStatus.onLeave,
+        canExport: canExport,
+        loginStartTime: loginStartTime,
+        loginEndTime: loginEndTime,
+        clearLoginSchedule: loginStartTime == null || loginEndTime == null,
       ),
     );
   }
@@ -15378,6 +18844,29 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
               subtitle: Text('@${widget.user.username}'),
             ),
           ),
+          if (widget.canManage) ...[
+            const SizedBox(height: 12),
+            Glass(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(
+                  Icons.lock_reset_rounded,
+                  color: AppPalette.primary,
+                ),
+                title: const Text('Mot de passe'),
+                subtitle: Text(
+                  pendingPassword == null
+                      ? 'Définir un nouveau mot de passe pour cet utilisateur.'
+                      : 'Un nouveau mot de passe sera enregistré.',
+                ),
+                trailing: OutlinedButton(
+                  onPressed: setPassword,
+                  child: Text(pendingPassword == null ? 'Modifier' : 'Changer'),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 18),
           const Text(
             'Rôles (cumulables)',
@@ -15410,6 +18899,53 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
           ),
           const SizedBox(height: 6),
           ...AppPage.values.map(accessCheck),
+          if (widget.canManage) ...[
+            const SizedBox(height: 18),
+            const Text(
+              'Export Excel',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: canExport,
+              title: const Text('Autoriser l’export Excel'),
+              subtitle: const Text('L’administrateur a toujours ce droit.'),
+              onChanged: (value) => setState(() => canExport = value),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Plage quotidienne de connexion',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
+            ),
+            const Text(
+              'En dehors de cette plage, le compte ne peut pas accéder à l’application.',
+              style: TextStyle(color: AppPalette.muted, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => setLoginTime(true),
+                  icon: const Icon(Icons.schedule_rounded),
+                  label: Text('Début ${displayTime(loginStartTime)}'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => setLoginTime(false),
+                  icon: const Icon(Icons.schedule_rounded),
+                  label: Text('Fin ${displayTime(loginEndTime)}'),
+                ),
+                TextButton(
+                  onPressed: () => setState(() {
+                    loginStartTime = null;
+                    loginEndTime = null;
+                  }),
+                  child: const Text('Retirer la limite'),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           const Text(
             'Statut du compte',
@@ -15451,34 +18987,6 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
                 ),
               ],
             ),
-          if (widget.canManage) ...[
-            const SizedBox(height: 20),
-            const Text(
-              'Réinitialiser le mot de passe',
-              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Laissez ces champs vides pour conserver le mot de passe actuel.',
-              style: TextStyle(color: AppPalette.muted, fontSize: 12),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: newPassword,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'Nouveau mot de passe',
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: passwordConfirmation,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'Confirmer le nouveau mot de passe',
-              ),
-            ),
-          ],
           const SizedBox(height: 20),
           const Text(
             'Historique de connexion',
@@ -15543,11 +19051,13 @@ class UserForm extends StatefulWidget {
 class _UserFormState extends State<UserForm> {
   final form = GlobalKey<FormState>();
   final full = TextEditingController();
+  final email = TextEditingController();
   final user = TextEditingController();
   final password = TextEditingController();
   UserRole role = UserRole.operator;
-  void save() {
+  Future<void> save() async {
     if (!(form.currentState?.validate() ?? false)) return;
+    if (!mounted) return;
     Navigator.pop(
       context,
       AppUser(
@@ -15555,6 +19065,7 @@ class _UserFormState extends State<UserForm> {
         username: user.text.trim(),
         password: password.text,
         fullName: full.text.trim(),
+        email: email.text.trim().toLowerCase(),
         role: role,
       ),
     );
@@ -15577,6 +19088,13 @@ class _UserFormState extends State<UserForm> {
             controller: user,
             decoration: const InputDecoration(labelText: 'Nom d’utilisateur *'),
             validator: usernameValidator,
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: email,
+            keyboardType: TextInputType.emailAddress,
+            decoration: const InputDecoration(labelText: 'Adresse e-mail *'),
+            validator: emailValidator,
           ),
           const SizedBox(height: 12),
           TextFormField(
@@ -15618,6 +19136,118 @@ class _UserFormState extends State<UserForm> {
       ),
     ),
   );
+}
+
+/// Nine-point pattern input drawn with one continuous finger gesture.
+class PatternPad extends StatelessWidget {
+  const PatternPad({super.key, required this.pattern, required this.onChanged});
+  final List<int> pattern;
+  final ValueChanged<List<int>>? onChanged;
+
+  int? _pointAt(Offset offset, double side) {
+    const count = 3;
+    final gap = side / count;
+    for (var index = 0; index < 9; index++) {
+      final center = Offset(
+        (index % count + .5) * gap,
+        (index ~/ count + .5) * gap,
+      );
+      if ((offset - center).distance <= gap * .3) return index;
+    }
+    return null;
+  }
+
+  void _add(Offset offset, double side, {bool reset = false}) {
+    if (onChanged == null) return;
+    final point = _pointAt(offset, side);
+    if (point == null) return;
+    final next = reset ? <int>[] : List<int>.of(pattern);
+    if (!next.contains(point)) next.add(point);
+    onChanged!(next);
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      const Text('Glissez le doigt entre les points (4 minimum).'),
+      const SizedBox(height: 10),
+      SizedBox(
+        width: 230,
+        height: 230,
+        child: LayoutBuilder(
+          builder: (context, constraints) => GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanStart: onChanged == null
+                ? null
+                : (details) => _add(
+                    details.localPosition,
+                    constraints.maxWidth,
+                    reset: true,
+                  ),
+            onPanUpdate: onChanged == null
+                ? null
+                : (details) =>
+                      _add(details.localPosition, constraints.maxWidth),
+            child: CustomPaint(
+              painter: _PatternPadPainter(pattern),
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      ),
+      TextButton.icon(
+        onPressed: onChanged == null ? null : () => onChanged!(const []),
+        icon: const Icon(Icons.refresh_rounded),
+        label: const Text('Effacer le schéma'),
+      ),
+    ],
+  );
+}
+
+class _PatternPadPainter extends CustomPainter {
+  const _PatternPadPainter(this.pattern);
+  final List<int> pattern;
+
+  Offset _center(int index, double side) =>
+      Offset((index % 3 + .5) * side / 3, (index ~/ 3 + .5) * side / 3);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final side = size.shortestSide;
+    final line = Paint()
+      ..color = AppPalette.primary
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round;
+    final path = Path();
+    for (var i = 0; i < pattern.length; i++) {
+      final point = _center(pattern[i], side);
+      i == 0
+          ? path.moveTo(point.dx, point.dy)
+          : path.lineTo(point.dx, point.dy);
+    }
+    canvas.drawPath(path, line);
+    for (var i = 0; i < 9; i++) {
+      final selected = pattern.contains(i);
+      final point = _center(i, side);
+      canvas.drawCircle(
+        point,
+        side / 11,
+        Paint()..color = selected ? AppPalette.primary : AppPalette.soft,
+      );
+      canvas.drawCircle(
+        point,
+        side / 11,
+        Paint()
+          ..color = selected ? AppPalette.primary : AppPalette.line
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_PatternPadPainter oldDelegate) =>
+      !listEquals(pattern, oldDelegate.pattern);
 }
 
 class ImageInput extends StatelessWidget {
@@ -15796,40 +19426,31 @@ class FormShell extends StatelessWidget {
       child: SafeArea(
         child: Column(
           children: [
-            SizedBox(
-              height: 122,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 22, 20),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Glass(
+                radius: 22,
+                padding: const EdgeInsets.fromLTRB(6, 6, 12, 6),
                 child: Row(
                   children: [
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                      color: AppPalette.primary,
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white,
-                      ),
-                      tooltip: 'Retour',
-                    ),
-                    const SizedBox(width: 12),
+                    const _AtelierBackButton(),
+                    const SizedBox(width: 11),
                     Expanded(
                       child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             title,
                             style: const TextStyle(
-                              fontSize: 21,
-                              fontWeight: FontWeight.w900,
-                              color: Colors.white,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
                             ),
                           ),
-                          if (subtitle != null) ...[
+                          if (subtitle case final description?) ...[
                             const SizedBox(height: 3),
                             Text(
-                              subtitle!,
-                              style: const TextStyle(color: Color(0xFFE9E7FF)),
+                              description,
+                              style: const TextStyle(color: AppPalette.muted),
                             ),
                           ],
                         ],
@@ -15841,7 +19462,7 @@ class FormShell extends StatelessWidget {
             ),
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 18, 20, 42),
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 30),
                 child: Center(
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 620),
@@ -15915,6 +19536,9 @@ String? securePasswordValidator(String? value) {
   final password = value ?? '';
   if (password.length < 12) return 'Utilisez au moins 12 caractères.';
   if (password.length > 128) return 'Utilisez au plus 128 caractères.';
+  if (utf8.encode(password).length > 72) {
+    return 'Ce mot de passe est trop long en octets (72 maximum).';
+  }
   if (!RegExp(r'[a-z]').hasMatch(password) ||
       !RegExp(r'[A-Z]').hasMatch(password) ||
       !RegExp(r'[0-9]').hasMatch(password)) {

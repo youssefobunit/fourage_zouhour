@@ -50,6 +50,7 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+.codex-slim-upload/
 
 # Gradle temporary files
 .gradle/
@@ -62,3 +63,14 @@ android/.gradle-repair-cache/
 build/
 # Windows Flutter generated files
 /windows/flutter/ephemeral/
+
+# Private credentials and signing material.
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+*signing.properties
+supabase/.temp/
+.security-tools/

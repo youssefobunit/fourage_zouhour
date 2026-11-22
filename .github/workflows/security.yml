@@ -1,0 +1,28 @@
+name: Security checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 8 * * 1'
+permissions:
+  contents: read
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check repository for private credentials
+        run: node tools/security/check-secrets.mjs
+      - name: Check locked Flutter dependencies for advisories
+        run: node tools/security/check-dependencies.mjs
+      - name: Test server form validation
+        run: node --test tools/security/validation.test.mjs
+      - name: Install isolated PostgreSQL test runtime
+        run: npm install --prefix .security-tools --ignore-scripts --no-audit --no-fund @electric-sql/pglite@0.5.16
+      - name: Test database permissions and migration replay
+        run: node tools/security/database.test.mjs
