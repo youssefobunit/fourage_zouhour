@@ -9,6 +9,7 @@ uniform float uRadius;
 uniform float uDepth;
 uniform float uPress;
 uniform float uOpacity;
+uniform float uDark;
 uniform sampler2D uScene;
 
 out vec4 fragColor;
@@ -56,13 +57,20 @@ void main() {
     );
     float rim = 1.0 - smoothstep(0.15, 1.8, inside);
     float bloom = exp(-max(inside, 0.0) / max(3.0, 0.25 * bevel));
-    vec3 tint = mix(vec3(0.88, 0.96, 1.0), uTint, 0.06 + 0.24 * uPress);
+    vec3 lightBase = vec3(0.88, 0.96, 1.0);
+    vec3 nightBase = vec3(0.22, 0.035, 0.32);
+    vec3 glassBase = mix(lightBase, nightBase, uDark);
+    vec3 tint = mix(glassBase, uTint, 0.06 + 0.24 * uPress);
     vec3 color = mix(refracted, tint, mix(0.48, 0.14, edge));
-    vec3 reflection = mix(vec3(0.94, 0.99, 1.0), uTint, 0.28);
+    vec3 reflection = mix(
+        mix(vec3(0.94, 0.99, 1.0), vec3(0.98, 0.72, 1.0), uDark),
+        uTint,
+        0.28
+    );
     color += reflection * bloom * (0.11 + (0.62 + 0.10 * uPress) * pow(glints, 1.95));
-    color += vec3(0.94, 0.99, 1.0) * rim * (0.12 + 0.31 * glints);
+    color += mix(vec3(0.94, 0.99, 1.0), vec3(1.0, 0.72, 1.0), uDark) * rim * (0.12 + 0.31 * glints);
     float caustic = exp(-abs(inside - (2.2 + 2.9 * glints)) * 0.53);
-    color += vec3(0.28, 0.68, 1.0) * caustic * pow(glints, 3.5) * 0.18;
+    color += mix(vec3(0.28, 0.68, 1.0), vec3(0.86, 0.18, 1.0), uDark) * caustic * pow(glints, 3.5) * 0.18;
     float alpha = coverage * uOpacity;
     fragColor = vec4(clamp(color, 0.0, 1.0) * alpha, alpha);
 }

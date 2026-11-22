@@ -681,34 +681,16 @@ class ForageAppearanceScope extends InheritedWidget {
       appearance != oldWidget.appearance || onChanged != oldWidget.onChanged;
 }
 
-/// Re-maps the blue light-glass materials into a true violet night material.
-/// This is intentionally a luminance inversion with violet endpoints—not a
-/// simple dark overlay—so light panels become radiant purple glass while the
-/// original dark typography becomes crisp near-white type.
+/// The night presentation has its own scene and components.  It deliberately
+/// does not recolour the light interface: a global colour filter makes glass
+/// opaque and also damages product imagery.
 class _DarkLiquidAppearance extends StatelessWidget {
   const _DarkLiquidAppearance({required this.child});
 
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => ColorFiltered(
-    // `overlay` is non-linear: it drops the already-dark violet base to
-    // black-plum, while luminous typography and specular highlights stay
-    // bright. A normal semi-transparent black layer would dim both equally.
-    colorFilter: const ColorFilter.mode(Color(0xFF230038), BlendMode.overlay),
-    child: ColorFiltered(
-      colorFilter: const ColorFilter.matrix(<double>[
-        // Red: paper white -> rich amethyst, navy text -> pale lavender.
-        -.215, -.423, -.082, 0, 255,
-        // Green: gives the material its near-black plum depth.
-        -.263, -.517, -.100, 0, 245,
-        // Blue: retained to create a violet, not a muddy burgundy, scene.
-        -.185, -.364, -.071, 0, 255,
-        0, 0, 0, 1, 0,
-      ]),
-      child: child,
-    ),
-  );
+  Widget build(BuildContext context) => child;
 }
 
 class _AppearanceCanvas extends StatelessWidget {
@@ -4429,6 +4411,7 @@ class _ForageAppState extends State<ForageApp> {
               : Brightness.dark,
         ),
         child: AtelierLiquidStage(
+          dark: appearance == ForageAppearance.dark,
           child: _AppearanceCanvas(
             dark: appearance == ForageAppearance.dark,
             child: Stack(
@@ -7966,9 +7949,15 @@ class AppHeader extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => Padding(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF5FF) : AppPalette.text;
+    final secondary = dark ? const Color(0xFFE0BFEA) : AppPalette.muted;
+    return Padding(
     padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-    child: Glass(
+    child: IconTheme(
+      data: IconThemeData(color: foreground),
+      child: Glass(
       radius: 28,
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
       child: Row(
@@ -7981,19 +7970,19 @@ class AppHeader extends StatelessWidget {
                   title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 20,
                     letterSpacing: -.6,
                     fontWeight: FontWeight.w800,
-                    color: AppPalette.text,
+                    color: foreground,
                   ),
                 ),
                 Text(
                   user.effectiveRole.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppPalette.muted,
+                  style: TextStyle(
+                    color: secondary,
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                   ),
@@ -8055,13 +8044,15 @@ class AppHeader extends StatelessWidget {
             onTap: () => _showProfile(context),
             child: Text(
               user.fullName.characters.first.toUpperCase(),
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: foreground),
             ),
           ),
         ],
       ),
     ),
+    ),
   );
+  }
 }
 
 class ProfileSheet extends StatelessWidget {
@@ -8569,6 +8560,22 @@ class DashboardPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (ForageAppearanceScope.of(context).isDark) {
+      return _DarkDashboardPage(
+        user: user,
+        productCount: productCount,
+        machineCount: machineCount,
+        pendingReviews: pendingReviews,
+        onProducts: onProducts,
+        onStock: onStock,
+        onMachines: onMachines,
+        onTeam: onTeam,
+        onValidation: onValidation,
+        onCategories: onCategories,
+        onReviews: onReviews,
+        forceDesktopLayout: forceDesktopLayout,
+      );
+    }
     final desktop =
         forceDesktopLayout ||
         (_usesWorkspaceRail(context) &&
@@ -8724,6 +8731,331 @@ class DashboardPage extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Purpose-built midnight presentation.  This is not a colour-filtered copy
+/// of the light dashboard: the panels, typography and reflections are drawn
+/// for the dark material itself.
+class _DarkDashboardPage extends StatelessWidget {
+  const _DarkDashboardPage({
+    required this.user,
+    required this.productCount,
+    required this.machineCount,
+    required this.pendingReviews,
+    required this.onProducts,
+    required this.onStock,
+    required this.onMachines,
+    required this.onTeam,
+    required this.onValidation,
+    required this.onCategories,
+    required this.onReviews,
+    required this.forceDesktopLayout,
+  });
+
+  final AppUser user;
+  final int productCount;
+  final int machineCount;
+  final int pendingReviews;
+  final VoidCallback onProducts;
+  final VoidCallback onStock;
+  final VoidCallback onMachines;
+  final VoidCallback onTeam;
+  final VoidCallback onValidation;
+  final VoidCallback onCategories;
+  final VoidCallback onReviews;
+  final bool forceDesktopLayout;
+
+  @override
+  Widget build(BuildContext context) {
+    final desktop = forceDesktopLayout ||
+        (_usesWorkspaceRail(context) && MediaQuery.sizeOf(context).width >= 1100);
+    final name = user.fullName.trim().split(RegExp(r'\s+')).first;
+    final actions = <({IconData icon, String label, Color accent, VoidCallback tap})>[
+      (icon: Icons.inventory_2_outlined, label: 'Produits', accent: const Color(0xFFE65CFF), tap: onProducts),
+      (icon: Icons.warehouse_outlined, label: 'Stock', accent: const Color(0xFFCBADFF), tap: onStock),
+      (icon: Icons.precision_manufacturing_outlined, label: 'Machines', accent: const Color(0xFFF2A4FF), tap: onMachines),
+      (icon: Icons.folder_outlined, label: 'Familles', accent: const Color(0xFFFFC18F), tap: onCategories),
+      (icon: user.canValidate ? Icons.verified_user_outlined : Icons.fact_check_outlined, label: user.canValidate ? 'Validations' : 'Contrôles', accent: const Color(0xFFF3D3FF), tap: user.canValidate ? onValidation : onReviews),
+      if (user.isAdmin) (icon: Icons.groups_outlined, label: 'Équipe', accent: const Color(0xFFFF80EC), tap: onTeam),
+    ];
+    return Page(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = desktop && constraints.maxWidth >= 820;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (desktop) _DarkDashboardIntro(firstName: name),
+              if (desktop) const SizedBox(height: 15),
+              if (wide)
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 13, child: _DarkOverviewCard(firstName: name, machines: machineCount)),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      flex: 9,
+                      child: Column(
+                        children: [
+                          _DarkMetric(icon: Icons.view_in_ar_outlined, value: productCount, label: 'Produits', accent: const Color(0xFFE95CFF)),
+                          const SizedBox(height: 12),
+                          _DarkMetric(icon: Icons.schedule_rounded, value: pendingReviews, label: 'Contrôles en attente', accent: const Color(0xFFFF9D68)),
+                        ],
+                      ),
+                    ),
+                  ],
+                )
+              else ...[
+                _DarkOverviewCard(firstName: name, machines: machineCount),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(child: _DarkMetric(icon: Icons.view_in_ar_outlined, value: productCount, label: 'Produits', accent: const Color(0xFFE95CFF))),
+                    const SizedBox(width: 10),
+                    Expanded(child: _DarkMetric(icon: Icons.schedule_rounded, value: pendingReviews, label: 'Contrôles en attente', accent: const Color(0xFFFF9D68))),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 21),
+              const Text('Accès rapide', style: TextStyle(color: Color(0xFFFFF5FF), fontSize: 20, fontWeight: FontWeight.w800, letterSpacing: -.5)),
+              const SizedBox(height: 11),
+              LayoutBuilder(
+                builder: (context, quick) {
+                  final columns = wide ? min(6, actions.length) : 2;
+                  const gap = 10.0;
+                  final width = (quick.maxWidth - (columns - 1) * gap) / columns;
+                  return Wrap(
+                    spacing: gap,
+                    runSpacing: gap,
+                    children: [
+                      for (final action in actions)
+                        SizedBox(
+                          width: width,
+                          child: _DarkQuickAction(
+                            icon: action.icon,
+                            label: action.label,
+                            accent: action.accent,
+                            onTap: action.tap,
+                            desktop: wide,
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DarkGlassPanel extends StatelessWidget {
+  const _DarkGlassPanel({required this.child, this.radius = 26, this.accent = const Color(0xFFE9B1FF), this.padding, this.onTap});
+
+  final Widget child;
+  final double radius;
+  final Color accent;
+  final EdgeInsetsGeometry? padding;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final panel = Container(
+      padding: padding,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(color: const Color(0xFFF4C8FF).withValues(alpha: .58), width: 1.1),
+        boxShadow: [
+          BoxShadow(color: accent.withValues(alpha: .23), blurRadius: 24, spreadRadius: -5, offset: const Offset(0, 10)),
+          const BoxShadow(color: Color(0xA8000010), blurRadius: 19, offset: Offset(0, 12)),
+        ],
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color.lerp(const Color(0xFF6A2788), accent, .15)!.withValues(alpha: .78),
+            const Color(0xD01C062A),
+            const Color(0xE4380B51),
+          ],
+          stops: const [0, .44, 1],
+        ),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(radius - 1),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: const Alignment(-.9, -1),
+                      end: const Alignment(.55, .2),
+                      colors: [Colors.white.withValues(alpha: .27), Colors.white.withValues(alpha: .035), Colors.transparent],
+                      stops: const [0, .18, .58],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned.fill(child: child),
+          ],
+        ),
+      ),
+    );
+    if (onTap == null) return panel;
+    return Material(color: Colors.transparent, child: InkWell(borderRadius: BorderRadius.circular(radius), onTap: onTap, splashFactory: NoSplash.splashFactory, child: panel));
+  }
+}
+
+class _DarkDashboardIntro extends StatelessWidget {
+  const _DarkDashboardIntro({required this.firstName});
+  final String firstName;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(8, 3, 8, 2),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('VUE D’ENSEMBLE', style: TextStyle(color: Color(0xFFE78BFF), fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 2.2)),
+        const SizedBox(height: 6),
+        Text(firstName.isEmpty ? 'Bonjour' : 'Bonjour, $firstName 👋', style: const TextStyle(color: Color(0xFFFFF7FF), fontSize: 31, height: 1, fontWeight: FontWeight.w800, letterSpacing: -1.1)),
+        const SizedBox(height: 7),
+        const Text('Voici un aperçu de votre atelier aujourd’hui.', style: TextStyle(color: Color(0xFFD8B6E5), fontSize: 14, fontWeight: FontWeight.w600)),
+      ],
+    ),
+  );
+}
+
+class _DarkOverviewCard extends StatelessWidget {
+  const _DarkOverviewCard({required this.firstName, required this.machines});
+  final String firstName;
+  final int machines;
+
+  @override
+  Widget build(BuildContext context) => _DarkGlassPanel(
+    radius: 31,
+    accent: const Color(0xFFD94CFF),
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 211),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned(right: -28, bottom: -53, child: _DarkOrbitalGear()),
+          Positioned(left: 20, top: 16, child: _DarkGlassLabel()),
+          Positioned(
+            left: 21,
+            bottom: 20,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (MediaQuery.sizeOf(context).width < 620) ...[
+                  Text(firstName.isEmpty ? 'Bonjour' : 'Bonjour, $firstName', style: const TextStyle(color: Colors.white, fontSize: 25, fontWeight: FontWeight.w800, letterSpacing: -.8)),
+                  const SizedBox(height: 15),
+                ],
+                ShaderMask(
+                  shaderCallback: (rect) => const LinearGradient(colors: [Color(0xFFF5C9FF), Color(0xFFC253FF), Color(0xFFEF6CFF)]).createShader(rect),
+                  child: Text('$machines', style: const TextStyle(color: Colors.white, fontSize: 57, height: .9, fontWeight: FontWeight.w800, letterSpacing: -3)),
+                ),
+                const SizedBox(height: 7),
+                const Text('Machines de l’atelier', style: TextStyle(color: Color(0xFFF1DDF7), fontSize: 13, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _DarkGlassLabel extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: Colors.white.withValues(alpha: .32)),
+      gradient: LinearGradient(colors: [const Color(0xD9C65DFF), const Color(0x803D1459)]),
+    ),
+    child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.grid_view_rounded, color: Colors.white, size: 13), SizedBox(width: 6), Text('VUE D’ENSEMBLE', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.05))]),
+  );
+}
+
+class _DarkOrbitalGear extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 186,
+    height: 186,
+    child: Stack(alignment: Alignment.center, children: [
+      Transform.rotate(angle: -.48, child: Container(width: 176, height: 112, decoration: BoxDecoration(borderRadius: BorderRadius.circular(70), border: Border.all(color: const Color(0xFFD99CFF).withValues(alpha: .54), width: 1.2), gradient: RadialGradient(colors: [const Color(0x559D2FE4), Colors.transparent])))),
+      Transform.rotate(angle: .42, child: Container(width: 102, height: 102, decoration: BoxDecoration(borderRadius: BorderRadius.circular(34), border: Border.all(color: const Color(0xFFF6D8FF).withValues(alpha: .7), width: 1.2), boxShadow: [BoxShadow(color: const Color(0xFFDF54FF).withValues(alpha: .36), blurRadius: 24)], gradient: const LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFFB34BE1), Color(0xFF4D126F), Color(0xFF9C3FD3)])), child: Transform.rotate(angle: -.42, child: const Icon(Icons.settings_outlined, color: Colors.white, size: 42)))),
+    ]),
+  );
+}
+
+class _DarkMetric extends StatelessWidget {
+  const _DarkMetric({required this.icon, required this.value, required this.label, required this.accent});
+  final IconData icon;
+  final int value;
+  final String label;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) => _DarkGlassPanel(
+    radius: 25,
+    accent: accent,
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    child: SizedBox(
+      height: 64,
+      child: Row(children: [
+        _DarkIcon(icon: icon, color: accent),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text('$value', style: const TextStyle(color: Colors.white, fontSize: 26, height: .96, fontWeight: FontWeight.w800, fontFeatures: [FontFeature.tabularFigures()])),
+          const SizedBox(height: 4),
+          Text(label, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xFFF0DDF5), fontSize: 11, height: 1.05, fontWeight: FontWeight.w600)),
+        ])),
+      ]),
+    ),
+  );
+}
+
+class _DarkQuickAction extends StatelessWidget {
+  const _DarkQuickAction({required this.icon, required this.label, required this.accent, required this.onTap, required this.desktop});
+  final IconData icon;
+  final String label;
+  final Color accent;
+  final VoidCallback onTap;
+  final bool desktop;
+
+  @override
+  Widget build(BuildContext context) => _DarkGlassPanel(
+    radius: desktop ? 25 : 23,
+    accent: accent,
+    onTap: onTap,
+    padding: EdgeInsets.symmetric(horizontal: desktop ? 11 : 12, vertical: desktop ? 16 : 9),
+    child: desktop
+        ? SizedBox(height: 108, child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [_DarkIcon(icon: icon, color: accent, size: 44), const SizedBox(height: 10), Text(label, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800)), const SizedBox(height: 7), const Icon(Icons.arrow_forward_rounded, color: Color(0xFFEEDCFA), size: 16)]))
+        : SizedBox(height: 56, child: Row(children: [_DarkIcon(icon: icon, color: accent, size: 36), const SizedBox(width: 10), Expanded(child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800))), const Icon(Icons.chevron_right_rounded, color: Color(0xFFF2DDFC), size: 18)])),
+  );
+}
+
+class _DarkIcon extends StatelessWidget {
+  const _DarkIcon({required this.icon, required this.color, this.size = 40});
+  final IconData icon;
+  final Color color;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: size,
+    height: size,
+    decoration: BoxDecoration(borderRadius: BorderRadius.circular(size * .31), border: Border.all(color: Colors.white.withValues(alpha: .38)), boxShadow: [BoxShadow(color: color.withValues(alpha: .44), blurRadius: 14)], gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color.lerp(color, Colors.white, .33)!, color.withValues(alpha: .76), const Color(0xFF42105C)])),
+    child: Icon(icon, size: size * .55, color: Colors.white, shadows: const [Shadow(color: Color(0x990E0018), blurRadius: 4, offset: Offset(0, 2))]),
+  );
 }
 
 class MobileGlassNavigation extends StatelessWidget {

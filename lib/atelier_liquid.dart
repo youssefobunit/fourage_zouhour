@@ -3,8 +3,9 @@ part of 'main.dart';
 /// A single wallpaper texture keeps the liquid lenses aligned with the
 /// original backdrop, including on renderers without shader image filters.
 class AtelierLiquidStage extends StatefulWidget {
-  const AtelierLiquidStage({super.key, required this.child});
+  const AtelierLiquidStage({super.key, required this.child, this.dark = false});
   final Widget child;
+  final bool dark;
 
   @override
   State<AtelierLiquidStage> createState() => _AtelierLiquidStageState();
@@ -40,18 +41,20 @@ class _AtelierLiquidStageState extends State<AtelierLiquidStage> {
     final height = max(1, (size.height * scale).ceil());
     if (size == sceneSize &&
         wallpaper?.width == width &&
-        wallpaper?.height == height) {
+        wallpaper?.height == height &&
+        _wallpaperWasDark == widget.dark) {
       return;
     }
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder)
       ..scale(width / size.width, height / size.height);
-    const _AtelierBackdrop().paint(canvas, size);
+    _AtelierBackdrop(dark: widget.dark).paint(canvas, size);
     final picture = recorder.endRecording();
     final previous = wallpaper;
     try {
       wallpaper = picture.toImageSync(width, height);
       sceneSize = size;
+      _wallpaperWasDark = widget.dark;
     } finally {
       picture.dispose();
     }
@@ -59,6 +62,8 @@ class _AtelierLiquidStageState extends State<AtelierLiquidStage> {
       WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
     }
   }
+
+  bool? _wallpaperWasDark;
 
   @override
   void dispose() {
@@ -80,6 +85,7 @@ class _AtelierLiquidStageState extends State<AtelierLiquidStage> {
           program: program,
           wallpaper: wallpaper,
           size: sceneSize,
+          dark: widget.dark,
           child: widget.child,
         ),
       );
@@ -93,6 +99,7 @@ class _LiquidSceneData extends InheritedWidget {
     required this.program,
     required this.wallpaper,
     required this.size,
+    required this.dark,
     required super.child,
   });
 
@@ -100,6 +107,7 @@ class _LiquidSceneData extends InheritedWidget {
   final ui.FragmentProgram? program;
   final ui.Image? wallpaper;
   final Size size;
+  final bool dark;
 
   static _LiquidSceneData? maybeOf(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<_LiquidSceneData>();
@@ -117,7 +125,8 @@ class _LiquidSceneData extends InheritedWidget {
   bool updateShouldNotify(_LiquidSceneData oldWidget) =>
       oldWidget.program != program ||
       oldWidget.wallpaper != wallpaper ||
-      oldWidget.size != size;
+      oldWidget.size != size ||
+      oldWidget.dark != dark;
 }
 
 class _LiquidWallpaper extends StatelessWidget {
@@ -126,7 +135,11 @@ class _LiquidWallpaper extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (_LiquidSceneData.maybeOf(context)?.wallpaper == null) {
-      return const CustomPaint(painter: _AtelierBackdrop());
+      return CustomPaint(
+        painter: _AtelierBackdrop(
+          dark: _LiquidSceneData.maybeOf(context)?.dark ?? false,
+        ),
+      );
     }
     return const _LiquidLayer(wallpaperOnly: true, child: SizedBox.expand());
   }
@@ -300,6 +313,7 @@ class _RenderLiquidLayer extends RenderProxyBox {
       ..setFloat(10, style.depth)
       ..setFloat(11, style.press)
       ..setFloat(12, style.opacity)
+      ..setFloat(13, scene.dark ? 1 : 0)
       ..setImageSampler(0, texture);
     canvas.drawRect(bounds, Paint()..shader = shader);
   }
@@ -308,18 +322,25 @@ class _RenderLiquidLayer extends RenderProxyBox {
     final style = _style;
     final radius = min(style.radius, size.shortestSide * .5);
     final shape = RRect.fromRectAndRadius(bounds, Radius.circular(radius));
-    final edgeColor = style.accent.withValues(alpha: .30 + .32 * style.press);
+    final dark = _scene?.dark ?? false;
+    final edgeColor = (dark ? const Color(0xFFF0BBFF) : style.accent)
+        .withValues(alpha: .30 + .32 * style.press);
     canvas.drawRRect(
       shape,
       Paint()
         ..shader = LinearGradient(
           colors: [
-            Color.lerp(
-              AppPalette.surfaceRaised,
-              style.accent,
-              .12 + .10 * style.press,
-            )!,
-            AppPalette.background,
+            if (dark) ...[
+              const Color(0xFF57147E),
+              const Color(0xFF190024),
+            ] else ...[
+              Color.lerp(
+                AppPalette.surfaceRaised,
+                style.accent,
+                .12 + .10 * style.press,
+              )!,
+              AppPalette.background,
+            ],
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,

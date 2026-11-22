@@ -312,7 +312,9 @@ Future<DropdownMenuItem<T>?> _showLiquidSelectMenu<T>(
 }
 
 class _AtelierBackdrop extends CustomPainter {
-  const _AtelierBackdrop();
+  const _AtelierBackdrop({this.dark = false});
+
+  final bool dark;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -321,10 +323,12 @@ class _AtelierBackdrop extends CustomPainter {
     canvas.drawRect(
       bounds,
       Paint()
-        ..shader = const LinearGradient(
+        ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFFEAF7FF), Color(0xFFC6E6FF), Color(0xFF8CCBFF)],
+          colors: dark
+              ? const [Color(0xFF0B0011), Color(0xFF21002D), Color(0xFF08000D)]
+              : const [Color(0xFFEAF7FF), Color(0xFFC6E6FF), Color(0xFF8CCBFF)],
           stops: [0, .53, 1],
         ).createShader(bounds),
     );
@@ -335,21 +339,21 @@ class _AtelierBackdrop extends CustomPainter {
       const Offset(.86, .045),
       const Size(1.06, .36),
       -.21,
-      const Color(0xFF5DA9F5),
+      dark ? const Color(0xFFB841FF) : const Color(0xFF5DA9F5),
     );
     _orb(
       canvas,
       const Offset(1.08, .77),
       const Size(.73, .51),
       .46,
-      const Color(0xFF65D7F0),
+      dark ? const Color(0xFFE535D5) : const Color(0xFF65D7F0),
     );
     _orb(
       canvas,
       const Offset(.42, 1.07),
       const Size(1.50, .33),
       -.31,
-      const Color(0xFF7C96F8),
+      dark ? const Color(0xFF8A23FF) : const Color(0xFF7C96F8),
     );
     canvas.restore();
   }
@@ -384,9 +388,15 @@ class _AtelierBackdrop extends CustomPainter {
           end: Alignment.bottomRight,
           colors: [
             light.withValues(alpha: .71),
-            const Color(0xFF9CD4FF),
-            const Color(0xFFCFEAFF),
-            const Color(0xFFF0FAFF),
+            if (dark) ...[
+              const Color(0xFF2B0843),
+              const Color(0xFF4F1172),
+              const Color(0xFF160020),
+            ] else ...[
+              const Color(0xFF9CD4FF),
+              const Color(0xFFCFEAFF),
+              const Color(0xFFF0FAFF),
+            ],
           ],
           stops: const [0, .20, .57, 1],
         ).createShader(shape),
@@ -401,7 +411,7 @@ class _AtelierBackdrop extends CustomPainter {
           end: Alignment.bottomRight,
           colors: [
             light,
-            const Color(0xCCFFFFFF),
+            dark ? const Color(0xDDF8D5FF) : const Color(0xCCFFFFFF),
             light.withValues(alpha: .11),
             Colors.transparent,
           ],
@@ -412,7 +422,8 @@ class _AtelierBackdrop extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _AtelierBackdrop oldDelegate) => false;
+  bool shouldRepaint(covariant _AtelierBackdrop oldDelegate) =>
+      oldDelegate.dark != dark;
 }
 
 class _AtelierIcon extends StatelessWidget {
