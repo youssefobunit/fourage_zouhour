@@ -108,10 +108,18 @@ class _AtelierLiquidStageState extends State<AtelierLiquidStage> {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
-      updateWallpaper(
-        constraints.biggest,
-        MediaQuery.devicePixelRatioOf(context),
-      );
+      // Rendering a scene bitmap through Picture.toImage blocks the Windows
+      // graphics driver on some machines (especially while the authenticated
+      // workspace is opening).  Desktop therefore uses the lightweight,
+      // direct liquid fallback; mobile retains the refracting scene texture.
+      final useSceneTexture =
+          !(Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+      if (useSceneTexture) {
+        updateWallpaper(
+          constraints.biggest,
+          MediaQuery.devicePixelRatioOf(context),
+        );
+      }
       return SizedBox.expand(
         key: anchor,
         child: _LiquidSceneData(
