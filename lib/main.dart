@@ -61,7 +61,7 @@ const _localDatabaseName = String.fromEnvironment(
   // photo that Android cannot read. The cloud workspace is restored on launch.
   defaultValue: 'forage-v2.db',
 );
-const _appVersion = '1.0.16+16';
+const _appVersion = '1.1.0+18';
 const _githubLatestRelease =
     'https://api.github.com/repos/youssefobunit/fourage_zouhour/releases/latest';
 // This identity is also verified by Supabase in the owner migration.
@@ -639,6 +639,90 @@ abstract final class AppPalette {
   static const desktopCanvas = Color(0xFFDFF1FF);
   static const desktopAccent = primary;
   static const desktopAccentSoft = Color(0xFFCDE7FF);
+}
+
+/// The workshop opens in light blue by default.  Dark mode is opt-in and is
+/// stored locally for the current device, so one person's choice doesn't
+/// change the appearance for everyone else in the workshop.
+enum ForageAppearance { light, dark }
+
+class ForageAppearanceScope extends InheritedWidget {
+  const ForageAppearanceScope({
+    super.key,
+    required this.appearance,
+    required this.onChanged,
+    required super.child,
+  });
+
+  final ForageAppearance appearance;
+  final ValueChanged<ForageAppearance> onChanged;
+
+  bool get isDark => appearance == ForageAppearance.dark;
+
+  static ForageAppearanceScope of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<
+        ForageAppearanceScope>();
+    assert(scope != null, 'ForageAppearanceScope is missing from the widget tree.');
+    return scope!;
+  }
+
+  void setDark(bool enabled) =>
+      onChanged(enabled ? ForageAppearance.dark : ForageAppearance.light);
+
+  void toggle() => setDark(!isDark);
+
+  @override
+  bool updateShouldNotify(covariant ForageAppearanceScope oldWidget) =>
+      appearance != oldWidget.appearance || onChanged != oldWidget.onChanged;
+}
+
+/// Turns the existing blue liquid materials into a deep violet night scene
+/// while preserving their highlights, refraction, and readable dark text.
+/// Applying this to the complete scene also keeps every legacy page, dialog,
+/// menu and form visually consistent without duplicating business UI.
+class _DarkLiquidAppearance extends StatelessWidget {
+  const _DarkLiquidAppearance({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    fit: StackFit.expand,
+    children: [
+      ColorFiltered(
+        colorFilter: const ColorFilter.matrix(<double>[
+          -.46, -.10, -.06, 0, 180,
+          -.15, -.38, -.10, 0, 150,
+          -.10, -.15, -.42, 0, 200,
+          0, 0, 0, 1, 0,
+        ]),
+        child: child,
+      ),
+      const IgnorePointer(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0x14000000), Color(0x08280052), Color(0x1A13001F)],
+            ),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+class _AppearanceCanvas extends StatelessWidget {
+  const _AppearanceCanvas({required this.dark, required this.child});
+
+  final bool dark;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => dark
+      ? _DarkLiquidAppearance(child: child)
+      : child;
 }
 
 Future<void> main() async {
@@ -4158,6 +4242,7 @@ class _ForageAppState extends State<ForageApp> {
   var loading = true;
   String? startupError;
   AppUpdate? update;
+  var appearance = ForageAppearance.light;
 
   @override
   void initState() {
@@ -4169,6 +4254,24 @@ class _ForageAppState extends State<ForageApp> {
         );
     loadUsers();
     _checkForUpdate();
+    _loadAppearance();
+  }
+
+  Future<void> _loadAppearance() async {
+    final saved = await SecureAppPreferences.darkAppearance();
+    if (!mounted || saved == null) return;
+    setState(() {
+      appearance = saved ? ForageAppearance.dark : ForageAppearance.light;
+    });
+  }
+
+  void _setAppearance(ForageAppearance next) {
+    if (appearance == next) return;
+    setState(() => appearance = next);
+    // Persisting the preference must never delay the visible mode change.
+    unawaited(
+      SecureAppPreferences.saveDarkAppearance(next == ForageAppearance.dark),
+    );
   }
 
   Future<void> _checkForUpdate() async {
@@ -4302,30 +4405,45 @@ class _ForageAppState extends State<ForageApp> {
     title: 'FORAGE ZOUHOUR',
     theme: atelierTheme(),
     themeMode: ThemeMode.light,
-    builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.dark,
-        statusBarBrightness: Brightness.light,
-        systemNavigationBarColor: AppPalette.background,
-        systemNavigationBarIconBrightness: Brightness.dark,
-      ),
-      child: AtelierLiquidStage(
-        child: Stack(
-          children: [
-            child ?? const SizedBox.shrink(),
-            if (update != null)
-              SafeArea(
-                child: Align(
-                  alignment: Alignment.topCenter,
-                  child: _UpdateBanner(
-                    update: update!,
-                    onDismiss: () => setState(() => update = null),
-                    onStartUpdate: _startUpdate,
+    builder: (context, child) => ForageAppearanceScope(
+      appearance: appearance,
+      onChanged: _setAppearance,
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: appearance == ForageAppearance.dark
+              ? Brightness.light
+              : Brightness.dark,
+          statusBarBrightness: appearance == ForageAppearance.dark
+              ? Brightness.dark
+              : Brightness.light,
+          systemNavigationBarColor: appearance == ForageAppearance.dark
+              ? const Color(0xFF11001C)
+              : AppPalette.background,
+          systemNavigationBarIconBrightness: appearance == ForageAppearance.dark
+              ? Brightness.light
+              : Brightness.dark,
+        ),
+        child: AtelierLiquidStage(
+          child: _AppearanceCanvas(
+            dark: appearance == ForageAppearance.dark,
+            child: Stack(
+              children: [
+                child ?? const SizedBox.shrink(),
+                if (update != null)
+                  SafeArea(
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: _UpdateBanner(
+                        update: update!,
+                        onDismiss: () => setState(() => update = null),
+                        onStartUpdate: _startUpdate,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-          ],
+              ],
+            ),
+          ),
         ),
       ),
     ),
@@ -7910,6 +8028,22 @@ class AppHeader extends StatelessWidget {
             ),
             const SizedBox(width: 4),
           ],
+          Builder(
+            builder: (context) {
+              final appearance = ForageAppearanceScope.of(context);
+              return _DashboardHeaderButton(
+                label: appearance.isDark ? 'Mode clair' : 'Mode sombre',
+                onTap: appearance.toggle,
+                child: Icon(
+                  appearance.isDark
+                      ? Icons.light_mode_rounded
+                      : Icons.dark_mode_rounded,
+                  size: 20,
+                ),
+              );
+            },
+          ),
+          const SizedBox(width: 7),
           _DashboardHeaderButton(
             label: 'Profil',
             onTap: () => _showProfile(context),
@@ -8029,6 +8163,38 @@ class ProfileSheet extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 12),
+              Builder(
+                builder: (context) {
+                  final appearance = ForageAppearanceScope.of(context);
+                  return ListTile(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    tileColor: AppPalette.surfaceRaised.withValues(alpha: .82),
+                    leading: Icon(
+                      appearance.isDark
+                          ? Icons.dark_mode_rounded
+                          : Icons.light_mode_rounded,
+                      color: AppPalette.primary,
+                    ),
+                    title: const Text(
+                      'Apparence',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    subtitle: Text(
+                      appearance.isDark
+                          ? 'Mode sombre violet'
+                          : 'Mode clair bleu',
+                    ),
+                    trailing: Switch.adaptive(
+                      value: appearance.isDark,
+                      onChanged: appearance.setDark,
+                    ),
+                    onTap: appearance.toggle,
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
               if (user.isAdmin) ...[
                 ListTile(
                   onTap: onOpenTeam,
@@ -8893,6 +9059,22 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
                 child: const Icon(Icons.bar_chart_rounded, size: 21),
               ),
             ],
+            const SizedBox(width: 7),
+            Builder(
+              builder: (context) {
+                final appearance = ForageAppearanceScope.of(context);
+                return _DashboardHeaderButton(
+                  label: appearance.isDark ? 'Mode clair' : 'Mode sombre',
+                  onTap: appearance.toggle,
+                  child: Icon(
+                    appearance.isDark
+                        ? Icons.light_mode_rounded
+                        : Icons.dark_mode_rounded,
+                    size: 20,
+                  ),
+                );
+              },
+            ),
             const SizedBox(width: 7),
             _DashboardHeaderButton(
               label: 'Profil',

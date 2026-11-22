@@ -32,10 +32,26 @@ class SecureSessionStorage extends LocalStorage {
 abstract final class SecureAppPreferences {
   static const _storage = FlutterSecureStorage();
   static const _dismissedUpdateKey = 'forage.dismissed_update_version.v1';
+  static const _appearanceKey = 'forage.appearance.v1';
 
   static Future<String?> dismissedUpdateVersion() =>
       _storage.read(key: _dismissedUpdateKey);
 
   static Future<void> dismissUpdateVersion(String version) =>
       _storage.write(key: _dismissedUpdateKey, value: version);
+
+  /// The selected appearance is deliberately kept separate from the session
+  /// token. It is harmless user preference data, but secure storage gives us
+  /// one consistent implementation on iOS, Android, and Windows.
+  static Future<bool?> darkAppearance() async {
+    final value = await _storage.read(key: _appearanceKey);
+    return switch (value) {
+      'dark' => true,
+      'light' => false,
+      _ => null,
+    };
+  }
+
+  static Future<void> saveDarkAppearance(bool enabled) =>
+      _storage.write(key: _appearanceKey, value: enabled ? 'dark' : 'light');
 }
