@@ -407,7 +407,9 @@ abstract final class SupabaseAccounts {
       ..contentType = ContentType.json
       ..set('apikey', _supabasePublishableKey)
       ..set(HttpHeaders.authorizationHeader, 'Bearer $token');
-    request.add(utf8.encode(jsonEncode({'userId': userId, 'password': password})));
+    request.add(
+      utf8.encode(jsonEncode({'userId': userId, 'password': password})),
+    );
     final response = await request.close();
     final raw = await utf8.decoder.bind(response).join();
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -660,9 +662,12 @@ class ForageAppearanceScope extends InheritedWidget {
   bool get isDark => appearance == ForageAppearance.dark;
 
   static ForageAppearanceScope of(BuildContext context) {
-    final scope = context.dependOnInheritedWidgetOfExactType<
-        ForageAppearanceScope>();
-    assert(scope != null, 'ForageAppearanceScope is missing from the widget tree.');
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<ForageAppearanceScope>();
+    assert(
+      scope != null,
+      'ForageAppearanceScope is missing from the widget tree.',
+    );
     return scope!;
   }
 
@@ -676,10 +681,10 @@ class ForageAppearanceScope extends InheritedWidget {
       appearance != oldWidget.appearance || onChanged != oldWidget.onChanged;
 }
 
-/// Turns the existing blue liquid materials into a deep violet night scene
-/// while preserving their highlights, refraction, and readable dark text.
-/// Applying this to the complete scene also keeps every legacy page, dialog,
-/// menu and form visually consistent without duplicating business UI.
+/// Re-maps the blue light-glass materials into a true violet night material.
+/// This is intentionally a luminance inversion with violet endpoints—not a
+/// simple dark overlay—so light panels become radiant purple glass while the
+/// original dark typography becomes crisp near-white type.
 class _DarkLiquidAppearance extends StatelessWidget {
   const _DarkLiquidAppearance({required this.child});
 
@@ -691,23 +696,15 @@ class _DarkLiquidAppearance extends StatelessWidget {
     children: [
       ColorFiltered(
         colorFilter: const ColorFilter.matrix(<double>[
-          -.46, -.10, -.06, 0, 180,
-          -.15, -.38, -.10, 0, 150,
-          -.10, -.15, -.42, 0, 200,
+          // Red: paper white -> rich amethyst, navy text -> pale lavender.
+          -.215, -.423, -.082, 0, 255,
+          // Green: gives the material its near-black plum depth.
+          -.263, -.517, -.100, 0, 245,
+          // Blue: retained to create a violet, not a muddy burgundy, scene.
+          -.185, -.364, -.071, 0, 255,
           0, 0, 0, 1, 0,
         ]),
         child: child,
-      ),
-      const IgnorePointer(
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0x14000000), Color(0x08280052), Color(0x1A13001F)],
-            ),
-          ),
-        ),
       ),
     ],
   );
@@ -720,9 +717,8 @@ class _AppearanceCanvas extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => dark
-      ? _DarkLiquidAppearance(child: child)
-      : child;
+  Widget build(BuildContext context) =>
+      dark ? _DarkLiquidAppearance(child: child) : child;
 }
 
 Future<void> main() async {
@@ -3330,6 +3326,7 @@ class AppDatabase {
       return updated;
     });
   }
+
   Future<void> updateProduct(Product product) async => (await _database).update(
     'products',
     _productToRow(product),
@@ -3404,6 +3401,7 @@ class AppDatabase {
       );
     });
   }
+
   Future<void> updateCategory(ProductCategory category) async =>
       (await _database).update(
         'categories',
@@ -3618,6 +3616,7 @@ class AppDatabase {
       await transaction.delete('categories', where: 'id = ?', whereArgs: [id]);
     });
   }
+
   Future<void> deleteProductAndHistory(String id) async {
     final database = await _database;
     final machines = await database.query(
@@ -3666,9 +3665,13 @@ class AppDatabase {
       for (final row in categories) {
         final category = _categoryFromRow(row);
         if (!category.productIds.contains(id)) continue;
-        final updated = category.withProductInFamily(id, null).copyWith(
-          productIds: category.productIds.where((item) => item != id).toList(),
-        );
+        final updated = category
+            .withProductInFamily(id, null)
+            .copyWith(
+              productIds: category.productIds
+                  .where((item) => item != id)
+                  .toList(),
+            );
         await transaction.update(
           'categories',
           _categoryToRow(updated),
@@ -5669,13 +5672,12 @@ class _ForageHomeState extends State<ForageHome> {
     final item = await Navigator.push<ProductCreation>(
       context,
       MaterialPageRoute(
-        builder: (_) =>
-            ProductForm(
-              kind: kind,
-              depots: depots,
-              categories: categories,
-              catalogFamilies: catalogFamilies,
-            ),
+        builder: (_) => ProductForm(
+          kind: kind,
+          depots: depots,
+          categories: categories,
+          catalogFamilies: catalogFamilies,
+        ),
       ),
     );
     if (!mounted || item == null) return;
@@ -5686,7 +5688,9 @@ class _ForageHomeState extends State<ForageHome> {
     );
     if (!mounted) return;
     setState(() {
-      final index = categories.indexWhere((value) => value.id == item.categoryId);
+      final index = categories.indexWhere(
+        (value) => value.id == item.categoryId,
+      );
       if (index >= 0 && updatedCategory != null) {
         categories[index] = updatedCategory;
       }
@@ -6183,14 +6187,14 @@ class _ForageHomeState extends State<ForageHome> {
     }
     final item = await Navigator.push<ProductCategory>(
       context,
-      MaterialPageRoute(
-        builder: (_) => CategoryForm(initial: value),
-      ),
+      MaterialPageRoute(builder: (_) => CategoryForm(initial: value)),
     );
     if (item != null) {
       await widget.database.updateCategory(item);
       if (mounted) {
-        final index = categories.indexWhere((category) => category.id == item.id);
+        final index = categories.indexWhere(
+          (category) => category.id == item.id,
+        );
         if (index >= 0) setState(() => categories[index] = item);
       }
     }
@@ -7868,6 +7872,7 @@ class Glass extends StatelessWidget {
   final double radius;
   final Color accent;
   final bool frosted;
+
   /// Allows floating UI such as the phone navigation to reveal the content
   /// scrolling underneath it, without changing normal glass panels.
   final double? depth;
@@ -8565,151 +8570,156 @@ class DashboardPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final desktop =
         forceDesktopLayout ||
-        (_usesWorkspaceRail(context) && MediaQuery.sizeOf(context).width >= 1380);
+        (_usesWorkspaceRail(context) &&
+            MediaQuery.sizeOf(context).width >= 1380);
     return Page(
       child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (desktop)
-          _DesktopDashboardWelcome(
-            firstName: user.fullName.trim().split(RegExp(r'\s+')).first,
-          ),
-        if (desktop) const SizedBox(height: 18),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final hero = _AtelierOverview(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (desktop)
+            _DesktopDashboardWelcome(
               firstName: user.fullName.trim().split(RegExp(r'\s+')).first,
-              machineCount: machineCount,
-              desktop: desktop,
-            );
-            final products = _DashboardMetric(
-              icon: Icons.view_in_ar_outlined,
-              label: 'Produits',
-              value: productCount,
-              accent: AppPalette.secondary,
-            );
-            final reviews = _DashboardMetric(
-              icon: Icons.schedule_rounded,
-              label: 'Contrôles en attente',
-              value: pendingReviews,
-              accent: pendingReviews > 0
-                  ? AppPalette.amber
-                  : AppPalette.primary,
-            );
-            if (constraints.maxWidth >= (desktop ? 780 : 690)) {
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            ),
+          if (desktop) const SizedBox(height: 18),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final hero = _AtelierOverview(
+                firstName: user.fullName.trim().split(RegExp(r'\s+')).first,
+                machineCount: machineCount,
+                desktop: desktop,
+              );
+              final products = _DashboardMetric(
+                icon: Icons.view_in_ar_outlined,
+                label: 'Produits',
+                value: productCount,
+                accent: AppPalette.secondary,
+              );
+              final reviews = _DashboardMetric(
+                icon: Icons.schedule_rounded,
+                label: 'Contrôles en attente',
+                value: pendingReviews,
+                accent: pendingReviews > 0
+                    ? AppPalette.amber
+                    : AppPalette.primary,
+              );
+              if (constraints.maxWidth >= (desktop ? 780 : 690)) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 3, child: hero),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      flex: 2,
+                      child: Column(
+                        children: [
+                          products,
+                          const SizedBox(height: 12),
+                          reviews,
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Expanded(flex: 3, child: hero),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    flex: 2,
-                    child: Column(
-                      children: [products, const SizedBox(height: 12), reviews],
+                  hero,
+                  const SizedBox(height: 12),
+                  IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(child: products),
+                        const SizedBox(width: 10),
+                        Expanded(child: reviews),
+                      ],
                     ),
                   ),
                 ],
               );
-            }
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                hero,
-                const SizedBox(height: 12),
-                IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(child: products),
-                      const SizedBox(width: 10),
-                      Expanded(child: reviews),
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-        const SizedBox(height: 19),
-        Text(
-          'Accès rapide',
-          style: Theme.of(context).textTheme.titleMedium
-              ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -.4),
-        ),
-        const SizedBox(height: 12),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final columns = constraints.maxWidth >= (desktop ? 940 : 670)
-                ? 6
-                : constraints.maxWidth >= 670
-                ? 3
-                : constraints.maxWidth >= 290
-                ? 2
-                : 1;
-            const gap = 10.0;
-            final width =
-                (constraints.maxWidth - gap * (columns - 1)) / columns;
-            final shortcuts = [
-              _DashboardAction(
-                icon: Icons.inventory_2_outlined,
-                color: const Color(0xFF1A95E8),
-                label: 'Produits',
-                onTap: onProducts,
-              ),
-              _DashboardAction(
-                icon: Icons.warehouse_outlined,
-                color: const Color(0xFF2FB9E8),
-                label: 'Stock',
-                onTap: onStock,
-              ),
-              _DashboardAction(
-                icon: Icons.precision_manufacturing_outlined,
-                color: const Color(0xFF4A7EEA),
-                label: 'Machines',
-                onTap: onMachines,
-              ),
-              _DashboardAction(
-                icon: Icons.folder_outlined,
-                color: const Color(0xFF258DD8),
-                label: 'Familles',
-                onTap: onCategories,
-              ),
-              _DashboardAction(
-                icon: user.canValidate
-                    ? Icons.verified_user_outlined
-                    : Icons.fact_check_outlined,
-                color: const Color(0xFF38A8E6),
-                label: user.canValidate ? 'Validations' : 'Contrôles',
-                onTap: user.canValidate ? onValidation : onReviews,
-              ),
-              if (user.isAdmin)
+            },
+          ),
+          const SizedBox(height: 19),
+          Text(
+            'Accès rapide',
+            style: Theme.of(context).textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -.4),
+          ),
+          const SizedBox(height: 12),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final columns = constraints.maxWidth >= (desktop ? 940 : 670)
+                  ? 6
+                  : constraints.maxWidth >= 670
+                  ? 3
+                  : constraints.maxWidth >= 290
+                  ? 2
+                  : 1;
+              const gap = 10.0;
+              final width =
+                  (constraints.maxWidth - gap * (columns - 1)) / columns;
+              final shortcuts = [
                 _DashboardAction(
-                  icon: Icons.groups_outlined,
-                  color: const Color(0xFF668AEF),
-                  label: 'Équipe',
-                  onTap: onTeam,
+                  icon: Icons.inventory_2_outlined,
+                  color: const Color(0xFF1A95E8),
+                  label: 'Produits',
+                  onTap: onProducts,
                 ),
-            ];
-            return Wrap(
-              spacing: gap,
-              runSpacing: gap,
-              children: [
-                for (final shortcut in shortcuts)
-                  SizedBox(
-                    width: width,
-                    child: _DashboardAction(
-                      icon: shortcut.icon,
-                      color: shortcut.color,
-                      label: shortcut.label,
-                      onTap: shortcut.onTap,
-                      desktop: desktop,
-                    ),
+                _DashboardAction(
+                  icon: Icons.warehouse_outlined,
+                  color: const Color(0xFF2FB9E8),
+                  label: 'Stock',
+                  onTap: onStock,
+                ),
+                _DashboardAction(
+                  icon: Icons.precision_manufacturing_outlined,
+                  color: const Color(0xFF4A7EEA),
+                  label: 'Machines',
+                  onTap: onMachines,
+                ),
+                _DashboardAction(
+                  icon: Icons.folder_outlined,
+                  color: const Color(0xFF258DD8),
+                  label: 'Familles',
+                  onTap: onCategories,
+                ),
+                _DashboardAction(
+                  icon: user.canValidate
+                      ? Icons.verified_user_outlined
+                      : Icons.fact_check_outlined,
+                  color: const Color(0xFF38A8E6),
+                  label: user.canValidate ? 'Validations' : 'Contrôles',
+                  onTap: user.canValidate ? onValidation : onReviews,
+                ),
+                if (user.isAdmin)
+                  _DashboardAction(
+                    icon: Icons.groups_outlined,
+                    color: const Color(0xFF668AEF),
+                    label: 'Équipe',
+                    onTap: onTeam,
                   ),
-              ],
-            );
-          },
-        ),
-      ],
+              ];
+              return Wrap(
+                spacing: gap,
+                runSpacing: gap,
+                children: [
+                  for (final shortcut in shortcuts)
+                    SizedBox(
+                      width: width,
+                      child: _DashboardAction(
+                        icon: shortcut.icon,
+                        color: shortcut.color,
+                        label: shortcut.label,
+                        onTap: shortcut.onTap,
+                        desktop: desktop,
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+        ],
       ),
     );
   }
@@ -8904,7 +8914,9 @@ class _WindowsWorkspaceShellState extends State<WindowsWorkspaceShell> {
           user: widget.user,
           onOpenTeam: closeThen(widget.onOpenTeam),
           onOpenBackups: closeThen(widget.onOpenBackups),
-          onOpenExport: widget.canExport ? closeThen(widget.onOpenExport) : null,
+          onOpenExport: widget.canExport
+              ? closeThen(widget.onOpenExport)
+              : null,
           onOpenDeveloper: widget.user.isDeveloper
               ? closeThen(widget.onOpenDeveloper)
               : null,
@@ -9021,7 +9033,9 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
                               color: AppPalette.primary.withValues(alpha: .18),
                               borderRadius: BorderRadius.circular(7),
                               border: Border.all(
-                                color: AppPalette.primary.withValues(alpha: .42),
+                                color: AppPalette.primary.withValues(
+                                  alpha: .42,
+                                ),
                               ),
                             ),
                             child: const Text(
@@ -9081,7 +9095,10 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
               onTap: widget.onOpenProfile,
               child: Text(
                 widget.user.fullName.characters.first.toUpperCase(),
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
           ],
@@ -9154,116 +9171,118 @@ class _WindowsNavigationRail extends StatelessWidget {
           12,
         ),
         child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-        _DesktopBrand(compact: compact, onToggle: onToggle),
-        SizedBox(height: compact ? 20 : 26),
-        if (!compact) ...[
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 10),
-            child: Text(
-              'ESPACE DE TRAVAIL',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w900,
-                color: AppPalette.muted,
-                letterSpacing: 1.25,
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-        ],
-        ..._entries.indexed
-            .where((entry) {
-              final index = entry.$1;
-              if (index == 4 && !user.isAdmin) return false;
-              return user.canAccess(AppPage.values[index]);
-            })
-            .map(
-              (entry) => _DesktopNavigationButton(
-                entry: entry.$2,
-                selected: selectedIndex == entry.$1,
-                compact: compact,
-                onTap: () => onSelected(entry.$1),
-              ),
-            ),
-        const Spacer(),
-        Container(
-          padding: EdgeInsets.all(compact ? 7 : 12),
-          decoration: BoxDecoration(
-            color: AppPalette.surface.withValues(alpha: .70),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: AppPalette.line.withValues(alpha: .75)),
-          ),
-          child: compact
-              ? Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircleAvatar(
-                      radius: 17,
-                      backgroundColor: AppPalette.desktopAccentSoft,
-                      foregroundColor: AppPalette.desktopAccent,
-                      child: Text(
-                        user.fullName.substring(0, 1).toUpperCase(),
-                        style: const TextStyle(fontWeight: FontWeight.w900),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    IconButton(
-                      tooltip: 'Déconnexion',
-                      onPressed: onLogout,
-                      icon: const Icon(Icons.logout_rounded, size: 18),
-                      color: AppPalette.muted,
-                    ),
-                  ],
-                )
-              : Row(
-                  children: [
-              CircleAvatar(
-                radius: 17,
-                backgroundColor: AppPalette.desktopAccentSoft,
-                foregroundColor: AppPalette.desktopAccent,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _DesktopBrand(compact: compact, onToggle: onToggle),
+            SizedBox(height: compact ? 20 : 26),
+            if (!compact) ...[
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 10),
                 child: Text(
-                  user.fullName.substring(0, 1).toUpperCase(),
-                  style: const TextStyle(fontWeight: FontWeight.w900),
+                  'ESPACE DE TRAVAIL',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w900,
+                    color: AppPalette.muted,
+                    letterSpacing: 1.25,
+                  ),
                 ),
               ),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      user.fullName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                      ),
+              const SizedBox(height: 10),
+            ],
+            ..._entries.indexed
+                .where((entry) {
+                  final index = entry.$1;
+                  if (index == 4 && !user.isAdmin) return false;
+                  return user.canAccess(AppPage.values[index]);
+                })
+                .map(
+                  (entry) => _DesktopNavigationButton(
+                    entry: entry.$2,
+                    selected: selectedIndex == entry.$1,
+                    compact: compact,
+                    onTap: () => onSelected(entry.$1),
+                  ),
+                ),
+            const Spacer(),
+            Container(
+              padding: EdgeInsets.all(compact ? 7 : 12),
+              decoration: BoxDecoration(
+                color: AppPalette.surface.withValues(alpha: .70),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                  color: AppPalette.line.withValues(alpha: .75),
+                ),
+              ),
+              child: compact
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircleAvatar(
+                          radius: 17,
+                          backgroundColor: AppPalette.desktopAccentSoft,
+                          foregroundColor: AppPalette.desktopAccent,
+                          child: Text(
+                            user.fullName.substring(0, 1).toUpperCase(),
+                            style: const TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        IconButton(
+                          tooltip: 'Déconnexion',
+                          onPressed: onLogout,
+                          icon: const Icon(Icons.logout_rounded, size: 18),
+                          color: AppPalette.muted,
+                        ),
+                      ],
+                    )
+                  : Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 17,
+                          backgroundColor: AppPalette.desktopAccentSoft,
+                          foregroundColor: AppPalette.desktopAccent,
+                          child: Text(
+                            user.fullName.substring(0, 1).toUpperCase(),
+                            style: const TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                        ),
+                        const SizedBox(width: 9),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                user.fullName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              Text(
+                                user.effectiveRole.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: AppPalette.muted,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Déconnexion',
+                          onPressed: onLogout,
+                          icon: const Icon(Icons.logout_rounded, size: 18),
+                          color: AppPalette.muted,
+                        ),
+                      ],
                     ),
-                    Text(
-                      user.effectiveRole.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppPalette.muted,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                tooltip: 'Déconnexion',
-                onPressed: onLogout,
-                icon: const Icon(Icons.logout_rounded, size: 18),
-                color: AppPalette.muted,
-              ),
-                  ],
-                ),
-        ),
-        ],
+            ),
+          ],
         ),
       ),
     ),
@@ -9276,23 +9295,23 @@ class _DesktopBrand extends StatelessWidget {
   final VoidCallback onToggle;
 
   Widget _mark() => Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: AppPalette.desktopAccent,
-          borderRadius: BorderRadius.circular(13),
-          boxShadow: [
-            BoxShadow(
-              color: AppPalette.desktopAccent.withValues(alpha: .26),
-              blurRadius: 18,
-            ),
-          ],
+    width: 40,
+    height: 40,
+    decoration: BoxDecoration(
+      color: AppPalette.desktopAccent,
+      borderRadius: BorderRadius.circular(13),
+      boxShadow: [
+        BoxShadow(
+          color: AppPalette.desktopAccent.withValues(alpha: .26),
+          blurRadius: 18,
         ),
-        child: const Icon(
-          Icons.precision_manufacturing_rounded,
-          color: AppPalette.background,
-        ),
-      );
+      ],
+    ),
+    child: const Icon(
+      Icons.precision_manufacturing_rounded,
+      color: AppPalette.background,
+    ),
+  );
 
   @override
   Widget build(BuildContext context) => Glass(
@@ -9303,58 +9322,61 @@ class _DesktopBrand extends StatelessWidget {
     opacity: .72,
     padding: const EdgeInsets.all(6),
     child: compact
-      ? SizedBox(
-          height: 84,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        ? SizedBox(
+            height: 84,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: IconButton(
+                    tooltip: 'Agrandir le menu',
+                    onPressed: onToggle,
+                    icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
+                    iconSize: 16,
+                    color: AppPalette.muted,
+                  ),
+                ),
+                _mark(),
+              ],
+            ),
+          )
+        : Row(
             children: [
-              Align(
-                alignment: Alignment.centerRight,
-                child: IconButton(
-                  tooltip: 'Agrandir le menu',
-                  onPressed: onToggle,
-                  icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
-                  iconSize: 16,
-                  color: AppPalette.muted,
+              _mark(),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'FORAGE',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    Text(
+                      'WORKSPACE',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: AppPalette.desktopAccent,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.3,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              _mark(),
+              IconButton(
+                tooltip: 'Réduire le menu',
+                onPressed: onToggle,
+                icon: const Icon(Icons.keyboard_double_arrow_left_rounded),
+                iconSize: 16,
+                color: AppPalette.muted,
+              ),
             ],
           ),
-        )
-      : Row(
-          children: [
-            _mark(),
-            const SizedBox(width: 10),
-            const Expanded(
-              child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'FORAGE',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
-            ),
-            Text(
-              'WORKSPACE',
-              style: TextStyle(
-                fontSize: 10,
-                color: AppPalette.desktopAccent,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 1.3,
-              ),
-            ),
-          ],
-        ),
-            ),
-            IconButton(
-              tooltip: 'Réduire le menu',
-              onPressed: onToggle,
-              icon: const Icon(Icons.keyboard_double_arrow_left_rounded),
-              iconSize: 16,
-              color: AppPalette.muted,
-            ),
-          ],
-        ),
   );
 }
 
@@ -9382,71 +9404,75 @@ class _DesktopNavigationButton extends StatelessWidget {
     final button = Padding(
       padding: const EdgeInsets.only(bottom: 5),
       child: _LiquidTapTarget(
-      radius: 14,
-      selected: selected,
-      accent: selected ? AppPalette.primary : AppPalette.secondary,
-      idleOpacity: .16,
-      selectedOpacity: .72,
-      onTap: onTap,
-      child: Padding(
-        padding: compact
-            ? const EdgeInsets.symmetric(vertical: 11)
-            : const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        child: compact
-            ? Center(
-                child: AnimatedScale(
-                  duration: const Duration(milliseconds: 240),
-                  curve: Curves.easeOutBack,
-                  scale: selected ? 1.1 : 1,
-                  child: Icon(
-                    entry.icon,
-                    color: selected
-                        ? AppPalette.desktopAccent
-                        : AppPalette.muted,
-                    size: 21,
+        radius: 14,
+        selected: selected,
+        accent: selected ? AppPalette.primary : AppPalette.secondary,
+        idleOpacity: .16,
+        selectedOpacity: .72,
+        onTap: onTap,
+        child: Padding(
+          padding: compact
+              ? const EdgeInsets.symmetric(vertical: 11)
+              : const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          child: compact
+              ? Center(
+                  child: AnimatedScale(
+                    duration: const Duration(milliseconds: 240),
+                    curve: Curves.easeOutBack,
+                    scale: selected ? 1.1 : 1,
+                    child: Icon(
+                      entry.icon,
+                      color: selected
+                          ? AppPalette.desktopAccent
+                          : AppPalette.muted,
+                      size: 21,
+                    ),
                   ),
+                )
+              : Row(
+                  children: [
+                    AnimatedScale(
+                      duration: const Duration(milliseconds: 240),
+                      curve: Curves.easeOutBack,
+                      scale: selected ? 1.08 : 1,
+                      child: Icon(
+                        entry.icon,
+                        color: selected
+                            ? AppPalette.desktopAccent
+                            : AppPalette.muted,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    AnimatedOpacity(
+                      duration: const Duration(milliseconds: 180),
+                      opacity: selected ? 1 : .86,
+                      child: Text(
+                        entry.label,
+                        style: TextStyle(
+                          color: selected ? AppPalette.text : AppPalette.muted,
+                          fontWeight: selected
+                              ? FontWeight.w900
+                              : FontWeight.w700,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    AnimatedOpacity(
+                      duration: const Duration(milliseconds: 160),
+                      opacity: selected ? 1 : 0,
+                      child: Container(
+                        width: 6,
+                        height: 6,
+                        decoration: const BoxDecoration(
+                          color: AppPalette.desktopAccent,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              )
-            : Row(
-          children: [
-            AnimatedScale(
-              duration: const Duration(milliseconds: 240),
-              curve: Curves.easeOutBack,
-              scale: selected ? 1.08 : 1,
-              child: Icon(
-                entry.icon,
-                color: selected ? AppPalette.desktopAccent : AppPalette.muted,
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 12),
-            AnimatedOpacity(
-              duration: const Duration(milliseconds: 180),
-              opacity: selected ? 1 : .86,
-              child: Text(
-                entry.label,
-                style: TextStyle(
-                  color: selected ? AppPalette.text : AppPalette.muted,
-                  fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
-                  fontSize: 13,
-                ),
-              ),
-            ),
-            const Spacer(),
-            AnimatedOpacity(
-              duration: const Duration(milliseconds: 160),
-              opacity: selected ? 1 : 0,
-              child: Container(
-                width: 6,
-                height: 6,
-                decoration: const BoxDecoration(
-                  color: AppPalette.desktopAccent,
-                  shape: BoxShape.circle,
-                ),
-              ),
-            ),
-          ],
-              ),
         ),
       ),
     );
@@ -12904,7 +12930,6 @@ class MachinesPage extends StatelessWidget {
   );
 }
 
-
 class CategoryForm extends StatefulWidget {
   const CategoryForm({super.key, this.initial});
   final ProductCategory? initial;
@@ -14420,9 +14445,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
       'Nom de la catégorie',
     );
     if (name == null || name.isEmpty) return;
-    await widget.database.updateCategory(
-      item.copyWith(name: name),
-    );
+    await widget.database.updateCategory(item.copyWith(name: name));
     await _finish('Catégorie modifiée.');
   }
 
@@ -15100,19 +15123,19 @@ class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
                             frosted: true,
                             padding: const EdgeInsets.all(4),
                             child: ListTile(
-                            leading: Icon(
-                              device.primary
-                                  ? Icons.star_rounded
-                                  : Icons.phone_android_rounded,
-                            ),
-                            title: Text(device.label),
-                            subtitle: Text(
-                              '${device.email}\n'
-                              '${device.primary ? 'Principal' : 'Secondaire'} · ${device.status}\n'
-                              'Entrée : ${device.lastLoginAt == null ? '—' : dateText(device.lastLoginAt!)} · '
-                              'Sortie : ${device.lastLogoutAt == null ? 'En cours' : dateText(device.lastLogoutAt!)}',
-                            ),
-                            isThreeLine: true,
+                              leading: Icon(
+                                device.primary
+                                    ? Icons.star_rounded
+                                    : Icons.phone_android_rounded,
+                              ),
+                              title: Text(device.label),
+                              subtitle: Text(
+                                '${device.email}\n'
+                                '${device.primary ? 'Principal' : 'Secondaire'} · ${device.status}\n'
+                                'Entrée : ${device.lastLoginAt == null ? '—' : dateText(device.lastLoginAt!)} · '
+                                'Sortie : ${device.lastLogoutAt == null ? 'En cours' : dateText(device.lastLogoutAt!)}',
+                              ),
+                              isThreeLine: true,
                               trailing: PopupMenuButton<String>(
                                 onSelected: (value) =>
                                     changeStatus(device, value),
@@ -15791,7 +15814,9 @@ class _ProductFormState extends State<ProductForm> {
         children: [
           ImageInput(bytes: image, label: 'Photo du produit *', onTap: pick),
           const SizedBox(height: 14),
-          if (!isManufactured || widget.categories.isNotEmpty || widget.catalogFamilies.isNotEmpty) ...[
+          if (!isManufactured ||
+              widget.categories.isNotEmpty ||
+              widget.catalogFamilies.isNotEmpty) ...[
             LiquidSelectFormField<String>(
               initialValue: familyId,
               isExpanded: true,
@@ -15804,7 +15829,8 @@ class _ProductFormState extends State<ProductForm> {
                 familyId = value;
                 categoryId = null;
               }),
-              validator: (value) => value == null ? 'Choisissez une famille.' : null,
+              validator: (value) =>
+                  value == null ? 'Choisissez une famille.' : null,
             ),
             if (selectedGroup case final family?) ...[
               const SizedBox(height: 14),
@@ -15815,10 +15841,14 @@ class _ProductFormState extends State<ProductForm> {
                 decoration: const InputDecoration(labelText: 'Catégorie *'),
                 items: [
                   for (final section in family.sections)
-                    DropdownMenuItem(value: section.category.id, child: Text(section.category.name)),
+                    DropdownMenuItem(
+                      value: section.category.id,
+                      child: Text(section.category.name),
+                    ),
                 ],
                 onChanged: (value) => setState(() => categoryId = value),
-                validator: (value) => value == null ? 'Choisissez une catégorie.' : null,
+                validator: (value) =>
+                    value == null ? 'Choisissez une catégorie.' : null,
               ),
               if (family.sections.isEmpty)
                 const Text('Ajoutez d’abord une catégorie à cette famille.'),
@@ -16990,10 +17020,7 @@ class _StockFormState extends State<StockForm> {
                 const SizedBox(height: 4),
                 Text(
                   '${productQuantityLabel(selectedProduct!, widget.stock(selectedProduct!.id) + addedPieces)} au total',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppPalette.muted,
-                  ),
+                  style: const TextStyle(fontSize: 12, color: AppPalette.muted),
                 ),
               ],
             ),
@@ -18038,7 +18065,10 @@ class _CatalogGroupCard extends StatelessWidget {
                       label,
                       textAlign: TextAlign.center,
                       maxLines: 1,
-                      style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+                      style: const TextStyle(
+                        color: AppPalette.muted,
+                        fontSize: 12,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
@@ -18900,13 +18930,17 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
                 controller: password,
                 obscureText: true,
                 autofocus: true,
-                decoration: const InputDecoration(labelText: 'Nouveau mot de passe'),
+                decoration: const InputDecoration(
+                  labelText: 'Nouveau mot de passe',
+                ),
               ),
               const SizedBox(height: 10),
               TextField(
                 controller: confirmation,
                 obscureText: true,
-                decoration: const InputDecoration(labelText: 'Confirmer le mot de passe'),
+                decoration: const InputDecoration(
+                  labelText: 'Confirmer le mot de passe',
+                ),
               ),
               if (error != null) ...[
                 const SizedBox(height: 8),
