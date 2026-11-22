@@ -173,6 +173,54 @@ void main() {
     );
   });
 
+  testWidgets('the dark dashboard remains visible on a phone layout',
+      (WidgetTester tester) async {
+    final user = AppUser(
+      id: 'mobile-dashboard-admin',
+      username: 'mobile.dashboard.admin',
+      password: 'Correct_password_2026',
+      fullName: 'Youssef Forage',
+      admin: true,
+      role: UserRole.admin,
+      roles: {UserRole.admin},
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: atelierTheme(),
+        darkTheme: atelierDarkTheme(),
+        themeMode: ThemeMode.dark,
+        home: MediaQuery(
+          data: const MediaQueryData(size: Size(390, 844)),
+          child: ForageAppearanceScope(
+            appearance: ForageAppearance.dark,
+            onChanged: (_) {},
+            child: DashboardPage(
+              user: user,
+              productCount: 49,
+              machineCount: 6,
+              pendingReviews: 2,
+              onProducts: () {},
+              onStock: () {},
+              onMachines: () {},
+              onTeam: () {},
+              onValidation: () {},
+              onCategories: () {},
+              onReviews: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Bonjour, Youssef'), findsOneWidget);
+    expect(find.text('Machines de l’atelier'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('dark-dashboard-overview'))).height,
+      greaterThan(180),
+    );
+  });
+
   test('reset does not recreate a default administrator', () async {
     final directory = await Directory.systemTemp.createTemp('forage-reset-test-');
     final database = AppDatabase(

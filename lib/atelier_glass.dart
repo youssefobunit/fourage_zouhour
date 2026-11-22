@@ -1125,23 +1125,28 @@ class _WorkshopEmblem extends StatelessWidget {
   const _WorkshopEmblem();
 
   @override
-  Widget build(BuildContext context) => RepaintBoundary(
-    child: TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: MediaQuery.disableAnimationsOf(context)
-          ? Duration.zero
-          : const Duration(milliseconds: 1450),
-      curve: Curves.easeOutCubic,
-      builder: (_, progress, _) =>
-          CustomPaint(painter: _WorkshopEmblemPainter(progress)),
-    ),
-  );
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    return RepaintBoundary(
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : const Duration(milliseconds: 1450),
+        curve: Curves.easeOutCubic,
+        builder: (_, progress, _) => CustomPaint(
+          painter: _WorkshopEmblemPainter(progress, dark: dark),
+        ),
+      ),
+    );
+  }
 }
 
 class _WorkshopEmblemPainter extends CustomPainter {
-  const _WorkshopEmblemPainter(this.light);
+  const _WorkshopEmblemPainter(this.light, {this.dark = false});
 
   final double light;
+  final bool dark;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1162,7 +1167,17 @@ class _WorkshopEmblemPainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topRight,
           end: Alignment.bottomLeft,
-          colors: [Color(0x8052B9F3), Color(0x4067BFF1), Color(0x0051A6E8)],
+          colors: dark
+              ? const [
+                  Color(0x80D35BFF),
+                  Color(0x407B24A3),
+                  Color(0x001A0027),
+                ]
+              : const [
+                  Color(0x8052B9F3),
+                  Color(0x4067BFF1),
+                  Color(0x0051A6E8),
+                ],
           stops: [0, .58, 1],
         ).createShader(halo),
     );
@@ -1172,7 +1187,13 @@ class _WorkshopEmblemPainter extends CustomPainter {
         ..shader = const RadialGradient(
           center: Alignment.bottomRight,
           radius: 1.1,
-          colors: [Color(0x9166C6F5), Color(0x4168B9EF), Colors.transparent],
+          colors: dark
+              ? const [Color(0x91ED9CFF), Color(0x415F1684), Colors.transparent]
+              : const [
+                  Color(0x9166C6F5),
+                  Color(0x4168B9EF),
+                  Colors.transparent,
+                ],
         ).createShader(halo),
     );
     canvas.drawOval(
@@ -1183,7 +1204,13 @@ class _WorkshopEmblemPainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topRight,
           end: Alignment.bottomLeft,
-          colors: [Color(0xEEEAFAFF), Color(0x5072B9E8), Colors.transparent],
+          colors: dark
+              ? const [Color(0xEEFFE6FF), Color(0x50C64DFF), Colors.transparent]
+              : const [
+                  Color(0xEEEAFAFF),
+                  Color(0x5072B9E8),
+                  Colors.transparent,
+                ],
         ).createShader(halo),
     );
 
@@ -1201,7 +1228,7 @@ class _WorkshopEmblemPainter extends CustomPainter {
     );
     canvas.drawRRect(
       shape.shift(Offset(-span * .045, span * .050)),
-      Paint()..color = const Color(0x846AB9EC),
+      Paint()..color = dark ? const Color(0x846C2295) : const Color(0x846AB9EC),
     );
     canvas.drawRRect(
       shape,
@@ -1209,12 +1236,19 @@ class _WorkshopEmblemPainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [
-            Color(0xEDF0FBFF),
-            Color(0xC170BAF2),
-            Color(0x83529CDD),
-            Color(0xE961B8F5),
-          ],
+          colors: dark
+              ? const [
+                  Color(0xEDFFE7FF),
+                  Color(0xC1E072FF),
+                  Color(0x83641C87),
+                  Color(0xE99C37C5),
+                ]
+              : const [
+                  Color(0xEDF0FBFF),
+                  Color(0xC170BAF2),
+                  Color(0x83529CDD),
+                  Color(0xE961B8F5),
+                ],
           stops: [0, .28, .72, 1],
         ).createShader(tile),
     );
@@ -1224,11 +1258,13 @@ class _WorkshopEmblemPainter extends CustomPainter {
         ..shader = RadialGradient(
           center: Alignment(-.94 + .57 * light, -1.06),
           radius: .91,
-          colors: const [
-            Color(0xBAF2FBFF),
-            Color(0x677DC7F5),
-            Colors.transparent,
-          ],
+          colors: dark
+              ? const [Color(0xBAFFF1FF), Color(0x67C651F4), Colors.transparent]
+              : const [
+                  Color(0xBAF2FBFF),
+                  Color(0x677DC7F5),
+                  Colors.transparent,
+                ],
         ).createShader(tile),
     );
     canvas.drawRRect(
@@ -1239,7 +1275,13 @@ class _WorkshopEmblemPainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFFF1FBFF), Color(0x405FADE5), Color(0xFFB9E5FF)],
+          colors: dark
+              ? const [Color(0xFFFFF1FF), Color(0x40D15CFF), Color(0xFFE5B4FF)]
+              : const [
+                  Color(0xFFF1FBFF),
+                  Color(0x405FADE5),
+                  Color(0xFFB9E5FF),
+                ],
         ).createShader(tile),
     );
     _paintGear(canvas, span * .115);
@@ -1272,14 +1314,14 @@ class _WorkshopEmblemPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeJoin = StrokeJoin.round
       ..strokeWidth = 1.7
-      ..color = AppPalette.text;
+      ..color = dark ? const Color(0xFFFFE9FF) : AppPalette.text;
     canvas.drawPath(gear, stroke);
     canvas.drawCircle(Offset.zero, radius * .30, stroke);
   }
 
   @override
   bool shouldRepaint(covariant _WorkshopEmblemPainter oldDelegate) =>
-      oldDelegate.light != light;
+      oldDelegate.light != light || oldDelegate.dark != dark;
 }
 
 class _DashboardMetric extends StatelessWidget {
@@ -1470,7 +1512,9 @@ class _LoginIdentity extends StatelessWidget {
         children: [
           Positioned.fill(
             child: IgnorePointer(
-              child: CustomPaint(painter: _WorkshopEmblemPainter(dark ? .72 : 1)),
+              child: CustomPaint(
+                painter: _WorkshopEmblemPainter(dark ? .72 : 1, dark: dark),
+              ),
             ),
           ),
           ConstrainedBox(
@@ -1532,37 +1576,56 @@ class _AtelierNavCapsule extends StatelessWidget {
   const _AtelierNavCapsule();
 
   @override
-  Widget build(BuildContext context) => DecoratedBox(
-    decoration: const BoxDecoration(
-      borderRadius: BorderRadius.all(Radius.circular(23)),
-      boxShadow: [
-        BoxShadow(color: Color(0x8CCB4DFF), blurRadius: 17, spreadRadius: 1),
-        BoxShadow(
-          color: Color(0x4E26002F),
-          blurRadius: 8,
-          offset: Offset(0, 4),
-        ),
-      ],
-    ),
-    child: _LiquidLayer(
-      radius: 23,
-      depth: 1.53,
-      press: .93,
-      opacity: .78,
-      accent: const Color(0xFFD44DFF),
-      child: const DecoratedBox(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.all(Radius.circular(23)),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xAFFFF5FF), Color(0x55C84CFF), Color(0x795A117A)],
-            stops: [0, .52, 1],
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final accent = dark ? const Color(0xFFD44DFF) : AppPalette.primary;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: const BorderRadius.all(Radius.circular(23)),
+        boxShadow: [
+          BoxShadow(
+            color: (dark ? const Color(0xFFCB4DFF) : AppPalette.primary)
+                .withValues(alpha: dark ? .55 : .34),
+            blurRadius: 17,
+            spreadRadius: 1,
+          ),
+          BoxShadow(
+            color: dark ? const Color(0x4E26002F) : const Color(0x263B6F96),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: _LiquidLayer(
+        radius: 23,
+        depth: 1.53,
+        press: .93,
+        opacity: .78,
+        accent: accent,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: const BorderRadius.all(Radius.circular(23)),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: dark
+                  ? const [
+                      Color(0xAFFFF5FF),
+                      Color(0x55C84CFF),
+                      Color(0x795A117A),
+                    ]
+                  : const [
+                      Color(0xCFFFFFFF),
+                      Color(0x6E8FD0FF),
+                      Color(0x534A9CED),
+                    ],
+              stops: const [0, .52, 1],
+            ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _AtelierNavItem extends StatelessWidget {

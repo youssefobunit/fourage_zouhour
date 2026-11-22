@@ -19886,46 +19886,53 @@ class PatternPad extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      const Text('Glissez le doigt entre les points (4 minimum).'),
-      const SizedBox(height: 10),
-      SizedBox(
-        width: 230,
-        height: 230,
-        child: LayoutBuilder(
-          builder: (context, constraints) => GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onPanStart: onChanged == null
-                ? null
-                : (details) => _add(
-                    details.localPosition,
-                    constraints.maxWidth,
-                    reset: true,
-                  ),
-            onPanUpdate: onChanged == null
-                ? null
-                : (details) =>
-                      _add(details.localPosition, constraints.maxWidth),
-            child: CustomPaint(
-              painter: _PatternPadPainter(pattern),
-              child: const SizedBox.expand(),
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    return Column(
+      children: [
+        Text(
+          'Glissez le doigt entre les points (4 minimum).',
+          style: TextStyle(color: dark ? const Color(0xFFE4C7EE) : null),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: 230,
+          height: 230,
+          child: LayoutBuilder(
+            builder: (context, constraints) => GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: onChanged == null
+                  ? null
+                  : (details) => _add(
+                      details.localPosition,
+                      constraints.maxWidth,
+                      reset: true,
+                    ),
+              onPanUpdate: onChanged == null
+                  ? null
+                  : (details) =>
+                        _add(details.localPosition, constraints.maxWidth),
+              child: CustomPaint(
+                painter: _PatternPadPainter(pattern, dark: dark),
+                child: const SizedBox.expand(),
+              ),
             ),
           ),
         ),
-      ),
-      TextButton.icon(
-        onPressed: onChanged == null ? null : () => onChanged!(const []),
-        icon: const Icon(Icons.refresh_rounded),
-        label: const Text('Effacer le schéma'),
-      ),
-    ],
-  );
+        TextButton.icon(
+          onPressed: onChanged == null ? null : () => onChanged!(const []),
+          icon: const Icon(Icons.refresh_rounded),
+          label: const Text('Effacer le schéma'),
+        ),
+      ],
+    );
+  }
 }
 
 class _PatternPadPainter extends CustomPainter {
-  const _PatternPadPainter(this.pattern);
+  const _PatternPadPainter(this.pattern, {required this.dark});
   final List<int> pattern;
+  final bool dark;
 
   Offset _center(int index, double side) =>
       Offset((index % 3 + .5) * side / 3, (index ~/ 3 + .5) * side / 3);
@@ -19933,8 +19940,11 @@ class _PatternPadPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final side = size.shortestSide;
+    final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
+    final idleFill = dark ? const Color(0xFF30103F) : AppPalette.soft;
+    final idleBorder = dark ? const Color(0xFFE7B5FF) : AppPalette.line;
     final line = Paint()
-      ..color = AppPalette.primary
+      ..color = accent
       ..strokeWidth = 5
       ..strokeCap = StrokeCap.round;
     final path = Path();
@@ -19951,13 +19961,13 @@ class _PatternPadPainter extends CustomPainter {
       canvas.drawCircle(
         point,
         side / 11,
-        Paint()..color = selected ? AppPalette.primary : AppPalette.soft,
+        Paint()..color = selected ? accent : idleFill,
       );
       canvas.drawCircle(
         point,
         side / 11,
         Paint()
-          ..color = selected ? AppPalette.primary : AppPalette.line
+          ..color = selected ? accent : idleBorder
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2,
       );
@@ -19966,7 +19976,7 @@ class _PatternPadPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_PatternPadPainter oldDelegate) =>
-      !listEquals(pattern, oldDelegate.pattern);
+      !listEquals(pattern, oldDelegate.pattern) || oldDelegate.dark != dark;
 }
 
 class ImageInput extends StatelessWidget {
