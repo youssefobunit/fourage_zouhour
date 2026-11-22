@@ -8954,7 +8954,14 @@ class _DarkDashboardPage extends StatelessWidget {
 }
 
 class _DarkGlassPanel extends StatelessWidget {
-  const _DarkGlassPanel({required this.child, this.radius = 26, this.accent = const Color(0xFFE9B1FF), this.padding, this.onTap});
+  const _DarkGlassPanel({
+    super.key,
+    required this.child,
+    this.radius = 26,
+    this.accent = const Color(0xFFE9B1FF),
+    this.padding,
+    this.onTap,
+  });
 
   final Widget child;
   final double radius;
@@ -9002,7 +9009,11 @@ class _DarkGlassPanel extends StatelessWidget {
                 ),
               ),
             ),
-            Positioned.fill(child: child),
+            // The content must be a normal Stack child.  When it is wrapped
+            // in Positioned.fill it no longer participates in layout; a
+            // panel made only of positioned children receives a zero size on
+            // Windows. That was why Accueil looked completely empty.
+            child,
           ],
         ),
       ),
@@ -9039,6 +9050,7 @@ class _DarkOverviewCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => _DarkGlassPanel(
+    key: const ValueKey('dark-dashboard-overview'),
     radius: 31,
     accent: const Color(0xFFD94CFF),
     child: ConstrainedBox(

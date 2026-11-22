@@ -167,6 +167,10 @@ void main() {
     expect(find.text('Bonjour, Youssef 👋'), findsOneWidget);
     expect(find.text('Accès rapide'), findsOneWidget);
     expect(find.text('Machines de l’atelier'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('dark-dashboard-overview'))).height,
+      greaterThan(180),
+    );
   });
 
   test('reset does not recreate a default administrator', () async {
