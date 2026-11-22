@@ -16,6 +16,7 @@ class _AtelierLiquidStageState extends State<AtelierLiquidStage> {
   Size sceneSize = Size.zero;
   ui.Image? wallpaper;
   ui.FragmentProgram? program;
+  bool _renderingWallpaper = false;
 
   @override
   void initState() {
@@ -45,19 +46,52 @@ class _AtelierLiquidStageState extends State<AtelierLiquidStage> {
         _wallpaperWasDark == widget.dark) {
       return;
     }
+    // Picture.toImageSync blocks the Windows raster thread.  Switching the
+    // appearance used to rebuild this bitmap during build, which made the
+    // native window report "not responding".  Defer the work and let the
+    // previous wallpaper (or painted fallback) remain visible meanwhile.
+    if (_renderingWallpaper) return;
+    _renderingWallpaper = true;
+    final dark = widget.dark;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_renderWallpaper(size, width, height, dark));
+    });
+  }
+
+  Future<void> _renderWallpaper(
+    Size size,
+    int width,
+    int height,
+    bool dark,
+  ) async {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder)
       ..scale(width / size.width, height / size.height);
-    _AtelierBackdrop(dark: widget.dark).paint(canvas, size);
+    _AtelierBackdrop(dark: dark).paint(canvas, size);
     final picture = recorder.endRecording();
-    final previous = wallpaper;
+    late final ui.Image next;
     try {
-      wallpaper = picture.toImageSync(width, height);
-      sceneSize = size;
-      _wallpaperWasDark = widget.dark;
+      next = await picture.toImage(width, height);
+    } catch (error) {
+      debugPrint('FORAGE liquid wallpaper unavailable: $error');
+      _renderingWallpaper = false;
+      return;
     } finally {
       picture.dispose();
     }
+    if (!mounted || widget.dark != dark) {
+      next.dispose();
+      _renderingWallpaper = false;
+      if (mounted) setState(() {});
+      return;
+    }
+    final previous = wallpaper;
+    setState(() {
+      wallpaper = next;
+      sceneSize = size;
+      _wallpaperWasDark = dark;
+      _renderingWallpaper = false;
+    });
     if (previous != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
     }
