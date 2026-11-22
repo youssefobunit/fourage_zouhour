@@ -190,7 +190,7 @@ ThemeData atelierDarkTheme({String? fontFamily}) {
       ),
     ),
     dialogTheme: DialogThemeData(
-      backgroundColor: const Color(0xFFF210022),
+      backgroundColor: const Color(0xFF210022),
       surfaceTintColor: Colors.transparent,
       titleTextStyle: base.textTheme.headlineSmall?.copyWith(
         color: text,
@@ -203,11 +203,11 @@ ThemeData atelierDarkTheme({String? fontFamily}) {
       ),
     ),
     bottomSheetTheme: const BottomSheetThemeData(
-      backgroundColor: Color(0xFFF210022),
+      backgroundColor: Color(0xFF210022),
       surfaceTintColor: Colors.transparent,
     ),
     popupMenuTheme: PopupMenuThemeData(
-      color: const Color(0xFFF210022),
+      color: const Color(0xFF210022),
       surfaceTintColor: Colors.transparent,
       textStyle: const TextStyle(color: text),
       shape: RoundedRectangleBorder(
@@ -217,7 +217,7 @@ ThemeData atelierDarkTheme({String? fontFamily}) {
     ),
     dropdownMenuTheme: DropdownMenuThemeData(
       menuStyle: const MenuStyle(
-        backgroundColor: WidgetStatePropertyAll(Color(0xFFF210022)),
+        backgroundColor: WidgetStatePropertyAll(Color(0xFF210022)),
         elevation: WidgetStatePropertyAll(8),
       ),
     ),
