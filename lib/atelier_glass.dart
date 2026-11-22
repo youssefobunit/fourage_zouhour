@@ -958,7 +958,7 @@ class _DesktopWelcomeGearPainter extends CustomPainter {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.6
-        ..shader = const LinearGradient(
+        ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [Color(0xFFFFFFFF), Color(0x6685D7FF), Color(0xFF2D8EE5)],
@@ -968,7 +968,7 @@ class _DesktopWelcomeGearPainter extends CustomPainter {
       Offset.zero,
       radius * .40,
       Paint()
-        ..shader = const RadialGradient(
+        ..shader = RadialGradient(
           center: Alignment.topLeft,
           colors: [Color(0xEE4B94CF), Color(0x8851A6E8), Color(0x0051A6E8)],
         ).createShader(Rect.fromCircle(center: Offset.zero, radius: radius)),
@@ -1067,7 +1067,7 @@ class _MachineArmEmblemPainter extends CustomPainter {
     canvas.drawRRect(
       shape,
       Paint()
-        ..shader = const LinearGradient(
+        ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [Color(0xFFE8F8FF), Color(0xFF58AAEE), Color(0xFF1D63B6)],
@@ -1164,7 +1164,7 @@ class _WorkshopEmblemPainter extends CustomPainter {
     canvas.drawOval(
       halo,
       Paint()
-        ..shader = const LinearGradient(
+        ..shader = LinearGradient(
           begin: Alignment.topRight,
           end: Alignment.bottomLeft,
           colors: dark
@@ -1201,7 +1201,7 @@ class _WorkshopEmblemPainter extends CustomPainter {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.25
-        ..shader = const LinearGradient(
+        ..shader = LinearGradient(
           begin: Alignment.topRight,
           end: Alignment.bottomLeft,
           colors: dark
@@ -1233,7 +1233,7 @@ class _WorkshopEmblemPainter extends CustomPainter {
     canvas.drawRRect(
       shape,
       Paint()
-        ..shader = const LinearGradient(
+        ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: dark
@@ -1272,7 +1272,7 @@ class _WorkshopEmblemPainter extends CustomPainter {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5
-        ..shader = const LinearGradient(
+        ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: dark
