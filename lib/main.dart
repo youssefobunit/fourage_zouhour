@@ -8175,7 +8175,15 @@ class ProfileSheet extends StatelessWidget {
   final VoidCallback? onOpenDeveloper;
 
   @override
-  Widget build(BuildContext context) => SafeArea(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF3FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFE3C5ED) : AppPalette.muted;
+    final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
+    final tileSurface = dark
+        ? const Color(0xE8280638)
+        : AppPalette.surfaceRaised.withValues(alpha: .82);
+    return SafeArea(
     top: false,
     child: TweenAnimationBuilder<double>(
       duration: const Duration(milliseconds: 340),
@@ -8197,7 +8205,7 @@ class ProfileSheet extends StatelessWidget {
                 width: 44,
                 height: 5,
                 decoration: BoxDecoration(
-                  color: AppPalette.line,
+                  color: dark ? const Color(0xFFBC76D6) : AppPalette.line,
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
@@ -8207,8 +8215,10 @@ class ProfileSheet extends StatelessWidget {
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     colors: [
-                      AppPalette.desktopAccentSoft,
-                      AppPalette.surfaceRaised,
+                      dark
+                          ? const Color(0xFF351047)
+                          : AppPalette.desktopAccentSoft,
+                      dark ? const Color(0xFF21052F) : AppPalette.surfaceRaised,
                     ],
                   ),
                   borderRadius: BorderRadius.circular(24),
@@ -8217,10 +8227,10 @@ class ProfileSheet extends StatelessWidget {
                   children: [
                     CircleAvatar(
                       radius: 29,
-                      backgroundColor: AppPalette.primary.withValues(
+                      backgroundColor: accent.withValues(
                         alpha: .16,
                       ),
-                      foregroundColor: AppPalette.primary,
+                      foregroundColor: accent,
                       child: Text(
                         user.fullName.substring(0, 1).toUpperCase(),
                         style: const TextStyle(
@@ -8236,8 +8246,8 @@ class ProfileSheet extends StatelessWidget {
                         children: [
                           Text(
                             user.fullName,
-                            style: const TextStyle(
-                              color: AppPalette.text,
+                            style: TextStyle(
+                              color: foreground,
                               fontSize: 18,
                               fontWeight: FontWeight.w900,
                             ),
@@ -8245,13 +8255,13 @@ class ProfileSheet extends StatelessWidget {
                           const SizedBox(height: 3),
                           Text(
                             '@${user.username}',
-                            style: const TextStyle(color: AppPalette.muted),
+                            style: TextStyle(color: muted),
                           ),
                           const SizedBox(height: 8),
                           Text(
                             user.effectiveRole.label,
-                            style: const TextStyle(
-                              color: AppPalette.muted,
+                            style: TextStyle(
+                              color: muted,
                               fontWeight: FontWeight.w800,
                             ),
                           ),
@@ -8269,12 +8279,12 @@ class ProfileSheet extends StatelessWidget {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(18),
                     ),
-                    tileColor: AppPalette.surfaceRaised.withValues(alpha: .82),
+                    tileColor: tileSurface,
                     leading: Icon(
                       appearance.isDark
                           ? Icons.dark_mode_rounded
                           : Icons.light_mode_rounded,
-                      color: AppPalette.primary,
+                      color: accent,
                     ),
                     title: const Text(
                       'Apparence',
@@ -8300,10 +8310,10 @@ class ProfileSheet extends StatelessWidget {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18),
                   ),
-                  tileColor: AppPalette.surfaceRaised.withValues(alpha: .82),
-                  leading: const Icon(
+                  tileColor: tileSurface,
+                  leading: Icon(
                     Icons.groups_rounded,
-                    color: AppPalette.primary,
+                    color: accent,
                   ),
                   title: const Text(
                     'Équipe',
@@ -8320,10 +8330,10 @@ class ProfileSheet extends StatelessWidget {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18),
                   ),
-                  tileColor: AppPalette.surfaceRaised.withValues(alpha: .82),
-                  leading: const Icon(
+                  tileColor: tileSurface,
+                  leading: Icon(
                     Icons.backup_rounded,
-                    color: AppPalette.primary,
+                    color: accent,
                   ),
                   title: const Text(
                     'Sauvegardes',
@@ -8339,9 +8349,9 @@ class ProfileSheet extends StatelessWidget {
               if (onOpenExport case final export?)
                 ListTile(
                   onTap: export,
-                  leading: const Icon(
+                  leading: Icon(
                     Icons.table_view_rounded,
-                    color: AppPalette.primary,
+                    color: accent,
                   ),
                   title: const Text('Exporter vers Excel'),
                 ),
@@ -8376,7 +8386,8 @@ class ProfileSheet extends StatelessWidget {
         ),
       ),
     ),
-  );
+    );
+  }
 }
 
 class BackupPage extends StatefulWidget {
@@ -8662,22 +8673,9 @@ class DashboardPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (ForageAppearanceScope.of(context).isDark) {
-      return _DarkDashboardPage(
-        user: user,
-        productCount: productCount,
-        machineCount: machineCount,
-        pendingReviews: pendingReviews,
-        onProducts: onProducts,
-        onStock: onStock,
-        onMachines: onMachines,
-        onTeam: onTeam,
-        onValidation: onValidation,
-        onCategories: onCategories,
-        onReviews: onReviews,
-        forceDesktopLayout: forceDesktopLayout,
-      );
-    }
+    // Keep one responsive dashboard tree in both appearances. The old
+    // dark-only tree could collapse on phone after changing appearance,
+    // leaving the wallpaper and navigation visible without any Home content.
     final desktop =
         forceDesktopLayout ||
         (_usesWorkspaceRail(context) &&

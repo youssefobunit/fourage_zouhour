@@ -794,12 +794,17 @@ class _AtelierOverview extends StatelessWidget {
   final bool desktop;
 
   @override
-  Widget build(BuildContext context) => Glass(
-    key: const ValueKey('atelier-overview'),
-    radius: 30,
-    accent: AppPalette.primary,
-    frosted: true,
-    child: Stack(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
+    final foreground = dark ? const Color(0xFFFFF3FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFE3C5ED) : AppPalette.muted;
+    return Glass(
+      key: const ValueKey('atelier-overview'),
+      radius: 30,
+      accent: accent,
+      frosted: true,
+      child: Stack(
       children: [
         Positioned.fill(
           child: IgnorePointer(
@@ -848,22 +853,24 @@ class _AtelierOverview extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text(
                     firstName.isEmpty ? 'Bonjour' : 'Bonjour, $firstName',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 27,
                       height: 1.08,
                       letterSpacing: -.8,
                       fontWeight: FontWeight.w800,
-                      color: AppPalette.text,
+                      color: foreground,
                     ),
                   ),
                 ],
                 SizedBox(height: desktop ? 13 : 25),
                 ShaderMask(
                   blendMode: BlendMode.srcIn,
-                  shaderCallback: (bounds) => const LinearGradient(
+                  shaderCallback: (bounds) => LinearGradient(
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
-                    colors: [Color(0xFF0C9BFA), Color(0xFF1260CD)],
+                    colors: dark
+                        ? const [Color(0xFFF0B5FF), Color(0xFFB33EE1)]
+                        : const [Color(0xFF0C9BFA), Color(0xFF1260CD)],
                   ).createShader(bounds),
                   child: Text(
                     '$machineCount',
@@ -878,10 +885,10 @@ class _AtelierOverview extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 6),
-                const Text(
+                Text(
                   'Machines de l’atelier',
                   style: TextStyle(
-                    color: AppPalette.muted,
+                    color: muted,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -890,8 +897,9 @@ class _AtelierOverview extends StatelessWidget {
           ),
         ),
       ],
-    ),
-  );
+      ),
+    );
+  }
 }
 
 class _DesktopWelcomeGear extends StatelessWidget {
@@ -1338,15 +1346,20 @@ class _DashboardMetric extends StatelessWidget {
   final Color accent;
 
   @override
-  Widget build(BuildContext context) => Glass(
-    padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
-    radius: 25,
-    accent: accent,
-    child: ConstrainedBox(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF3FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFE3C5ED) : AppPalette.muted;
+    final surfaceAccent = dark ? const Color(0xFFE46AFF) : accent;
+    return Glass(
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+      radius: 25,
+      accent: surfaceAccent,
+      child: ConstrainedBox(
       constraints: const BoxConstraints(minHeight: 57),
       child: Row(
         children: [
-          _DashboardGlassIcon(icon, accent, size: 41),
+          _DashboardGlassIcon(icon, surfaceAccent, size: 41),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -1356,7 +1369,7 @@ class _DashboardMetric extends StatelessWidget {
                 Text(
                   '$value',
                   style: TextStyle(
-                    color: AppPalette.text,
+                    color: foreground,
                     fontSize: 26,
                     height: 1.1,
                     fontFeatures: const [FontFeature.tabularFigures()],
@@ -1366,8 +1379,8 @@ class _DashboardMetric extends StatelessWidget {
                 const SizedBox(height: 4),
                 Text(
                   label,
-                  style: const TextStyle(
-                    color: AppPalette.muted,
+                  style: TextStyle(
+                    color: muted,
                     fontSize: 12,
                     height: 1.2,
                     fontWeight: FontWeight.w600,
@@ -1378,8 +1391,9 @@ class _DashboardMetric extends StatelessWidget {
           ),
         ],
       ),
-    ),
-  );
+      ),
+    );
+  }
 }
 
 class _DashboardAction extends StatelessWidget {
@@ -1398,9 +1412,14 @@ class _DashboardAction extends StatelessWidget {
   final bool desktop;
 
   @override
-  Widget build(BuildContext context) => _LiquidTapTarget(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final surfaceAccent = dark ? const Color(0xFFE46AFF) : color;
+    final foreground = dark ? const Color(0xFFFFF3FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFE3C5ED) : AppPalette.muted;
+    return _LiquidTapTarget(
     radius: 25,
-    accent: color,
+    accent: surfaceAccent,
     onTap: onTap,
     child: Container(
       constraints: BoxConstraints(minHeight: desktop ? 142 : 62),
@@ -1412,7 +1431,7 @@ class _DashboardAction extends StatelessWidget {
           ? Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _DashboardGlassIcon(icon, color, size: 48),
+                _DashboardGlassIcon(icon, surfaceAccent, size: 48),
                 const SizedBox(height: 12),
                 Text(
                   label,
@@ -1427,13 +1446,13 @@ class _DashboardAction extends StatelessWidget {
                   width: 25,
                   height: 25,
                   decoration: BoxDecoration(
-                    color: color.withValues(alpha: .22),
+                    color: surfaceAccent.withValues(alpha: .22),
                     shape: BoxShape.circle,
-                    border: Border.all(color: color.withValues(alpha: .35)),
+                    border: Border.all(color: surfaceAccent.withValues(alpha: .35)),
                   ),
                   child: const Icon(
                     Icons.arrow_forward_rounded,
-                    color: AppPalette.text,
+                    color: foreground,
                     size: 15,
                   ),
                 ),
@@ -1441,26 +1460,28 @@ class _DashboardAction extends StatelessWidget {
             )
           : Row(
               children: [
-                _DashboardGlassIcon(icon, color, size: 36),
+                _DashboardGlassIcon(icon, surfaceAccent, size: 36),
                 const SizedBox(width: 9),
                 Expanded(
                   child: Text(
                     label,
-                    style: const TextStyle(
+                  style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w800,
+                    color: foreground,
                     ),
                   ),
                 ),
-                const Icon(
+                Icon(
                   Icons.chevron_right_rounded,
-                  color: AppPalette.muted,
+                  color: muted,
                   size: 17,
                 ),
               ],
             ),
     ),
-  );
+    );
+  }
 }
 
 class _LoginIdentity extends StatelessWidget {
