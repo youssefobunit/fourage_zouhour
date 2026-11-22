@@ -134,6 +134,147 @@ ThemeData atelierTheme({String? fontFamily}) {
   );
 }
 
+/// The night presentation is a real Material theme, not only a backdrop.
+/// This keeps dialogs, exports, pickers and form controls in the same violet
+/// material as the dashboard instead of falling back to the light theme.
+ThemeData atelierDarkTheme({String? fontFamily}) {
+  const canvas = Color(0xFF110019);
+  const surface = Color(0xFF21052F);
+  const raised = Color(0xFF351047);
+  const text = Color(0xFFFFF3FF);
+  const muted = Color(0xFFE3C5ED);
+  const violet = Color(0xFFE36AFF);
+  const line = Color(0xFFA650C5);
+  const scheme = ColorScheme.dark(
+    primary: violet,
+    onPrimary: Color(0xFF260033),
+    secondary: Color(0xFFFFB8ED),
+    onSecondary: Color(0xFF260033),
+    primaryContainer: Color(0xFF59216E),
+    onPrimaryContainer: text,
+    secondaryContainer: Color(0xFF4A175D),
+    onSecondaryContainer: text,
+    surface: surface,
+    surfaceContainerHigh: raised,
+    onSurface: text,
+    onSurfaceVariant: muted,
+    outline: line,
+    error: Color(0xFFFF99A8),
+  );
+  final base = ThemeData(
+    useMaterial3: true,
+    brightness: Brightness.dark,
+    colorScheme: scheme,
+    fontFamily: fontFamily,
+  );
+  final outline = OutlineInputBorder(
+    borderRadius: BorderRadius.circular(16),
+    borderSide: const BorderSide(color: line),
+  );
+  return base.copyWith(
+    scaffoldBackgroundColor: canvas,
+    canvasColor: canvas,
+    dividerColor: line.withValues(alpha: .55),
+    textTheme: base.textTheme.apply(bodyColor: text, displayColor: text),
+    iconTheme: const IconThemeData(color: muted),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: const Color(0xC9280A39),
+      labelStyle: const TextStyle(color: muted),
+      hintStyle: const TextStyle(color: muted),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+      border: outline,
+      enabledBorder: outline,
+      focusedBorder: outline.copyWith(
+        borderSide: const BorderSide(color: violet, width: 1.6),
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: const Color(0xFFF210022),
+      surfaceTintColor: Colors.transparent,
+      titleTextStyle: base.textTheme.headlineSmall?.copyWith(
+        color: text,
+        fontWeight: FontWeight.w800,
+      ),
+      contentTextStyle: base.textTheme.bodyMedium?.copyWith(color: muted),
+      shape: RoundedRectangleBorder(
+        borderRadius: const BorderRadius.all(Radius.circular(26)),
+        side: BorderSide(color: line.withValues(alpha: .85)),
+      ),
+    ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      backgroundColor: Color(0xFFF210022),
+      surfaceTintColor: Colors.transparent,
+    ),
+    popupMenuTheme: PopupMenuThemeData(
+      color: const Color(0xFFF210022),
+      surfaceTintColor: Colors.transparent,
+      textStyle: const TextStyle(color: text),
+      shape: RoundedRectangleBorder(
+        borderRadius: const BorderRadius.all(Radius.circular(20)),
+        side: BorderSide(color: line),
+      ),
+    ),
+    dropdownMenuTheme: DropdownMenuThemeData(
+      menuStyle: const MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(Color(0xFFF210022)),
+        elevation: WidgetStatePropertyAll(8),
+      ),
+    ),
+    checkboxTheme: CheckboxThemeData(
+      fillColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected)
+            ? violet
+            : Colors.transparent,
+      ),
+      checkColor: const WidgetStatePropertyAll(Color(0xFF260033)),
+      side: const BorderSide(color: muted, width: 1.5),
+    ),
+    segmentedButtonTheme: SegmentedButtonThemeData(
+      style: SegmentedButton.styleFrom(
+        foregroundColor: muted,
+        selectedForegroundColor: text,
+        backgroundColor: surface,
+        selectedBackgroundColor: const Color(0xFF652580),
+        side: const BorderSide(color: line),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      ),
+    ),
+    snackBarTheme: const SnackBarThemeData(
+      backgroundColor: raised,
+      contentTextStyle: TextStyle(color: text),
+      behavior: SnackBarBehavior.floating,
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: Colors.transparent,
+        disabledBackgroundColor: Colors.transparent,
+        foregroundColor: text,
+        minimumSize: const Size(0, 48),
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ).copyWith(backgroundBuilder: _primaryLiquidButton),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: text,
+        minimumSize: const Size(0, 44),
+        side: BorderSide.none,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ).copyWith(backgroundBuilder: _secondaryLiquidButton),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(foregroundColor: violet),
+    ),
+    iconButtonTheme: IconButtonThemeData(
+      style: IconButton.styleFrom(
+        foregroundColor: text,
+        backgroundColor: Colors.transparent,
+      ).copyWith(backgroundBuilder: _iconLiquidButton),
+    ),
+  );
+}
+
 /// A shared select field used in every form.  The stock Material dropdown
 /// differs by platform and was visually out of place in the liquid UI, so the
 /// picker is rendered as a consistent blue-glass list instead.
@@ -438,29 +579,45 @@ class _AtelierIcon extends StatelessWidget {
   final double size;
 
   @override
-  Widget build(BuildContext context) => Container(
-    width: size,
-    height: size,
-    decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(size * .32),
-      gradient: LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [
-          Color.alphaBlend(
-            color.withValues(alpha: .64),
-            AppPalette.surfaceRaised,
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    // The historic primary is blue.  In the night scene the same semantic
+    // primary becomes violet, so icons never look as though they belong to
+    // the light interface.
+    final accent = dark && color == AppPalette.primary
+        ? const Color(0xFFE36AFF)
+        : color;
+    final base = dark ? const Color(0xFF260633) : AppPalette.surfaceRaised;
+    final lower = dark ? const Color(0xFF190022) : AppPalette.surface;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(size * .32),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color.alphaBlend(accent.withValues(alpha: .64), base),
+            Color.alphaBlend(accent.withValues(alpha: .16), lower),
+          ],
+        ),
+        border: Border.all(
+          color: (dark ? Colors.white : accent).withValues(
+            alpha: dark ? .34 : .42,
           ),
-          Color.alphaBlend(color.withValues(alpha: .16), AppPalette.surface),
+        ),
+        boxShadow: [
+          BoxShadow(color: accent.withValues(alpha: .25), blurRadius: 10),
         ],
       ),
-      border: Border.all(color: color.withValues(alpha: .42)),
-      boxShadow: [
-        BoxShadow(color: color.withValues(alpha: .17), blurRadius: 8),
-      ],
-    ),
-    child: Icon(icon, size: size * .54, color: AppPalette.text),
-  );
+      child: Icon(
+        icon,
+        size: size * .54,
+        color: dark ? const Color(0xFFFFF2FF) : AppPalette.text,
+      ),
+    );
+  }
 }
 
 class _AtelierBackButton extends StatelessWidget {

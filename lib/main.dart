@@ -704,6 +704,20 @@ class _AppearanceCanvas extends StatelessWidget {
       dark ? _DarkLiquidAppearance(child: child) : child;
 }
 
+/// Colours for shared components that are used outside Material controls.
+/// Several catalogue pages use small reusable labels with an explicit colour;
+/// deriving them here stops the dark workspace from inheriting navy text from
+/// the original light palette.
+Color _atelierForeground(BuildContext context) =>
+    ForageAppearanceScope.of(context).isDark
+        ? const Color(0xFFFFF3FF)
+        : AppPalette.text;
+
+Color _atelierMuted(BuildContext context) =>
+    ForageAppearanceScope.of(context).isDark
+        ? const Color(0xFFE3C5ED)
+        : AppPalette.muted;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   validatePublicBackendConfig(_supabaseUrl, _supabasePublishableKey);
@@ -4412,7 +4426,10 @@ class _ForageAppState extends State<ForageApp> {
     debugShowCheckedModeBanner: false,
     title: 'FORAGE ZOUHOUR',
     theme: atelierTheme(),
-    themeMode: ThemeMode.light,
+    darkTheme: atelierDarkTheme(),
+    themeMode: appearance == ForageAppearance.dark
+        ? ThemeMode.dark
+        : ThemeMode.light,
     builder: (context, child) => ForageAppearanceScope(
       appearance: appearance,
       onChanged: _setAppearance,
@@ -9759,7 +9776,7 @@ class _DesktopBrand extends StatelessWidget {
         ),
       ],
     ),
-    child: const Icon(
+    child: Icon(
       Icons.precision_manufacturing_rounded,
       color: dark ? const Color(0xFFFFF4FF) : AppPalette.background,
     ),
@@ -9983,44 +10000,48 @@ class SectionHero extends StatelessWidget {
   final Widget? trailing;
 
   @override
-  Widget build(BuildContext context) => Glass(
-    padding: const EdgeInsets.all(17),
-    radius: 26,
-    accent: AppPalette.primary,
-    frosted: true,
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _AtelierIcon(icon, size: 47),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w900,
-                  color: AppPalette.text,
+  Widget build(BuildContext context) {
+    final foreground = _atelierForeground(context);
+    final muted = _atelierMuted(context);
+    return Glass(
+      padding: const EdgeInsets.all(17),
+      radius: 26,
+      accent: AppPalette.primary,
+      frosted: true,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _AtelierIcon(icon, size: 47),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                    color: foreground,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: const TextStyle(
-                  color: AppPalette.muted,
-                  height: 1.35,
-                  fontWeight: FontWeight.w600,
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: muted,
+                    height: 1.35,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        if (trailing != null) ...[const SizedBox(width: 8), trailing!],
-      ],
-    ),
-  );
+          if (trailing != null) ...[const SizedBox(width: 8), trailing!],
+        ],
+      ),
+    );
+  }
 }
 
 class ManagementScreen extends StatelessWidget {
@@ -11551,6 +11572,7 @@ class StockPage extends StatelessWidget {
   final VoidCallback onOpenPayments;
   @override
   Widget build(BuildContext context) {
+    final muted = _atelierMuted(context);
     final availableProducts = products
         .where((product) => stock(product.id) > 0)
         .length;
@@ -11589,7 +11611,7 @@ class StockPage extends StatelessWidget {
                           ),
                           Text(
                             '$availableProducts disponibles sur ${products.length}',
-                            style: const TextStyle(color: AppPalette.muted),
+                            style: TextStyle(color: muted),
                           ),
                         ],
                       ),
@@ -12190,15 +12212,15 @@ class _StockActionButton extends StatelessWidget {
           const SizedBox(height: 12),
           Text(
             title,
-            style: const TextStyle(
-              color: AppPalette.text,
+            style: TextStyle(
+              color: _atelierForeground(context),
               fontWeight: FontWeight.w800,
             ),
           ),
           const SizedBox(height: 3),
           Text(
             subtitle,
-            style: const TextStyle(color: AppPalette.muted, fontSize: 11),
+            style: TextStyle(color: _atelierMuted(context), fontSize: 11),
           ),
         ],
       ),
@@ -12220,8 +12242,8 @@ class _StockMetric extends StatelessWidget {
         children: [
           Text(
             value,
-            style: const TextStyle(
-              color: AppPalette.text,
+            style: TextStyle(
+              color: _atelierForeground(context),
               fontSize: 20,
               fontWeight: FontWeight.w900,
             ),
@@ -12229,8 +12251,8 @@ class _StockMetric extends StatelessWidget {
           const SizedBox(height: 2),
           Text(
             label,
-            style: const TextStyle(
-              color: AppPalette.muted,
+            style: TextStyle(
+              color: _atelierMuted(context),
               fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
