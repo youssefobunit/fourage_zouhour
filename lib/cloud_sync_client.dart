@@ -23,7 +23,7 @@ class SupabaseCloudSyncClient implements CloudSyncClient {
 
   @override
   Future<SyncSnapshot?> download() async {
-    final snapshot = await _client.rpc('get_forage_workshop');
+    final snapshot = await _downloadWorkshop();
     if (snapshot == null) {
       return null;
     }
@@ -52,5 +52,20 @@ class SupabaseCloudSyncClient implements CloudSyncClient {
       }).toList();
     }
     return result;
+  }
+
+  Future<dynamic> _downloadWorkshop() async {
+    try {
+      return await _client.rpc(
+        'get_forage_workshop',
+        params: {
+          'p_include_families': true,
+          'p_include_catalog_families': true,
+        },
+      );
+    } on PostgrestException catch (error) {
+      if (error.code != 'PGRST202') rethrow;
+      return _client.rpc('get_forage_workshop');
+    }
   }
 }

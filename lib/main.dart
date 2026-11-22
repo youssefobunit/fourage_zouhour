@@ -1,11 +1,15 @@
+// this relase is v1.1.0
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:ui';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show compute, listEquals, setEquals;
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:file_picker/file_picker.dart';
@@ -28,6 +32,10 @@ import 'device_identity.dart';
 import 'session_storage.dart';
 import 'security_config.dart';
 import 'security_activity_page.dart';
+
+part 'catalog_and_filters.dart';
+part 'atelier_glass.dart';
+part 'atelier_liquid.dart';
 
 late final DeviceIdentity appDevice;
 
@@ -362,6 +370,9 @@ abstract final class SupabaseAccounts {
   );
 
   static Future<void> updateUser(AppUser user) async {
+    if (user.password.isNotEmpty) {
+      await _resetUserPassword(user.id, user.password);
+    }
     await _client
         .from('profiles')
         .update({
@@ -382,6 +393,28 @@ abstract final class SupabaseAccounts {
           'login_end_time': user.loginEndTime,
         })
         .eq('id', user.id);
+  }
+
+  static Future<void> _resetUserPassword(String userId, String password) async {
+    final token = _client.auth.currentSession?.accessToken;
+    if (token == null) {
+      throw StateError('La session administrateur a expiré.');
+    }
+    final request = await HttpClient().postUrl(
+      Uri.parse('$_supabaseUrl/functions/v1/admin-reset-user-password'),
+    );
+    request.headers
+      ..contentType = ContentType.json
+      ..set('apikey', _supabasePublishableKey)
+      ..set(HttpHeaders.authorizationHeader, 'Bearer $token');
+    request.add(utf8.encode(jsonEncode({'userId': userId, 'password': password})));
+    final response = await request.close();
+    final raw = await utf8.decoder.bind(response).join();
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final payload = raw.isEmpty ? null : jsonDecode(raw);
+      final reason = payload is Map ? payload['error']?.toString() : null;
+      throw StateError(reason ?? 'Impossible de modifier le mot de passe.');
+    }
   }
 
   /// The service role key stays in the Edge Function. The mobile application
@@ -588,24 +621,24 @@ class TrustedDevice {
 }
 
 abstract final class AppPalette {
-  /// Industrial noir palette.  Yellow is kept exclusively for focus,
-  /// important actions and live workshop signals.
-  static const primary = Color(0xFFFFD100);
-  static const primaryDark = Color(0xFFC49F00);
-  static const secondary = Color(0xFFFFB800);
-  static const soft = Color(0xFF252525);
-  static const background = Color(0xFF121212);
-  static const text = Color(0xFFF3F3F3);
-  static const muted = Color(0xFFA1A1A1);
-  static const coral = Color(0xFFFF6B7A);
-  static const mint = Color(0xFF8EF4A8);
-  static const surface = Color(0xFF1C1C1C);
-  static const surfaceRaised = Color(0xFF242424);
-  static const line = Color(0xFF353535);
-  static const desktopRail = Color(0xFF17150D);
-  static const desktopCanvas = Color(0xFF171611);
-  static const desktopAccent = Color(0xFFFFD100);
-  static const desktopAccentSoft = Color(0xFF3D3510);
+  static const primary = Color(0xFF167CE3);
+  static const primaryDark = Color(0xFF075DBA);
+  static const secondary = Color(0xFF4B91F2);
+  static const soft = Color(0xFFF0F8FF);
+  static const background = Color(0xFFE4F3FF);
+  static const text = Color(0xFF102A52);
+  static const muted = Color(0xFF47688F);
+  static const coral = Color(0xFFE26C8C);
+  static const mint = Color(0xFF12BFA0);
+  static const amber = Color(0xFFE39A32);
+  static const lilac = Color(0xFF7778F4);
+  static const surface = Color(0xFFF5FBFF);
+  static const surfaceRaised = Color(0xFFDCEEFF);
+  static const line = Color(0xFF9BC9F3);
+  static const desktopRail = Color(0xFFEAF6FF);
+  static const desktopCanvas = Color(0xFFDFF1FF);
+  static const desktopAccent = primary;
+  static const desktopAccentSoft = Color(0xFFCDE7FF);
 }
 
 Future<void> main() async {
@@ -1139,10 +1172,15 @@ class Product {
 /// Result returned by the product form. Categories retain their product lists,
 /// so the selected category is saved alongside a new raw product.
 class ProductCreation {
-  const ProductCreation({required this.product, this.categoryId});
+  const ProductCreation({
+    required this.product,
+    this.categoryId,
+    this.familyId,
+  });
 
   final Product product;
   final String? categoryId;
+  final String? familyId;
 }
 
 class Depot {
@@ -1410,17 +1448,72 @@ extension MaterialTypeLabel on MaterialType {
       'largeur × longueur × épaisseur × ${density.toStringAsFixed(0)} kg/m³';
 }
 
+class ProductFamily {
+  const ProductFamily({
+    required this.id,
+    required this.name,
+    this.productIds = const [],
+  });
+
+  final String id;
+  final String name;
+  final List<String> productIds;
+
+  factory ProductFamily.fromJson(Map<String, dynamic> json) => ProductFamily(
+    id: json['id'] as String,
+    name: json['name'] as String,
+    productIds: List<String>.from(json['product_ids'] as List),
+  );
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'name': name,
+    'product_ids': productIds,
+  };
+}
+
 class ProductCategory {
   const ProductCategory({
     required this.id,
     required this.name,
     required this.productIds,
     required this.image,
+    this.families = const [],
   });
   final String id;
   final String name;
   final List<String> productIds;
   final Uint8List image;
+  final List<ProductFamily> families;
+
+  ProductCategory copyWith({
+    String? name,
+    List<String>? productIds,
+    List<ProductFamily>? families,
+  }) => ProductCategory(
+    id: id,
+    name: name ?? this.name,
+    productIds: productIds ?? this.productIds,
+    image: image,
+    families: families ?? this.families,
+  );
+
+  ProductCategory withProductInFamily(String productId, String? familyId) =>
+      copyWith(
+        productIds: {...productIds, productId}.toList(),
+        families: [
+          for (final family in families)
+            ProductFamily(
+              id: family.id,
+              name: family.name,
+              productIds: [
+                for (final id in family.productIds)
+                  if (id != productId) id,
+                if (family.id == familyId) productId,
+              ],
+            ),
+        ],
+      );
 }
 
 abstract final class PdfReports {
@@ -1900,6 +1993,7 @@ class WorkshopData {
     required this.products,
     required this.depots,
     required this.categories,
+    required this.catalogFamilies,
     required this.machines,
     required this.operations,
     required this.stockAdditions,
@@ -1917,6 +2011,7 @@ class WorkshopData {
   final List<Product> products;
   final List<Depot> depots;
   final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final List<FactoryMachine> machines;
   final List<Operation> operations;
   final List<StockAddition> stockAdditions;
@@ -1938,12 +2033,13 @@ class AppDatabase {
   static const _generalDepotId = 'general-depot';
   static const _backupFormat = 'forage-zouhour-backup';
   static const _encryptedBackupFormat = 'forage-zouhour-encrypted-backup';
-  static const _backupVersion = 4;
+  static const _backupVersion = 6;
   static const _maximumFailedLogins = 5;
   static const _lockoutDuration = Duration(minutes: 15);
   static const _backupTables = [
     'products',
     'categories',
+    'catalog_families',
     'machines',
     'operations',
     'stock_additions',
@@ -1974,7 +2070,7 @@ class AppDatabase {
   Future<Database> _open() async {
     final database = await openDatabase(
       _databasePath ?? join(await getDatabasesPath(), _databaseName),
-      version: 35,
+      version: 37,
       onCreate: (database, version) async {
         await database.execute(
           "CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password TEXT NOT NULL, full_name TEXT NOT NULL, admin INTEGER NOT NULL, role TEXT NOT NULL DEFAULT 'operator', roles TEXT NOT NULL DEFAULT '[\"operator\"]', allowed_pages TEXT NOT NULL DEFAULT '[]', writable_pages TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'active', leave_until INTEGER, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until INTEGER, is_private_owner INTEGER NOT NULL DEFAULT 0)",
@@ -1986,8 +2082,9 @@ class AppDatabase {
           'CREATE TABLE products (id TEXT PRIMARY KEY, name TEXT NOT NULL, reference TEXT NOT NULL DEFAULT \'\', width REAL NOT NULL, length_meters REAL NOT NULL, length_unit TEXT NOT NULL, thickness REAL NOT NULL, manufactured INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT \'standard\', diameter REAL, diameter_is_external INTEGER NOT NULL DEFAULT 1, diameter_calculated_from_dimensions INTEGER NOT NULL DEFAULT 0, hose_unit TEXT NOT NULL DEFAULT \'piece\', meters_per_piece REAL, initial_stock INTEGER NOT NULL, initial_depot_id TEXT NOT NULL DEFAULT \'general-depot\', material_type TEXT NOT NULL DEFAULT \'steel\', image BLOB, parent_product_id TEXT)',
         );
         await database.execute(
-          'CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, product_ids TEXT NOT NULL, image BLOB NOT NULL)',
+          "CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, product_ids TEXT NOT NULL, image BLOB NOT NULL, families TEXT NOT NULL DEFAULT '[]')",
         );
+        await _createCatalogFamiliesTable(database);
         await database.execute(
           'CREATE TABLE machines (id TEXT PRIMARY KEY, name TEXT NOT NULL, copies INTEGER NOT NULL, type TEXT NOT NULL, inputs TEXT NOT NULL, output TEXT NOT NULL, operator_ids TEXT NOT NULL, image BLOB, category_id TEXT, units TEXT NOT NULL DEFAULT \'[]\', temporary INTEGER NOT NULL DEFAULT 0, deadline INTEGER, planned_pieces INTEGER, hopper_pieces INTEGER, temporary_input_product_id TEXT, temporary_source_depot_id TEXT, temporary_input_pieces INTEGER)',
         );
@@ -2327,6 +2424,12 @@ class AppDatabase {
           );
           await _createPaymentTables(database);
         }
+        if (oldVersion < 36) {
+          await database.execute(
+            "ALTER TABLE categories ADD COLUMN families TEXT NOT NULL DEFAULT '[]'",
+          );
+        }
+        if (oldVersion < 37) await _createCatalogFamiliesTable(database);
       },
     );
     await database.insert('depots', const {
@@ -2336,7 +2439,6 @@ class AppDatabase {
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
     await _migrateLegacyRecords(database);
     await _ensurePrivateOwner(database);
-    await _removeManufacturedProductsFromCategories(database);
     await _configureSyncTriggers(database);
     return database;
   }
@@ -2357,6 +2459,11 @@ class AppDatabase {
     }
     await batch.commit(noResult: true);
   }
+
+  Future<void> _createCatalogFamiliesTable(DatabaseExecutor database) =>
+      database.execute(
+        "CREATE TABLE catalog_families (id TEXT PRIMARY KEY, name TEXT NOT NULL, category_ids TEXT NOT NULL DEFAULT '[]')",
+      );
 
   Future<void> _addColumnIfMissing(
     DatabaseExecutor database, {
@@ -2529,6 +2636,10 @@ class AppDatabase {
       'categories',
       orderBy: 'name',
     )).map(_categoryFromRow).toList();
+    final catalogFamilies = (await database.query(
+      'catalog_families',
+      orderBy: 'name COLLATE NOCASE, id',
+    )).map(CatalogFamily.fromRow).toList();
     final machines = (await database.query(
       'machines',
       orderBy: 'name',
@@ -2584,6 +2695,7 @@ class AppDatabase {
       products: products,
       depots: depots,
       categories: categories,
+      catalogFamilies: catalogFamilies,
       machines: machines,
       operations: operations,
       stockAdditions: stockAdditions,
@@ -2701,10 +2813,9 @@ class AppDatabase {
     final backupVersion = decoded is Map ? decoded['version'] : null;
     if (decoded is! Map ||
         decoded['format'] != _backupFormat ||
-        (backupVersion != 1 &&
-            backupVersion != 2 &&
-            backupVersion != 3 &&
-            backupVersion != _backupVersion) ||
+        backupVersion is! int ||
+        backupVersion < 1 ||
+        backupVersion > _backupVersion ||
         decoded['tables'] is! Map) {
       throw const FormatException(
         'Fichier de sauvegarde FORAGE ZOUHOUR invalide.',
@@ -2724,6 +2835,7 @@ class AppDatabase {
             'stock_transfers',
             'sale_returns',
             'operator_payments',
+            'catalog_families',
           }.contains(table)) {
         restoredTables[table] = const [];
         continue;
@@ -2782,7 +2894,9 @@ class AppDatabase {
   Future<void> replaceFromSyncSnapshot(
     Map<String, List<Map<String, Object?>>> cloudData,
   ) async {
-    if (_syncTables.any((table) => !cloudData.containsKey(table))) {
+    if (_syncTables.any(
+      (table) => table != 'catalog_families' && !cloudData.containsKey(table),
+    )) {
       throw const FormatException('La sauvegarde distante est incomplète.');
     }
     await (await _database).transaction((transaction) async {
@@ -2790,7 +2904,7 @@ class AppDatabase {
         await transaction.delete(table);
       }
       for (final table in _syncTables) {
-        for (final row in cloudData[table]!) {
+        for (final row in cloudData[table] ?? const []) {
           await transaction.insert(table, _cloudRowForDatabase(table, row));
         }
       }
@@ -2805,6 +2919,11 @@ class AppDatabase {
   Map<String, Object?> _cloudRow(String table, Map<String, Object?> row) {
     final result = <String, Object?>{};
     for (final entry in row.entries) {
+      if (table == 'categories' &&
+          entry.key == 'families' &&
+          entry.value == '[]') {
+        continue;
+      }
       // SQLite returns BLOB values as Uint8List. JSON cannot represent raw
       // bytes, so encode them for the shared Supabase snapshot. The `images`
       // fields are already JSON arrays of Base64 strings and pass through
@@ -2912,41 +3031,6 @@ class AppDatabase {
 
   /// A category contains only the raw products a machine can consume. This
   /// also cleans category data created by older versions of the application.
-  Future<void> _removeManufacturedProductsFromCategories(
-    Database database,
-  ) async {
-    final manufacturedRows = await database.query(
-      'products',
-      columns: ['id'],
-      where: 'manufactured = ?',
-      whereArgs: [1],
-    );
-    final manufacturedIds = manufacturedRows
-        .map((row) => row['id'] as String)
-        .toSet();
-    if (manufacturedIds.isEmpty) return;
-
-    final categoryRows = await database.query(
-      'categories',
-      columns: ['id', 'product_ids'],
-    );
-    for (final row in categoryRows) {
-      final productIds = List<String>.from(
-        jsonDecode(row['product_ids'] as String) as List,
-      );
-      final rawProductIds = productIds
-          .where((id) => !manufacturedIds.contains(id))
-          .toList();
-      if (rawProductIds.length == productIds.length) continue;
-      await database.update(
-        'categories',
-        {'product_ids': jsonEncode(rawProductIds)},
-        where: 'id = ?',
-        whereArgs: [row['id']],
-      );
-    }
-  }
-
   Future<AppUser> insertUser(AppUser user) async {
     final protected = user.copyWith(
       password: await _passwordForStorage(user.password),
@@ -3133,6 +3217,35 @@ class AppDatabase {
           );
   Future<void> insertProduct(Product product) async =>
       (await _database).insert('products', _productToRow(product));
+
+  Future<ProductCategory?> insertCatalogProduct(
+    Product product,
+    String? categoryId,
+    String? familyId,
+  ) async {
+    return (await _database).transaction((transaction) async {
+      await transaction.insert('products', _productToRow(product));
+      if (categoryId == null) return null;
+      final rows = await transaction.query(
+        'categories',
+        where: 'id = ?',
+        whereArgs: [categoryId],
+      );
+      if (rows.isEmpty) throw StateError('Catégorie introuvable.');
+      final category = _categoryFromRow(rows.single);
+      if (familyId != null && !category.families.any((f) => f.id == familyId)) {
+        throw StateError('Famille introuvable.');
+      }
+      final updated = category.withProductInFamily(product.id, familyId);
+      await transaction.update(
+        'categories',
+        _categoryToRow(updated),
+        where: 'id = ?',
+        whereArgs: [categoryId],
+      );
+      return updated;
+    });
+  }
   Future<void> updateProduct(Product product) async => (await _database).update(
     'products',
     _productToRow(product),
@@ -3143,6 +3256,70 @@ class AppDatabase {
       (await _database).insert('depots', _depotToRow(depot));
   Future<void> insertCategory(ProductCategory category) async =>
       (await _database).insert('categories', _categoryToRow(category));
+
+  Future<void> saveCatalogFamily(CatalogFamily family) async {
+    final database = await _database;
+    await database.transaction((transaction) async {
+      final uniqueName = (await transaction.query('catalog_families')).every(
+        (row) =>
+            row['id'] == family.id ||
+            (row['name'] as String).toLowerCase() != family.name.toLowerCase(),
+      );
+      if (!uniqueName) throw StateError('Ce nom de famille existe déjà.');
+      final assigned = family.categoryIds.toSet();
+      final valid = (await transaction.query(
+        'categories',
+        columns: ['id'],
+      )).map((row) => row['id'] as String).toSet();
+      if (!valid.containsAll(assigned)) {
+        throw StateError('Une catégorie sélectionnée est introuvable.');
+      }
+      for (final row in await transaction.query('catalog_families')) {
+        final other = CatalogFamily.fromRow(row);
+        if (other.id == family.id) continue;
+        final remaining = other.categoryIds
+            .where((id) => !assigned.contains(id))
+            .toList();
+        if (remaining.length != other.categoryIds.length) {
+          await transaction.update(
+            'catalog_families',
+            {'category_ids': jsonEncode(remaining)},
+            where: 'id = ?',
+            whereArgs: [other.id],
+          );
+        }
+      }
+      await transaction.insert(
+        'catalog_families',
+        family.toRow(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    });
+  }
+
+  Future<void> insertCategoryInFamily(
+    ProductCategory category,
+    String familyId,
+  ) async {
+    await (await _database).transaction((transaction) async {
+      final rows = await transaction.query(
+        'catalog_families',
+        where: 'id = ?',
+        whereArgs: [familyId],
+      );
+      if (rows.isEmpty) throw StateError('Famille introuvable.');
+      final family = CatalogFamily.fromRow(rows.single);
+      await transaction.insert('categories', _categoryToRow(category));
+      await transaction.update(
+        'catalog_families',
+        {
+          'category_ids': jsonEncode([...family.categoryIds, category.id]),
+        },
+        where: 'id = ?',
+        whereArgs: [familyId],
+      );
+    });
+  }
   Future<void> updateCategory(ProductCategory category) async =>
       (await _database).update(
         'categories',
@@ -3338,8 +3515,25 @@ class AppDatabase {
     });
   }
 
-  Future<void> deleteCategory(String id) async =>
-      (await _database).delete('categories', where: 'id = ?', whereArgs: [id]);
+  Future<void> deleteCategory(String id) async {
+    await (await _database).transaction((transaction) async {
+      for (final row in await transaction.query('catalog_families')) {
+        final family = CatalogFamily.fromRow(row);
+        if (!family.categoryIds.contains(id)) continue;
+        await transaction.update(
+          'catalog_families',
+          {
+            'category_ids': jsonEncode(
+              family.categoryIds.where((value) => value != id).toList(),
+            ),
+          },
+          where: 'id = ?',
+          whereArgs: [family.id],
+        );
+      }
+      await transaction.delete('categories', where: 'id = ?', whereArgs: [id]);
+    });
+  }
   Future<void> deleteProductAndHistory(String id) async {
     final database = await _database;
     final machines = await database.query(
@@ -3385,20 +3579,17 @@ class AppDatabase {
         whereArgs: [id, id],
       );
       final categories = await transaction.query('categories');
-      for (final category in categories) {
-        final productIds = List<String>.from(
-          jsonDecode(category['product_ids'] as String) as List,
+      for (final row in categories) {
+        final category = _categoryFromRow(row);
+        if (!category.productIds.contains(id)) continue;
+        final updated = category.withProductInFamily(id, null).copyWith(
+          productIds: category.productIds.where((item) => item != id).toList(),
         );
-        if (!productIds.contains(id)) continue;
         await transaction.update(
           'categories',
-          {
-            'product_ids': jsonEncode(
-              productIds.where((item) => item != id).toList(),
-            ),
-          },
+          _categoryToRow(updated),
           where: 'id = ?',
-          whereArgs: [category['id']],
+          whereArgs: [category.id],
         );
       }
       await transaction.delete('products', where: 'id = ?', whereArgs: [id]);
@@ -3570,6 +3761,7 @@ class AppDatabase {
     'id': category.id,
     'name': category.name,
     'product_ids': jsonEncode(category.productIds),
+    'families': jsonEncode(category.families),
     'image': category.image,
   };
   ProductCategory _categoryFromRow(Map<String, Object?> row) => ProductCategory(
@@ -3579,6 +3771,10 @@ class AppDatabase {
       jsonDecode(row['product_ids'] as String) as List,
     ),
     image: row['image'] as Uint8List? ?? Uint8List(0),
+    families: [
+      for (final item in jsonDecode(row['families'] as String? ?? '[]') as List)
+        ProductFamily.fromJson(item as Map<String, dynamic>),
+    ],
   );
 
   StockAddition _stockAdditionFromRow(Map<String, Object?> row) =>
@@ -4049,7 +4245,8 @@ class _ForageAppState extends State<ForageApp> {
     late final AppUser protected;
     if (_usesCloud) {
       await SupabaseAccounts.updateUser(user);
-      protected = user;
+      // Never retain a newly entered password in application state.
+      protected = user.copyWith(password: '');
     } else {
       protected = await database.updateUser(user);
     }
@@ -4103,80 +4300,34 @@ class _ForageAppState extends State<ForageApp> {
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
     title: 'FORAGE ZOUHOUR',
-    theme: ThemeData(
-      useMaterial3: true,
-      brightness: Brightness.dark,
-      colorScheme: const ColorScheme.dark(
-        primary: AppPalette.primary,
-        secondary: AppPalette.secondary,
-        surface: AppPalette.surface,
-        onPrimary: Color(0xFF151515),
-        onSurface: AppPalette.text,
+    theme: atelierTheme(),
+    themeMode: ThemeMode.light,
+    builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+        systemNavigationBarColor: AppPalette.background,
+        systemNavigationBarIconBrightness: Brightness.dark,
       ),
-      scaffoldBackgroundColor: AppPalette.background,
-      dividerColor: AppPalette.line,
-      textTheme: ThemeData.dark().textTheme.apply(
-        bodyColor: AppPalette.text,
-        displayColor: AppPalette.text,
-        fontFamily: 'Inter',
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: AppPalette.surface,
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 16,
-        ),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: AppPalette.line),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: AppPalette.line),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: AppPalette.primary, width: 1.5),
-        ),
-      ),
-      filledButtonTheme: FilledButtonThemeData(
-        style: FilledButton.styleFrom(
-          backgroundColor: AppPalette.primary,
-          foregroundColor: const Color(0xFF151515),
-          minimumSize: const Size(0, 48),
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-          textStyle: const TextStyle(fontWeight: FontWeight.w800),
-        ),
-      ),
-      outlinedButtonTheme: OutlinedButtonThemeData(
-        style: OutlinedButton.styleFrom(
-          foregroundColor: AppPalette.primary,
-          side: const BorderSide(color: AppPalette.line),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-        ),
-      ),
-    ),
-    builder: (context, child) => Stack(
-      children: [
-        child ?? const SizedBox.shrink(),
-        if (update != null)
-          SafeArea(
-            child: Align(
-              alignment: Alignment.topCenter,
-              child: _UpdateBanner(
-                update: update!,
-                onDismiss: () => setState(() => update = null),
-                onStartUpdate: _startUpdate,
+      child: AtelierLiquidStage(
+        child: Stack(
+          children: [
+            child ?? const SizedBox.shrink(),
+            if (update != null)
+              SafeArea(
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: _UpdateBanner(
+                    update: update!,
+                    onDismiss: () => setState(() => update = null),
+                    onStartUpdate: _startUpdate,
+                  ),
+                ),
               ),
-            ),
-          ),
-      ],
+          ],
+        ),
+      ),
     ),
     home: loading
         ? const Scaffold(body: Center(child: CircularProgressIndicator()))
@@ -4608,257 +4759,244 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    backgroundColor: AppPalette.background,
-    body: SafeArea(
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 460),
-          child: Stack(
-            children: [
-              Container(
-                height: 270,
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xFF2A2A2A), Color(0xFF121212)],
-                  ),
-                  borderRadius: BorderRadius.vertical(
-                    bottom: Radius.circular(42),
-                  ),
+  Widget build(BuildContext context) {
+    final signIn = Glass(
+      radius: 32,
+      accent: AppPalette.primary,
+      frosted: true,
+      padding: const EdgeInsets.fromLTRB(22, 24, 22, 22),
+      child: AutofillGroup(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Row(
+              children: [
+                _AtelierIcon(
+                  Icons.shield_outlined,
+                  color: AppPalette.primary,
+                  size: 46,
                 ),
-                child: Stack(
-                  children: [
-                    Positioned(
-                      top: 22,
-                      right: 24,
-                      child: Image.asset(
-                        'assets/app_logo.png',
-                        width: 76,
-                        height: 76,
-                      ),
-                    ),
-                    Positioned(
-                      top: -90,
-                      right: -70,
-                      child: Container(
-                        width: 280,
-                        height: 280,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: .045),
-                          shape: BoxShape.circle,
+                SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Connexion sécurisée',
+                        style: TextStyle(
+                          fontSize: 24,
+                          letterSpacing: -.55,
+                          fontWeight: FontWeight.w800,
                         ),
                       ),
-                    ),
-                    Positioned(
-                      top: 48,
-                      left: 24,
-                      right: 24,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const SizedBox(height: 58),
-                          const Text(
-                            'Bienvenue dans FORAGE ZOUHOUR',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 25,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                          const SizedBox(height: 7),
-                          const Text(
-                            'Connectez-vous pour gérer votre atelier.',
-                            style: TextStyle(
-                              color: AppPalette.muted,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ],
+                      SizedBox(height: 3),
+                      Text(
+                        'Accédez à votre espace atelier',
+                        style: TextStyle(
+                          color: AppPalette.muted,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 22),
+            Text(
+              'Identifiants de connexion',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: AppPalette.primaryDark,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: email,
+              enabled: !authenticating && !awaitingApproval,
+              textInputAction: TextInputAction.next,
+              keyboardType: TextInputType.emailAddress,
+              autofillHints: const [AutofillHints.username],
+              decoration: const InputDecoration(
+                labelText: 'Adresse e-mail',
+                prefixIcon: Icon(Icons.email_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Glass(
+              accent: AppPalette.primary,
+              child: SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                    value: false,
+                    icon: Icon(Icons.lock_outline_rounded),
+                    label: Text('Mot de passe'),
+                  ),
+                  ButtonSegment(
+                    value: true,
+                    icon: Icon(Icons.gesture_rounded),
+                    label: Text('Schéma'),
+                  ),
+                ],
+                selected: {usesPattern},
+                onSelectionChanged: authenticating || awaitingApproval
+                    ? null
+                    : (value) => setState(() => usesPattern = value.first),
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (usesPattern)
+              PatternPad(
+                pattern: pattern,
+                onChanged: authenticating || awaitingApproval
+                    ? null
+                    : (value) => setState(() {
+                        pattern
+                          ..clear()
+                          ..addAll(value);
+                      }),
+              )
+            else
+              TextField(
+                controller: password,
+                enabled: !authenticating && !awaitingApproval,
+                obscureText: true,
+                autofillHints: const [AutofillHints.password],
+                onSubmitted: authenticating ? null : (_) => login(),
+                decoration: const InputDecoration(
+                  labelText: 'Mot de passe',
+                  prefixIcon: Icon(Icons.lock_outline_rounded),
                 ),
               ),
-              SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 218, 20, 28),
+            if (error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
                 child: Container(
-                  padding: const EdgeInsets.fromLTRB(22, 28, 22, 26),
-                  decoration: const BoxDecoration(
-                    color: AppPalette.surface,
-                    borderRadius: BorderRadius.all(Radius.circular(32)),
-                    border: Border.fromBorderSide(
-                      BorderSide(color: AppPalette.line),
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: awaitingApproval
+                        ? AppPalette.primary.withValues(alpha: .13)
+                        : AppPalette.coral.withValues(alpha: .13),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: awaitingApproval
+                          ? AppPalette.primary.withValues(alpha: .42)
+                          : AppPalette.coral.withValues(alpha: .42),
                     ),
                   ),
-                  child: Column(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Align(
-                        alignment: Alignment.centerLeft,
+                      Icon(
+                        awaitingApproval
+                            ? Icons.hourglass_top_rounded
+                            : Icons.error_outline_rounded,
+                        color: awaitingApproval
+                            ? AppPalette.primary
+                            : AppPalette.coral,
+                      ),
+                      const SizedBox(width: 9),
+                      Expanded(
                         child: Text(
-                          'Connexion',
+                          error!,
                           style: TextStyle(
-                            fontSize: 23,
-                            fontWeight: FontWeight.w900,
-                            color: AppPalette.text,
+                            color: awaitingApproval
+                                ? AppPalette.text
+                                : AppPalette.coral,
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 6),
-                      const Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'Entrez vos identifiants pour continuer.',
-                          style: TextStyle(color: AppPalette.muted),
-                        ),
-                      ),
-                      const SizedBox(height: 28),
-                      TextField(
-                        controller: email,
-                        enabled: !authenticating && !awaitingApproval,
-                        textInputAction: TextInputAction.next,
-                        decoration: const InputDecoration(
-                          hintText: 'Adresse e-mail',
-                          prefixIcon: Icon(Icons.email_outlined),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      SegmentedButton<bool>(
-                        segments: const [
-                          ButtonSegment(
-                            value: false,
-                            label: Text('Mot de passe'),
-                          ),
-                          ButtonSegment(value: true, label: Text('Schéma')),
-                        ],
-                        selected: {usesPattern},
-                        onSelectionChanged: authenticating || awaitingApproval
-                            ? null
-                            : (value) =>
-                                  setState(() => usesPattern = value.first),
-                      ),
-                      const SizedBox(height: 12),
-                      if (usesPattern)
-                        PatternPad(
-                          pattern: pattern,
-                          onChanged: authenticating || awaitingApproval
-                              ? null
-                              : (value) => setState(() {
-                                  pattern
-                                    ..clear()
-                                    ..addAll(value);
-                                }),
-                        )
-                      else
-                        TextField(
-                          controller: password,
-                          enabled: !authenticating && !awaitingApproval,
-                          obscureText: true,
-                          onSubmitted: authenticating ? null : (_) => login(),
-                          decoration: const InputDecoration(
-                            hintText: 'Mot de passe',
-                            prefixIcon: Icon(Icons.lock_outline_rounded),
-                          ),
-                        ),
-                      if (error != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 10),
-                          child: Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: awaitingApproval
-                                  ? AppPalette.primary.withValues(alpha: .13)
-                                  : AppPalette.coral.withValues(alpha: .13),
-                              borderRadius: BorderRadius.circular(14),
-                              border: Border.all(
-                                color: awaitingApproval
-                                    ? AppPalette.primary.withValues(alpha: .42)
-                                    : AppPalette.coral.withValues(alpha: .42),
-                              ),
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Icon(
-                                  awaitingApproval
-                                      ? Icons.hourglass_top_rounded
-                                      : Icons.error_outline_rounded,
-                                  color: awaitingApproval
-                                      ? AppPalette.primary
-                                      : AppPalette.coral,
-                                ),
-                                const SizedBox(width: 9),
-                                Expanded(
-                                  child: Text(
-                                    error!,
-                                    style: TextStyle(
-                                      color: awaitingApproval
-                                          ? AppPalette.text
-                                          : AppPalette.coral,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 4),
-                        child: Text(
-                          'Contactez un administrateur pour toute récupération d’accès.',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppPalette.muted,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        // toll 1500*930*5
-                      ),
-                      const SizedBox(height: 14),
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton(
-                          onPressed: authenticating || awaitingApproval
-                              ? null
-                              : login,
-                          style: FilledButton.styleFrom(
-                            minimumSize: const Size.fromHeight(54),
-                            shape: const StadiumBorder(),
-                          ),
-                          child: authenticating
-                              ? const SizedBox(
-                                  height: 22,
-                                  width: 22,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2.5,
-                                    color: Color(0xFF151515),
-                                  ),
-                                )
-                              : Text(
-                                  awaitingApproval
-                                      ? 'En attente d’autorisation'
-                                      : 'Connexion',
-                                ),
-                        ),
-                      ),
-                      const SizedBox(height: 22),
-                      const Text(
-                        'FORAGE ZOUHOUR · Gestion d’atelier',
-                        style: TextStyle(color: AppPalette.muted, fontSize: 12),
                       ),
                     ],
                   ),
                 ),
               ),
-            ],
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 4),
+              child: Text(
+                'Contactez un administrateur pour toute récupération d’accès.',
+                style: TextStyle(fontSize: 12, color: AppPalette.muted),
+                textAlign: TextAlign.center,
+              ),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: authenticating || awaitingApproval ? null : login,
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(54),
+                ),
+                child: authenticating
+                    ? const SizedBox(
+                        height: 22,
+                        width: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: AppPalette.primary,
+                        ),
+                      )
+                    : Text(
+                        awaitingApproval
+                            ? 'En attente d’autorisation'
+                            : 'Connexion',
+                      ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    return Scaffold(
+      body: Aura(
+        child: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= 780;
+              return SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 20,
+                ),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: wide ? 960 : 454,
+                      minHeight: max(0.0, constraints.maxHeight - 40),
+                    ),
+                    child: Align(
+                      alignment: Alignment.center,
+                      child: wide
+                          ? Row(
+                              children: [
+                                const Expanded(
+                                  child: _LoginIdentity(wide: true),
+                                ),
+                                const SizedBox(width: 20),
+                                Expanded(child: signIn),
+                              ],
+                            )
+                          : Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                const _LoginIdentity(wide: false),
+                                const SizedBox(height: 16),
+                                signIn,
+                              ],
+                            ),
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class ForageHome extends StatefulWidget {
@@ -4886,6 +5024,7 @@ class _ForageHomeState extends State<ForageHome> {
   var products = <Product>[];
   var depots = <Depot>[];
   var categories = <ProductCategory>[];
+  var catalogFamilies = <CatalogFamily>[];
   var machines = <FactoryMachine>[];
   var operations = <Operation>[];
   var stockAdditions = <StockAddition>[];
@@ -5002,6 +5141,7 @@ class _ForageHomeState extends State<ForageHome> {
         products = data.products;
         depots = data.depots;
         categories = data.categories;
+        catalogFamilies = data.catalogFamilies;
         machines = data.machines;
         operations = data.operations;
         stockAdditions = data.stockAdditions;
@@ -5412,28 +5552,28 @@ class _ForageHomeState extends State<ForageHome> {
       context,
       MaterialPageRoute(
         builder: (_) =>
-            ProductForm(kind: kind, depots: depots, categories: categories),
+            ProductForm(
+              kind: kind,
+              depots: depots,
+              categories: categories,
+              catalogFamilies: catalogFamilies,
+            ),
       ),
     );
     if (!mounted || item == null) return;
-    await widget.database.insertProduct(item.product);
-    if (item.categoryId != null) {
-      final categoryIndex = categories.indexWhere(
-        (category) => category.id == item.categoryId,
-      );
-      if (categoryIndex >= 0) {
-        final category = categories[categoryIndex];
-        final updated = ProductCategory(
-          id: category.id,
-          name: category.name,
-          productIds: [...category.productIds, item.product.id],
-          image: category.image,
-        );
-        await widget.database.updateCategory(updated);
-        if (mounted) setState(() => categories[categoryIndex] = updated);
+    final updatedCategory = await widget.database.insertCatalogProduct(
+      item.product,
+      item.categoryId,
+      item.familyId,
+    );
+    if (!mounted) return;
+    setState(() {
+      final index = categories.indexWhere((value) => value.id == item.categoryId);
+      if (index >= 0 && updatedCategory != null) {
+        categories[index] = updatedCategory;
       }
-    }
-    if (mounted) setState(() => products.add(item.product));
+      products.add(item.product);
+    });
     if (item.product.initialStock > 0) {
       await AppNotifications.show(
         title: 'Stock initial ajouté',
@@ -5452,6 +5592,8 @@ class _ForageHomeState extends State<ForageHome> {
       MaterialPageRoute(
         builder: (_) => StockForm(
           products: products.where((p) => !p.manufactured).toList(),
+          categories: categories,
+          catalogFamilies: catalogFamilies,
           stock: stock,
           depots: depots,
           suppliers: suppliers,
@@ -5556,6 +5698,8 @@ class _ForageHomeState extends State<ForageHome> {
       MaterialPageRoute(
         builder: (_) => SaleForm(
           products: products,
+          categories: categories,
+          catalogFamilies: catalogFamilies,
           depots: depots,
           clients: clients,
           available: depotStock,
@@ -5696,6 +5840,8 @@ class _ForageHomeState extends State<ForageHome> {
           products: products,
           additions: stockAdditions,
           sales: sales,
+          transfers: stockTransfers,
+          depots: depots,
           saleReturns: saleReturns,
           suppliers: suppliers,
           clients: clients,
@@ -5735,6 +5881,9 @@ class _ForageHomeState extends State<ForageHome> {
       context: context,
       builder: (_) => ExcelExportDialog(
         products: products,
+        categories: categories,
+        catalogFamilies: catalogFamilies,
+        depots: depots,
         stockAdditions: stockAdditions,
         sales: sales,
         operations: operations,
@@ -5787,6 +5936,8 @@ class _ForageHomeState extends State<ForageHome> {
       MaterialPageRoute(
         builder: (_) => StockTransferForm(
           products: products,
+          categories: categories,
+          catalogFamilies: catalogFamilies,
           depots: depots,
           available: depotStock,
         ),
@@ -5894,7 +6045,7 @@ class _ForageHomeState extends State<ForageHome> {
     }
   }
 
-  Future<void> addCategory() async {
+  Future<void> addCategory(String familyId) async {
     if (!widget.user.canWritePage(AppPage.products)) {
       return forbidden('Vous n’avez pas le droit de modifier les produits.');
     }
@@ -5903,8 +6054,8 @@ class _ForageHomeState extends State<ForageHome> {
       MaterialPageRoute(builder: (_) => const CategoryForm()),
     );
     if (item != null) {
-      await widget.database.insertCategory(item);
-      if (mounted) setState(() => categories.add(item));
+      await widget.database.insertCategoryInFamily(item, familyId);
+      if (mounted) await loadWorkshop();
     }
   }
 
@@ -5914,11 +6065,28 @@ class _ForageHomeState extends State<ForageHome> {
     }
     final item = await Navigator.push<ProductCategory>(
       context,
-      MaterialPageRoute(builder: (_) => CategoryForm(initial: value)),
+      MaterialPageRoute(
+        builder: (_) => CategoryForm(initial: value),
+      ),
     );
     if (item != null) {
       await widget.database.updateCategory(item);
-      if (mounted) setState(() => categories[categories.indexOf(value)] = item);
+      if (mounted) {
+        final index = categories.indexWhere((category) => category.id == item.id);
+        if (index >= 0) setState(() => categories[index] = item);
+      }
+    }
+  }
+
+  Future<void> saveCatalogFamily(CatalogFamily family) async {
+    if (!widget.user.canWritePage(AppPage.products)) {
+      return forbidden('Vous n’avez pas le droit de modifier les produits.');
+    }
+    try {
+      await widget.database.saveCatalogFamily(family);
+      if (mounted) await loadWorkshop();
+    } on StateError catch (error) {
+      if (mounted) message(context, error.message.toString());
     }
   }
 
@@ -6514,6 +6682,7 @@ class _ForageHomeState extends State<ForageHome> {
                   onOpenTeam: () {},
                   onOpenBackups: () {},
                   onOpenAnalytics: () => _openAnalytics(context),
+                  onOpenActivity: () => _openReviews(context),
                   canAccessAnalytics: widget.user.canAccess(AppPage.analytics),
                   canExport: widget.user.isAdmin || widget.user.canExport,
                   onOpenExport: openExcelExport,
@@ -6624,6 +6793,7 @@ class _ForageHomeState extends State<ForageHome> {
       ProductsPage(
         products: products,
         categories: categories,
+        catalogFamilies: catalogFamilies,
         stock: stock,
         depots: depots,
         depotStock: depotStock,
@@ -6634,6 +6804,8 @@ class _ForageHomeState extends State<ForageHome> {
       ),
       StockPage(
         products: products,
+        categories: categories,
+        catalogFamilies: catalogFamilies,
         stock: stock,
         draftCount:
             stockAdditions.where((item) => item.draft).length +
@@ -6723,7 +6895,7 @@ class _ForageHomeState extends State<ForageHome> {
     final currentPage = widget.user.canAccess(pageKeys[section])
         ? pages[section]
         : _PageAccessDenied(page: pageKeys[section]);
-    final isWindows = Platform.isWindows;
+    final isWindows = _usesWorkspaceRail(context);
     return Scaffold(
       extendBody: !isWindows,
       body: Aura(
@@ -6753,6 +6925,7 @@ class _ForageHomeState extends State<ForageHome> {
                       onOpenTeam: () => setState(() => section = 4),
                       onOpenBackups: () => _openBackups(context),
                       onOpenAnalytics: () => _openAnalytics(context),
+                      onOpenActivity: () => _openReviews(context),
                       canAccessAnalytics: widget.user.canAccess(
                         AppPage.analytics,
                       ),
@@ -6779,13 +6952,14 @@ class _ForageHomeState extends State<ForageHome> {
     context,
     MaterialPageRoute(
       builder: (_) => ManagementScreen(
-        title: 'Catégories',
-        child: CategoriesPage(
-          categories: categories,
-          products: products,
-          admin: widget.user.isAdmin,
-          onAdd: addCategory,
-          onEdit: editCategory,
+        title: 'Familles',
+        child: CatalogFamiliesPage(
+          loadCategories: () => categories,
+          loadFamilies: () => catalogFamilies,
+          admin: widget.user.canWritePage(AppPage.products),
+          onSaveFamily: saveCatalogFamily,
+          onAddCategory: addCategory,
+          onEditCategory: editCategory,
         ),
       ),
     ),
@@ -6799,6 +6973,8 @@ class _ForageHomeState extends State<ForageHome> {
         child: DepotsPage(
           depots: depots,
           products: products,
+          categories: categories,
+          catalogFamilies: catalogFamilies,
           stock: depotStock,
           canEdit: widget.user.canWritePage(AppPage.stock),
           canTransfer: widget.user.isAdmin,
@@ -6901,109 +7077,15 @@ class _ForageHomeState extends State<ForageHome> {
 class Aura extends StatelessWidget {
   const Aura({super.key, required this.child});
   final Widget child;
+
   @override
   Widget build(BuildContext context) => Stack(
     fit: StackFit.expand,
     children: [
-      const RepaintBoundary(child: NoirBackground()),
+      const RepaintBoundary(child: _LiquidWallpaper()),
       child,
     ],
   );
-}
-
-/// A subtle animated perspective grid and orbit system.  It creates depth
-/// without drop shadows, images, or expensive blur filters.
-class NoirBackground extends StatefulWidget {
-  const NoirBackground({super.key});
-
-  @override
-  State<NoirBackground> createState() => _NoirBackgroundState();
-}
-
-class _NoirBackgroundState extends State<NoirBackground>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 18),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _controller,
-    builder: (_, _) => CustomPaint(
-      painter: _NoirBackgroundPainter(_controller.value),
-      child: const SizedBox.expand(),
-    ),
-  );
-}
-
-class _NoirBackgroundPainter extends CustomPainter {
-  const _NoirBackgroundPainter(this.progress);
-  final double progress;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = AppPalette.background);
-
-    final horizon = size.height * .32;
-    final grid = Paint()
-      ..color = AppPalette.line.withValues(alpha: .48)
-      ..strokeWidth = 1;
-    final center = Offset(size.width * .72, horizon);
-    for (var i = -7; i <= 7; i++) {
-      final end = Offset(center.dx + i * size.width * .22, size.height);
-      canvas.drawLine(center, end, grid);
-    }
-    for (var row = 0; row < 9; row++) {
-      final t = row / 9;
-      final eased = t * t;
-      final y = horizon + (size.height - horizon) * eased;
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
-    }
-
-    final angle = progress * pi * 2;
-    final orbitCenter = Offset(
-      size.width * .77 + sin(angle) * 18,
-      size.height * .20 + cos(angle * .8) * 10,
-    );
-    final ring = Paint()
-      ..color = AppPalette.primary.withValues(alpha: .24)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2;
-    canvas.save();
-    canvas.translate(orbitCenter.dx, orbitCenter.dy);
-    canvas.rotate(-.45 + sin(angle) * .08);
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset.zero, width: 360, height: 118),
-      ring,
-    );
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset.zero, width: 210, height: 70),
-      ring,
-    );
-    canvas.restore();
-
-    final point = Offset(
-      orbitCenter.dx + cos(angle) * 126,
-      orbitCenter.dy + sin(angle) * 40,
-    );
-    canvas.drawCircle(point, 5, Paint()..color = AppPalette.primary);
-    canvas.drawCircle(
-      Offset(size.width * .12 + sin(angle * .62) * 20, size.height * .79),
-      3,
-      Paint()..color = AppPalette.primary.withValues(alpha: .70),
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _NoirBackgroundPainter oldDelegate) =>
-      oldDelegate.progress != progress;
 }
 
 class _PageAccessDenied extends StatelessWidget {
@@ -7062,21 +7144,15 @@ extension ExportDatasetLabel on ExportDataset {
     ExportDataset.suppliers => 'Fournisseurs',
     ExportDataset.clients => 'Clients',
   };
-
-  bool get usesDateFilter => switch (this) {
-    ExportDataset.purchases ||
-    ExportDataset.sales ||
-    ExportDataset.operations ||
-    ExportDataset.transfers ||
-    ExportDataset.returns => true,
-    _ => false,
-  };
 }
 
 class ExcelExportDialog extends StatefulWidget {
   const ExcelExportDialog({
     super.key,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
+    required this.depots,
     required this.stockAdditions,
     required this.sales,
     required this.operations,
@@ -7089,9 +7165,13 @@ class ExcelExportDialog extends StatefulWidget {
     required this.depotName,
     required this.clientName,
     required this.supplierName,
+    this.saveSheets = ExcelReports.save,
   });
 
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
+  final List<Depot> depots;
   final List<StockAddition> stockAdditions;
   final List<Sale> sales;
   final List<Operation> operations;
@@ -7104,69 +7184,253 @@ class ExcelExportDialog extends StatefulWidget {
   final String Function(String id) depotName;
   final String Function(String id) clientName;
   final String Function(String id) supplierName;
+  final Future<void> Function(List<ExcelSheetData>) saveSheets;
 
   @override
   State<ExcelExportDialog> createState() => _ExcelExportDialogState();
 }
 
 class _ExcelExportDialogState extends State<ExcelExportDialog> {
-  final selected = ExportDataset.values.toSet();
-  late DateTime start = DateTime(DateTime.now().year, DateTime.now().month, 1);
-  late DateTime end = DateTime.now();
+  final selected = <ExportDataset>{};
+  DateTimeRange? period;
+  final selections = <ExportDataset, Set<String>>{};
+  Set<String> productFamilyIds = const {};
   var saving = false;
+  String? firstDepot;
+  String? secondDepot;
 
-  Future<void> pickDate(bool isStart) async {
-    final selectedDate = await showDatePicker(
+  bool matches(ExportDataset dataset, String? id) {
+    final ids = selections[dataset];
+    return ids == null || ids.isEmpty || ids.contains(id);
+  }
+
+  Iterable<ProductCategory> categoriesFor(Product item) =>
+      widget.categories.where(
+        (category) => category.productIds.contains(_catalogMembershipId(item)),
+      );
+
+  List<_CatalogGroup> get productGroups => _catalogGroups(
+    widget.categories,
+    widget.catalogFamilies,
+    products: widget.products,
+  );
+
+  Iterable<_CatalogSection> productSections(List<_CatalogGroup> groups) =>
+      groups
+          .where(
+            (group) =>
+                productFamilyIds.isEmpty || productFamilyIds.contains(group.id),
+          )
+          .expand((group) => group.sections);
+
+  bool inRange(DateTime value) {
+    final range = period;
+    if (range == null) return true;
+    final exclusiveEnd = DateTime(
+      range.end.year,
+      range.end.month,
+      range.end.day + 1,
+    );
+    return !value.isBefore(range.start) && value.isBefore(exclusiveEnd);
+  }
+
+  Future<void> pickPeriod() async {
+    final range = await showDateRangePicker(
       context: context,
-      initialDate: isStart ? start : end,
+      initialDateRange: period,
       firstDate: DateTime(2020),
       lastDate: DateTime.now().add(const Duration(days: 365)),
     );
-    if (selectedDate == null) return;
-    setState(() {
-      if (isStart) {
-        start = selectedDate;
-      } else {
-        end = DateTime(
-          selectedDate.year,
-          selectedDate.month,
-          selectedDate.day,
-          23,
-          59,
-          59,
-        );
-      }
-    });
+    if (range != null && mounted) setState(() => period = range);
   }
 
-  bool inRange(DateTime value) => !value.isBefore(start) && !value.isAfter(end);
+  Widget dateFilter() {
+    final range = period;
+    final localizations = MaterialLocalizations.of(context);
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: saving ? null : pickPeriod,
+            icon: const Icon(Icons.date_range),
+            label: Text(
+              range == null
+                  ? 'Toutes les dates'
+                  : '${localizations.formatShortDate(range.start)} – ${localizations.formatShortDate(range.end)}',
+            ),
+          ),
+        ),
+        if (range != null)
+          IconButton(
+            tooltip: 'Effacer la période',
+            icon: const Icon(Icons.clear),
+            onPressed: saving ? null : () => setState(() => period = null),
+          ),
+      ],
+    );
+  }
+
+  Widget datasetFilters(ExportDataset dataset) {
+    final groups = dataset == ExportDataset.products
+        ? productGroups
+        : const <_CatalogGroup>[];
+    final suppliers = _choices(
+      widget.suppliers,
+      (item) => item.id,
+      (item) => _partnerLabel(item.name, item.company),
+    );
+    final clients = _choices(
+      widget.clients,
+      (item) => item.id,
+      (item) => _partnerLabel(item.name, item.company),
+    );
+    final (label, options) = switch (dataset) {
+      ExportDataset.products => (
+        'Catégories',
+        {
+          for (final section in productSections(groups))
+            section.category.id: section.category.name,
+        },
+      ),
+      ExportDataset.machines => (
+        'Catégories',
+        _choices(widget.categories, (item) => item.id, (item) => item.name),
+      ),
+      ExportDataset.purchases => (
+        'Fournisseurs',
+        {
+          ...suppliers,
+          for (final id
+              in widget.stockAdditions
+                  .map((item) => item.supplierId)
+                  .whereType<String>()
+                  .toSet())
+            if (id.isNotEmpty && !suppliers.containsKey(id))
+              id: widget.supplierName(id),
+        },
+      ),
+      ExportDataset.suppliers => ('Fournisseurs', suppliers),
+      ExportDataset.sales => (
+        'Clients',
+        {
+          ...clients,
+          for (final id in widget.sales.map((item) => item.clientId).toSet())
+            if (id.isNotEmpty && !clients.containsKey(id))
+              id: widget.clientName(id),
+        },
+      ),
+      ExportDataset.returns || ExportDataset.clients => ('Clients', clients),
+      ExportDataset.operations => (
+        'Machines',
+        _choices(widget.machines, (item) => item.id, (item) => item.name),
+      ),
+      ExportDataset.transfers => ('', const <String, String>{}),
+    };
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (groups.isNotEmpty) ...[
+            SearchChoiceField(
+              label: 'Familles',
+              options: _choices(
+                groups,
+                (group) => group.id,
+                (group) => group.name,
+              ),
+              selected: productFamilyIds,
+              multiple: true,
+              onChanged: (ids) => setState(() {
+                productFamilyIds = ids;
+                final available = productSections(groups)
+                    .map((section) => section.category.id)
+                    .toSet();
+                selections[dataset] = (selections[dataset] ?? const <String>{})
+                    .intersection(available);
+              }),
+            ),
+            if (options.isNotEmpty) const SizedBox(height: 8),
+          ],
+          if (options.isNotEmpty)
+            SearchChoiceField(
+              label: label,
+              options: options,
+              selected: selections[dataset] ?? const {},
+              multiple: true,
+              onChanged: (ids) => setState(() => selections[dataset] = ids),
+            )
+          else if (dataset == ExportDataset.purchases ||
+              dataset == ExportDataset.sales)
+            InputDecorator(
+              decoration: InputDecoration(labelText: label, enabled: false),
+              child: Text(
+                dataset == ExportDataset.purchases
+                    ? 'Aucun fournisseur disponible'
+                    : 'Aucun client disponible',
+              ),
+            ),
+          if (dataset == ExportDataset.transfers)
+            _TransferDepotFields(
+              depots: widget.depots,
+              first: firstDepot,
+              second: secondDepot,
+              onChanged: (first, second) => setState(() {
+                firstDepot = first;
+                secondDepot = second;
+              }),
+            ),
+        ],
+      ),
+    );
+  }
 
   Future<void> export() async {
     if (selected.isEmpty || saving) return;
-    if (end.isBefore(start)) {
-      message(context, 'La date de fin doit suivre la date de début.');
-      return;
-    }
     setState(() => saving = true);
     try {
       final sheets = <ExcelSheetData>[];
+      final clientBySale = {
+        for (final sale in widget.sales) sale.id: sale.clientId,
+      };
       if (selected.contains(ExportDataset.products)) {
+        final filterProducts =
+            productFamilyIds.isNotEmpty ||
+            selections[ExportDataset.products]?.isNotEmpty == true;
+        final matchingIds = filterProducts
+            ? productSections(productGroups)
+                  .where(
+                    (section) =>
+                        matches(ExportDataset.products, section.category.id),
+                  )
+                  .expand((section) => section.productIds)
+                  .toSet()
+            : null;
         sheets.add(
           ExcelSheetData(
             name: 'Produits',
             headers: const [
               'Référence',
               'Produit',
+              'Catégorie',
               'Type',
               'Matière',
               'Longueur (m)',
               'Épaisseur (mm)',
             ],
             rows: widget.products
+                .where(
+                  (item) =>
+                      matchingIds == null ||
+                      matchingIds.contains(_catalogMembershipId(item)),
+                )
                 .map(
                   (item) => [
                     item.reference,
                     item.name,
+                    categoriesFor(item)
+                        .map((category) => category.name)
+                        .join(', '),
                     item.kind.label,
                     item.material.label,
                     item.lengthMeters,
@@ -7193,7 +7457,11 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
               'Statut',
             ],
             rows: widget.stockAdditions
-                .where((item) => inRange(item.addedAt))
+                .where(
+                  (item) =>
+                      inRange(item.addedAt) &&
+                      matches(ExportDataset.purchases, item.supplierId),
+                )
                 .map(
                   (item) => [
                     item.addedAt,
@@ -7228,7 +7496,11 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
               'Statut',
             ],
             rows: widget.sales
-                .where((item) => inRange(item.createdAt))
+                .where(
+                  (item) =>
+                      inRange(item.createdAt) &&
+                      matches(ExportDataset.sales, item.clientId),
+                )
                 .map(
                   (item) => [
                     item.createdAt,
@@ -7260,7 +7532,11 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
               'Statut',
             ],
             rows: widget.operations
-                .where((item) => inRange(item.startedAt))
+                .where(
+                  (item) =>
+                      inRange(item.startedAt) &&
+                      matches(ExportDataset.operations, item.machineId),
+                )
                 .map(
                   (item) => [
                     item.startedAt,
@@ -7292,7 +7568,11 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
               'Statut',
             ],
             rows: widget.transfers
-                .where((item) => inRange(item.createdAt))
+                .where(
+                  (item) =>
+                      inRange(item.createdAt) &&
+                      transferMatchesDepots(item, firstDepot, secondDepot),
+                )
                 .map(
                   (item) => [
                     item.createdAt,
@@ -7320,7 +7600,11 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
               'Statut',
             ],
             rows: widget.returns
-                .where((item) => inRange(item.createdAt))
+                .where(
+                  (item) =>
+                      inRange(item.createdAt) &&
+                      matches(ExportDataset.returns, clientBySale[item.saleId]),
+                )
                 .map(
                   (item) => [
                     item.createdAt,
@@ -7347,6 +7631,9 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
               'Temporaire',
             ],
             rows: widget.machines
+                .where(
+                  (item) => matches(ExportDataset.machines, item.categoryId),
+                )
                 .map(
                   (item) => [
                     item.name,
@@ -7366,6 +7653,7 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
             name: 'Fournisseurs',
             headers: const ['Nom', 'Société', 'Contact'],
             rows: widget.suppliers
+                .where((item) => matches(ExportDataset.suppliers, item.id))
                 .map((item) => [item.name, item.company, item.contact])
                 .toList(),
           ),
@@ -7377,12 +7665,13 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
             name: 'Clients',
             headers: const ['Nom', 'Société', 'Téléphone', 'ICE'],
             rows: widget.clients
+                .where((item) => matches(ExportDataset.clients, item.id))
                 .map((item) => [item.name, item.company, item.phone, item.ice])
                 .toList(),
           ),
         );
       }
-      await ExcelReports.save(sheets);
+      await widget.saveSheets(sheets);
       if (mounted) Navigator.pop(context);
     } catch (_) {
       if (mounted) message(context, 'Impossible de créer le fichier Excel.');
@@ -7396,48 +7685,38 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
     title: const Text('Exporter vers Excel'),
     content: SizedBox(
       width: 520,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => pickDate(true),
-                    child: Text('Du ${dateText(start)}'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => pickDate(false),
-                    child: Text('Au ${dateText(end)}'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            ...ExportDataset.values.map(
-              (dataset) => CheckboxListTile(
-                value: selected.contains(dataset),
-                title: Text(dataset.label),
-                subtitle: Text(
-                  dataset.usesDateFilter
-                      ? 'Filtré par période'
-                      : 'Toutes les données actuelles',
-                ),
-                onChanged: (checked) => setState(() {
-                  if (checked == true) {
-                    selected.add(dataset);
-                  } else {
-                    selected.remove(dataset);
-                  }
-                }),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          dateFilter(),
+          const SizedBox(height: 8),
+          Flexible(
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final dataset in ExportDataset.values) ...[
+                    CheckboxListTile(
+                      value: selected.contains(dataset),
+                      title: Text(dataset.label),
+                      onChanged: saving
+                          ? null
+                          : (checked) => setState(() {
+                              if (checked == true) {
+                                selected.add(dataset);
+                              } else {
+                                selected.remove(dataset);
+                              }
+                            }),
+                    ),
+                    if (selected.contains(dataset)) datasetFilters(dataset),
+                  ],
+                ],
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     ),
     actions: [
@@ -7455,19 +7734,52 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
 }
 
 class Glass extends StatelessWidget {
-  const Glass({super.key, required this.child, this.padding});
+  const Glass({
+    super.key,
+    required this.child,
+    this.padding,
+    this.radius = 24,
+    this.accent = AppPalette.secondary,
+    this.frosted = false,
+    this.depth,
+    this.opacity,
+  });
+
   final Widget child;
   final EdgeInsets? padding;
+  final double radius;
+  final Color accent;
+  final bool frosted;
+  /// Allows floating UI such as the phone navigation to reveal the content
+  /// scrolling underneath it, without changing normal glass panels.
+  final double? depth;
+  final double? opacity;
+
   @override
-  Widget build(BuildContext context) => Container(
-    padding: padding,
-    decoration: BoxDecoration(
-      color: AppPalette.surface.withValues(alpha: .96),
-      borderRadius: BorderRadius.circular(24),
-      border: Border.all(color: AppPalette.line),
-    ),
-    child: child,
-  );
+  Widget build(BuildContext context) {
+    final rounded = BorderRadius.circular(radius);
+    final panel = _LiquidLayer(
+      radius: radius,
+      accent: accent,
+      depth: depth ?? (frosted ? 1.34 : .93),
+      opacity: opacity ?? (frosted ? .98 : .96),
+      child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
+    );
+    if (!frosted) return panel;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: rounded,
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x520B000F),
+            blurRadius: 22,
+            offset: Offset(0, 9),
+          ),
+        ],
+      ),
+      child: panel,
+    );
+  }
 }
 
 class AppHeader extends StatelessWidget {
@@ -7482,6 +7794,7 @@ class AppHeader extends StatelessWidget {
     required this.canAccessAnalytics,
     required this.canExport,
     required this.onOpenExport,
+    this.onOpenActivity,
     this.onOpenDeveloper,
   });
   final String title;
@@ -7493,116 +7806,120 @@ class AppHeader extends StatelessWidget {
   final bool canAccessAnalytics;
   final bool canExport;
   final VoidCallback onOpenExport;
+  final VoidCallback? onOpenActivity;
   final VoidCallback? onOpenDeveloper;
+
+  void _showProfile(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * .85,
+      ),
+      builder: (sheetContext) {
+        VoidCallback closeThen(VoidCallback action) => () {
+          Navigator.pop(sheetContext);
+          action();
+        };
+        return ProfileSheet(
+          user: user,
+          onOpenTeam: closeThen(onOpenTeam),
+          onOpenBackups: closeThen(onOpenBackups),
+          onOpenExport: onOpenActivity != null && canExport
+              ? closeThen(onOpenExport)
+              : null,
+          onOpenDeveloper:
+              onOpenActivity != null &&
+                  user.isDeveloper &&
+                  onOpenDeveloper != null
+              ? closeThen(onOpenDeveloper!)
+              : null,
+          onLogout: closeThen(onLogout),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(22, 16, 22, 20),
-    child: Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w900,
-                  color: AppPalette.text,
+    padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+    child: Glass(
+      radius: 28,
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    letterSpacing: -.6,
+                    fontWeight: FontWeight.w800,
+                    color: AppPalette.text,
+                  ),
+                ),
+                Text(
+                  user.effectiveRole.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppPalette.muted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 4),
+          if (canAccessAnalytics) ...[
+            _DashboardHeaderButton(
+              label: 'Analyses',
+              onTap: onOpenAnalytics,
+              child: const Icon(Icons.bar_chart_rounded, size: 21),
+            ),
+            const SizedBox(width: 7),
+          ],
+          if (onOpenActivity case final openActivity?) ...[
+            _DashboardHeaderButton(
+              label: 'Notifications et contrôles',
+              onTap: openActivity,
+              child: const Icon(Icons.notifications_none_rounded, size: 21),
+            ),
+            const SizedBox(width: 7),
+          ],
+          if (onOpenActivity == null &&
+              user.isDeveloper &&
+              onOpenDeveloper != null) ...[
+            Tooltip(
+              message: 'Mode développeur',
+              child: IconButton(
+                onPressed: onOpenDeveloper,
+                icon: const Icon(Icons.admin_panel_settings_rounded),
+                color: AppPalette.coral,
+                style: IconButton.styleFrom(
+                  side: const BorderSide(color: AppPalette.coral),
                 ),
               ),
-              Text(
-                user.effectiveRole.label,
-                style: const TextStyle(
-                  color: AppPalette.muted,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 8),
-        if (canExport) ...[
-          Tooltip(
-            message: 'Exporter vers Excel',
-            child: IconButton(
-              onPressed: onOpenExport,
-              icon: const Icon(Icons.table_view_rounded),
-              color: AppPalette.primary,
-              style: IconButton.styleFrom(
-                backgroundColor: AppPalette.surface,
-                side: const BorderSide(color: AppPalette.line),
-              ),
+            ),
+            const SizedBox(width: 4),
+          ],
+          _DashboardHeaderButton(
+            label: 'Profil',
+            onTap: () => _showProfile(context),
+            child: Text(
+              user.fullName.characters.first.toUpperCase(),
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
           ),
-          const SizedBox(width: 8),
         ],
-        if (canAccessAnalytics) ...[
-          Tooltip(
-            message: 'Analyses',
-            child: IconButton(
-              onPressed: onOpenAnalytics,
-              icon: const Icon(Icons.query_stats_rounded),
-              color: AppPalette.primary,
-              style: IconButton.styleFrom(
-                backgroundColor: AppPalette.surface,
-                side: const BorderSide(color: AppPalette.line),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-        ],
-        if (user.isDeveloper && onOpenDeveloper != null) ...[
-          Tooltip(
-            message: 'Mode développeur',
-            child: IconButton(
-              onPressed: onOpenDeveloper,
-              icon: const Icon(Icons.admin_panel_settings_rounded),
-              color: Colors.white,
-              style: IconButton.styleFrom(
-                backgroundColor: const Color(0xFFDC2626),
-                side: const BorderSide(color: Color(0xFFFCA5A5)),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-        ],
-        InkWell(
-          onTap: () => showModalBottomSheet<void>(
-            context: context,
-            backgroundColor: Colors.transparent,
-            builder: (_) => ProfileSheet(
-              user: user,
-              onOpenTeam: () {
-                Navigator.pop(context);
-                onOpenTeam();
-              },
-              onOpenBackups: () {
-                Navigator.pop(context);
-                onOpenBackups();
-              },
-              onLogout: () {
-                Navigator.pop(context);
-                onLogout();
-              },
-            ),
-          ),
-          borderRadius: BorderRadius.circular(28),
-          child: Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: AppPalette.surface,
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(color: AppPalette.line),
-            ),
-            child: CircleAvatar(
-              backgroundColor: AppPalette.primary,
-              foregroundColor: AppPalette.background,
-              child: Text(user.fullName.substring(0, 1).toUpperCase()),
-            ),
-          ),
-        ),
-      ],
+      ),
     ),
   );
 }
@@ -7614,11 +7931,15 @@ class ProfileSheet extends StatelessWidget {
     required this.onOpenTeam,
     required this.onOpenBackups,
     required this.onLogout,
+    this.onOpenExport,
+    this.onOpenDeveloper,
   });
   final AppUser user;
   final VoidCallback onOpenTeam;
   final VoidCallback onOpenBackups;
   final VoidCallback onLogout;
+  final VoidCallback? onOpenExport;
+  final VoidCallback? onOpenDeveloper;
 
   @override
   Widget build(BuildContext context) => SafeArea(
@@ -7631,147 +7952,161 @@ class ProfileSheet extends StatelessWidget {
         offset: Offset(0, 28 * (1 - value)),
         child: Opacity(opacity: value, child: child),
       ),
-      child: ClipRRect(
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(22, 12, 22, 22),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: .68),
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(32),
-              ),
-              border: Border.all(color: Colors.white.withValues(alpha: .8)),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 44,
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFD9D6F8),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+      child: SingleChildScrollView(
+        child: Glass(
+          radius: 32,
+          frosted: true,
+          padding: const EdgeInsets.fromLTRB(22, 12, 22, 22),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 44,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: AppPalette.line,
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                const SizedBox(height: 22),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [AppPalette.primaryDark, AppPalette.primary],
-                    ),
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        radius: 29,
-                        backgroundColor: Colors.white.withValues(alpha: .22),
-                        foregroundColor: Colors.white,
-                        child: Text(
-                          user.fullName.substring(0, 1).toUpperCase(),
-                          style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              user.fullName,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              '@${user.username}',
-                              style: const TextStyle(color: Color(0xFFF3E8FF)),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              user.effectiveRole.label,
-                              style: const TextStyle(
-                                color: Color(0xFFF3E8FF),
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+              ),
+              const SizedBox(height: 22),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      AppPalette.desktopAccentSoft,
+                      AppPalette.surfaceRaised,
                     ],
                   ),
+                  borderRadius: BorderRadius.circular(24),
                 ),
-                const SizedBox(height: 12),
-                if (user.isAdmin) ...[
-                  ListTile(
-                    onTap: onOpenTeam,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 29,
+                      backgroundColor: AppPalette.primary.withValues(
+                        alpha: .16,
+                      ),
+                      foregroundColor: AppPalette.primary,
+                      child: Text(
+                        user.fullName.substring(0, 1).toUpperCase(),
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
                     ),
-                    tileColor: Colors.white.withValues(alpha: .46),
-                    leading: const Icon(
-                      Icons.groups_rounded,
-                      color: AppPalette.primary,
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            user.fullName,
+                            style: const TextStyle(
+                              color: AppPalette.text,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            '@${user.username}',
+                            style: const TextStyle(color: AppPalette.muted),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            user.effectiveRole.label,
+                            style: const TextStyle(
+                              color: AppPalette.muted,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    title: const Text(
-                      'Équipe',
-                      style: TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    subtitle: const Text('Gérer les membres de l’atelier'),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-                if (user.isAdmin) ...[
-                  ListTile(
-                    onTap: onOpenBackups,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    tileColor: Colors.white.withValues(alpha: .46),
-                    leading: const Icon(
-                      Icons.backup_rounded,
-                      color: AppPalette.primary,
-                    ),
-                    title: const Text(
-                      'Sauvegardes',
-                      style: TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    subtitle: const Text(
-                      'Télécharger, restaurer ou supprimer les données',
-                    ),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                  ),
-                  const SizedBox(height: 8),
-                ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (user.isAdmin) ...[
                 ListTile(
-                  onTap: onLogout,
+                  onTap: onOpenTeam,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18),
                   ),
+                  tileColor: AppPalette.surfaceRaised.withValues(alpha: .82),
                   leading: const Icon(
-                    Icons.logout_rounded,
-                    color: Color(0xFF9F1239),
+                    Icons.groups_rounded,
+                    color: AppPalette.primary,
                   ),
                   title: const Text(
-                    'Se déconnecter',
-                    style: TextStyle(
-                      color: Color(0xFF9F1239),
-                      fontWeight: FontWeight.w800,
-                    ),
+                    'Équipe',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  subtitle: const Text('Gérer les membres de l’atelier'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (user.isAdmin) ...[
+                ListTile(
+                  onTap: onOpenBackups,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  tileColor: AppPalette.surfaceRaised.withValues(alpha: .82),
+                  leading: const Icon(
+                    Icons.backup_rounded,
+                    color: AppPalette.primary,
+                  ),
+                  title: const Text(
+                    'Sauvegardes',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  subtitle: const Text(
+                    'Télécharger, restaurer ou supprimer les données',
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (onOpenExport case final export?)
+                ListTile(
+                  onTap: export,
+                  leading: const Icon(
+                    Icons.table_view_rounded,
+                    color: AppPalette.primary,
+                  ),
+                  title: const Text('Exporter vers Excel'),
+                ),
+              if (onOpenDeveloper case final developer?)
+                ListTile(
+                  onTap: developer,
+                  leading: const Icon(
+                    Icons.admin_panel_settings_rounded,
+                    color: AppPalette.coral,
+                  ),
+                  title: const Text('Mode développeur'),
+                ),
+              ListTile(
+                onTap: onLogout,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                leading: const Icon(
+                  Icons.logout_rounded,
+                  color: AppPalette.coral,
+                ),
+                title: const Text(
+                  'Se déconnecter',
+                  style: TextStyle(
+                    color: AppPalette.coral,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
@@ -7845,7 +8180,7 @@ class _BackupPageState extends State<BackupPage> {
                 child: const Text('Annuler'),
               ),
               FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: color),
+                style: color == AppPalette.coral ? _criticalActionStyle : null,
                 onPressed: () => Navigator.pop(context, true),
                 child: Text(action),
               ),
@@ -7874,7 +8209,7 @@ class _BackupPageState extends State<BackupPage> {
       title: 'Supprimer les données de l’atelier ?',
       detail: 'Cette action supprimera les produits, catégories, machines, opérations, dépôts et ajouts de stock. Les comptes utilisateurs seront conservés.',
       action: 'Supprimer',
-      color: const Color(0xFFB91C1C),
+      color: AppPalette.coral,
     );
     if (!confirmed || !mounted) return;
     setState(() => busy = true);
@@ -8019,9 +8354,7 @@ class _BackupPageState extends State<BackupPage> {
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFFB91C1C),
-                  ),
+                  style: _criticalActionStyle,
                   onPressed: busy || !hasRecentBackup ? null : _clearData,
                   icon: const Icon(Icons.delete_forever_rounded),
                   label: const Text('Supprimer les données de l’atelier'),
@@ -8046,6 +8379,7 @@ class DashboardPage extends StatelessWidget {
     required this.onValidation,
     required this.onCategories,
     required this.onReviews,
+    this.forceDesktopLayout = false,
   });
 
   final AppUser user;
@@ -8059,346 +8393,157 @@ class DashboardPage extends StatelessWidget {
   final VoidCallback onValidation;
   final VoidCallback onCategories;
   final VoidCallback onReviews;
+  final bool forceDesktopLayout;
 
   @override
   Widget build(BuildContext context) {
-    final isWindows = Platform.isWindows;
+    final desktop =
+        forceDesktopLayout ||
+        (_usesWorkspaceRail(context) && MediaQuery.sizeOf(context).width >= 1380);
     return Page(
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Bonjour, ${user.fullName.split(' ').first}',
-            style: TextStyle(
-              fontSize: isWindows ? 28 : 22,
-              fontWeight: FontWeight.w900,
-            ),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (desktop)
+          _DesktopDashboardWelcome(
+            firstName: user.fullName.trim().split(RegExp(r'\s+')).first,
           ),
-          const SizedBox(height: 5),
-          const Text(
-            'Voici un aperçu de votre atelier.',
-            style: TextStyle(color: AppPalette.muted),
-          ),
-          const SizedBox(height: 18),
-          if (isWindows) ...[
-            LayoutBuilder(
-              builder: (context, constraints) => Wrap(
-                spacing: 12,
-                runSpacing: 12,
+        if (desktop) const SizedBox(height: 18),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final hero = _AtelierOverview(
+              firstName: user.fullName.trim().split(RegExp(r'\s+')).first,
+              machineCount: machineCount,
+              desktop: desktop,
+            );
+            final products = _DashboardMetric(
+              icon: Icons.view_in_ar_outlined,
+              label: 'Produits',
+              value: productCount,
+              accent: AppPalette.secondary,
+            );
+            final reviews = _DashboardMetric(
+              icon: Icons.schedule_rounded,
+              label: 'Contrôles en attente',
+              value: pendingReviews,
+              accent: pendingReviews > 0
+                  ? AppPalette.amber
+                  : AppPalette.primary,
+            );
+            if (constraints.maxWidth >= (desktop ? 780 : 690)) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _DashboardMetric(
-                    width: (constraints.maxWidth - 24) / 3,
-                    icon: Icons.inventory_2_outlined,
-                    label: 'Produits',
-                    value: '$productCount',
-                  ),
-                  _DashboardMetric(
-                    width: (constraints.maxWidth - 24) / 3,
-                    icon: Icons.precision_manufacturing_outlined,
-                    label: 'Machines actives',
-                    value: '$machineCount',
-                  ),
-                  _DashboardMetric(
-                    width: (constraints.maxWidth - 24) / 3,
-                    icon: Icons.fact_check_outlined,
-                    label: 'À contrôler',
-                    value: '$pendingReviews',
-                    highlighted: pendingReviews > 0,
+                  Expanded(flex: 3, child: hero),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    flex: 2,
+                    child: Column(
+                      children: [products, const SizedBox(height: 12), reviews],
+                    ),
                   ),
                 ],
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
-          Container(
-            height: isWindows ? 164 : 205,
-            width: double.infinity,
-            padding: EdgeInsets.all(isWindows ? 20 : 22),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF242424), Color(0xFF171717)],
-              ),
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(color: AppPalette.line),
-            ),
-            child: Stack(
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Positioned(
-                  right: -56,
-                  top: -70,
-                  child: Container(
-                    width: 190,
-                    height: 190,
-                    decoration: BoxDecoration(
-                      color: AppPalette.primary.withValues(alpha: .12),
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'FORAGE ZOUHOUR',
-                      style: TextStyle(
-                        color: AppPalette.primary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.1,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      '$machineCount machine${machineCount == 1 ? '' : 's'} active${machineCount == 1 ? '' : 's'}',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: isWindows ? 28 : 25,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '$productCount produits · $pendingReviews contrôle${pendingReviews == 1 ? '' : 's'} en attente',
-                      style: const TextStyle(
-                        color: AppPalette.muted,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-                const Positioned(
-                  right: 0,
-                  bottom: 0,
-                  child: Icon(
-                    Icons.precision_manufacturing_rounded,
-                    color: Colors.white,
-                    size: 44,
+                hero,
+                const SizedBox(height: 12),
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: products),
+                      const SizedBox(width: 10),
+                      Expanded(child: reviews),
+                    ],
                   ),
                 ),
               ],
-            ),
-          ),
-          const SizedBox(height: 22),
-          const Text(
-            'Accès rapide',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-          ),
-          const SizedBox(height: 12),
-          GridView.count(
-            crossAxisCount: isWindows ? 3 : 3,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 12,
-            crossAxisSpacing: 12,
-            childAspectRatio: isWindows ? 2.55 : .92,
-            children: [
+            );
+          },
+        ),
+        const SizedBox(height: 19),
+        Text(
+          'Accès rapide',
+          style: Theme.of(context).textTheme.titleMedium
+              ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -.4),
+        ),
+        const SizedBox(height: 12),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final columns = constraints.maxWidth >= (desktop ? 940 : 670)
+                ? 6
+                : constraints.maxWidth >= 670
+                ? 3
+                : constraints.maxWidth >= 290
+                ? 2
+                : 1;
+            const gap = 10.0;
+            final width =
+                (constraints.maxWidth - gap * (columns - 1)) / columns;
+            final shortcuts = [
               _DashboardAction(
                 icon: Icons.inventory_2_outlined,
-                color: const Color(0xFF3D2BC7),
+                color: const Color(0xFF1A95E8),
                 label: 'Produits',
                 onTap: onProducts,
               ),
               _DashboardAction(
                 icon: Icons.warehouse_outlined,
-                color: const Color(0xFF0D8CE6),
+                color: const Color(0xFF2FB9E8),
                 label: 'Stock',
                 onTap: onStock,
               ),
               _DashboardAction(
                 icon: Icons.precision_manufacturing_outlined,
-                color: const Color(0xFFFF4D72),
+                color: const Color(0xFF4A7EEA),
                 label: 'Machines',
                 onTap: onMachines,
               ),
               _DashboardAction(
-                icon: Icons.category_outlined,
-                color: const Color(0xFFF59E0B),
-                label: 'Catégories',
+                icon: Icons.folder_outlined,
+                color: const Color(0xFF258DD8),
+                label: 'Familles',
                 onTap: onCategories,
               ),
               _DashboardAction(
                 icon: user.canValidate
                     ? Icons.verified_user_outlined
                     : Icons.fact_check_outlined,
-                color: const Color(0xFF14B8A6),
+                color: const Color(0xFF38A8E6),
                 label: user.canValidate ? 'Validations' : 'Contrôles',
                 onTap: user.canValidate ? onValidation : onReviews,
               ),
               if (user.isAdmin)
                 _DashboardAction(
                   icon: Icons.groups_outlined,
-                  color: const Color(0xFF635BCE),
+                  color: const Color(0xFF668AEF),
                   label: 'Équipe',
                   onTap: onTeam,
                 ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _DashboardMetric extends StatelessWidget {
-  const _DashboardMetric({
-    required this.width,
-    required this.icon,
-    required this.label,
-    required this.value,
-    this.highlighted = false,
-  });
-
-  final double width;
-  final IconData icon;
-  final String label;
-  final String value;
-  final bool highlighted;
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    width: width,
-    child: Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(
-        color: AppPalette.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: highlighted
-              ? AppPalette.primary.withValues(alpha: .48)
-              : AppPalette.line,
-        ),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(9),
-            decoration: BoxDecoration(
-              color:
-                  (highlighted ? AppPalette.primary : AppPalette.desktopAccent)
-                      .withValues(alpha: .14),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              icon,
-              color: highlighted
-                  ? AppPalette.primary
-                  : AppPalette.desktopAccent,
-              size: 21,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            ];
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
               children: [
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
+                for (final shortcut in shortcuts)
+                  SizedBox(
+                    width: width,
+                    child: _DashboardAction(
+                      icon: shortcut.icon,
+                      color: shortcut.color,
+                      label: shortcut.label,
+                      onTap: shortcut.onTap,
+                      desktop: desktop,
+                    ),
                   ),
-                ),
-                Text(
-                  label,
-                  style: const TextStyle(
-                    color: AppPalette.muted,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
               ],
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
-}
-
-class _DashboardAction extends StatelessWidget {
-  const _DashboardAction({
-    required this.icon,
-    required this.color,
-    required this.label,
-    required this.onTap,
-  });
-  final IconData icon;
-  final Color color;
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final isWindows = Platform.isWindows;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(isWindows ? 18 : 22),
-        child: Ink(
-          padding: isWindows
-              ? const EdgeInsets.symmetric(horizontal: 18)
-              : null,
-          decoration: BoxDecoration(
-            color: AppPalette.surface,
-            borderRadius: BorderRadius.circular(isWindows ? 18 : 22),
-            border: Border.all(color: AppPalette.line),
-          ),
-          child: isWindows
-              ? Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: .15),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Icon(icon, color: color, size: 22),
-                    ),
-                    const SizedBox(width: 13),
-                    Expanded(
-                      child: Text(
-                        label,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: AppPalette.text,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                    const Icon(
-                      Icons.arrow_forward_rounded,
-                      color: AppPalette.muted,
-                      size: 18,
-                    ),
-                  ],
-                )
-              : Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(9),
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: .13),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(icon, color: color, size: 23),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      label,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppPalette.text,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ],
-                ),
+            );
+          },
         ),
+      ],
       ),
     );
   }
@@ -8427,73 +8572,57 @@ class MobileGlassNavigation extends StatelessWidget {
     final indexes = showTeam ? const [0, 1, 2, 3, 4] : const [0, 1, 2, 3];
     return SafeArea(
       top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(22),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-            child: Container(
-              height: 70,
-              decoration: BoxDecoration(
-                color: AppPalette.surface.withValues(alpha: .98),
-                borderRadius: BorderRadius.circular(22),
-                border: Border.all(color: AppPalette.line),
-              ),
-              child: Row(
-                children: indexes.map((pageIndex) {
-                  final selected = pageIndex == index;
-                  return Expanded(
-                    child: InkWell(
-                      onTap: () => onTap(pageIndex),
-                      borderRadius: BorderRadius.circular(20),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          AnimatedContainer(
-                            duration: const Duration(milliseconds: 240),
-                            curve: Curves.easeOutCubic,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 13,
-                              vertical: 5,
-                            ),
-                            decoration: BoxDecoration(
-                              color: selected
-                                  ? AppPalette.primary
-                                  : Colors.transparent,
-                              borderRadius: BorderRadius.circular(18),
-                            ),
-                            child: Icon(
-                              _icons[pageIndex],
-                              color: selected
-                                  ? AppPalette.background
-                                  : AppPalette.muted,
-                              size: 21,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          AnimatedDefaultTextStyle(
-                            duration: const Duration(milliseconds: 200),
-                            curve: Curves.easeOut,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: selected
-                                  ? FontWeight.w900
-                                  : FontWeight.w700,
-                              color: selected
-                                  ? AppPalette.primary
-                                  : AppPalette.muted,
-                            ),
-                            child: Text(_labels[pageIndex]),
-                          ),
-                        ],
-                      ),
+      minimum: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Glass(
+        radius: 26,
+        accent: AppPalette.primary,
+        frosted: true,
+        depth: 1.58,
+        // The navigator stays above the page, but the page is intentionally
+        // visible underneath it instead of being hidden by an opaque bar.
+        opacity: .64,
+        padding: const EdgeInsets.all(5),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.maxWidth / indexes.length;
+            final active = indexes.indexOf(index);
+            final duration = MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : const Duration(milliseconds: 350);
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                AnimatedPositionedDirectional(
+                  duration: duration,
+                  curve: Curves.easeOutBack,
+                  start: max(0, active) * width + 2,
+                  top: 1,
+                  bottom: 1,
+                  width: max(0.0, width - 4),
+                  child: IgnorePointer(
+                    child: AnimatedOpacity(
+                      opacity: active < 0 ? 0 : 1,
+                      duration: duration,
+                      child: const _AtelierNavCapsule(),
                     ),
-                  );
-                }).toList(),
-              ),
-            ),
-          ),
+                  ),
+                ),
+                Row(
+                  children: [
+                    for (final pageIndex in indexes)
+                      Expanded(
+                        child: _AtelierNavItem(
+                          label: _labels[pageIndex],
+                          icon: _icons[pageIndex],
+                          selected: pageIndex == index,
+                          onTap: () => onTap(pageIndex),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -8502,7 +8631,7 @@ class MobileGlassNavigation extends StatelessWidget {
 
 /// Desktop-only workspace.  The phone keeps the compact bottom navigation,
 /// while Windows gets a persistent rail and a calmer, card-based canvas.
-class WindowsWorkspaceShell extends StatelessWidget {
+class WindowsWorkspaceShell extends StatefulWidget {
   const WindowsWorkspaceShell({
     super.key,
     required this.title,
@@ -8535,71 +8664,248 @@ class WindowsWorkspaceShell extends StatelessWidget {
   final Widget child;
 
   @override
+  State<WindowsWorkspaceShell> createState() => _WindowsWorkspaceShellState();
+}
+
+class _WindowsWorkspaceShellState extends State<WindowsWorkspaceShell> {
+  var collapsed = false;
+
+  @override
   Widget build(BuildContext context) => Row(
     children: [
       _WindowsNavigationRail(
-        user: user,
-        selectedIndex: section,
-        onSelected: onSectionChanged,
-        onLogout: onLogout,
+        user: widget.user,
+        selectedIndex: widget.section,
+        compact: collapsed,
+        onToggle: () => setState(() => collapsed = !collapsed),
+        onSelected: widget.onSectionChanged,
+        onLogout: widget.onLogout,
       ),
       Expanded(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 18, 18),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: AppPalette.desktopCanvas.withValues(alpha: .92),
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(color: AppPalette.line.withValues(alpha: .82)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: .22),
-                  blurRadius: 28,
-                  offset: const Offset(0, 12),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(28),
-              child: Column(
-                children: [
-                  AppHeader(
-                    title: title,
-                    user: user,
-                    onLogout: onLogout,
-                    onOpenTeam: onOpenTeam,
-                    onOpenBackups: onOpenBackups,
-                    onOpenAnalytics: onOpenAnalytics,
-                    canAccessAnalytics: canAccessAnalytics,
-                    canExport: canExport,
-                    onOpenExport: onOpenExport,
-                    onOpenDeveloper: onOpenDeveloper,
+          padding: const EdgeInsets.fromLTRB(18, 12, 22, 18),
+          child: Column(
+            children: [
+              _WindowsTopBar(
+                title: widget.title,
+                user: widget.user,
+                onOpenAnalytics: widget.onOpenAnalytics,
+                canAccessAnalytics: widget.canAccessAnalytics,
+                canExport: widget.canExport,
+                onOpenExport: widget.onOpenExport,
+                onOpenProfile: () => _showWindowsProfile(context),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 380),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  transitionBuilder: (page, animation) => FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(.022, 0),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: page,
+                    ),
                   ),
-                  Expanded(
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 380),
-                      switchInCurve: Curves.easeOutCubic,
-                      switchOutCurve: Curves.easeInCubic,
-                      transitionBuilder: (page, animation) => FadeTransition(
-                        opacity: animation,
-                        child: SlideTransition(
-                          position: Tween<Offset>(
-                            begin: const Offset(.022, 0),
-                            end: Offset.zero,
-                          ).animate(animation),
-                          child: page,
-                        ),
-                      ),
-                      child: KeyedSubtree(key: ValueKey(section), child: child),
+                  child: KeyedSubtree(
+                    key: ValueKey(widget.section),
+                    child: widget.child,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+
+  void _showWindowsProfile(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      constraints: const BoxConstraints(maxWidth: 460),
+      builder: (sheetContext) {
+        VoidCallback closeThen(VoidCallback action) => () {
+          Navigator.pop(sheetContext);
+          action();
+        };
+        return ProfileSheet(
+          user: widget.user,
+          onOpenTeam: closeThen(widget.onOpenTeam),
+          onOpenBackups: closeThen(widget.onOpenBackups),
+          onOpenExport: widget.canExport ? closeThen(widget.onOpenExport) : null,
+          onOpenDeveloper: widget.user.isDeveloper
+              ? closeThen(widget.onOpenDeveloper)
+              : null,
+          onLogout: closeThen(widget.onLogout),
+        );
+      },
+    );
+  }
+}
+
+class _WindowsTopBar extends StatefulWidget {
+  const _WindowsTopBar({
+    required this.title,
+    required this.user,
+    required this.onOpenAnalytics,
+    required this.canAccessAnalytics,
+    required this.canExport,
+    required this.onOpenExport,
+    required this.onOpenProfile,
+  });
+
+  final String title;
+  final AppUser user;
+  final VoidCallback onOpenAnalytics;
+  final bool canAccessAnalytics;
+  final bool canExport;
+  final VoidCallback onOpenExport;
+  final VoidCallback onOpenProfile;
+
+  @override
+  State<_WindowsTopBar> createState() => _WindowsTopBarState();
+}
+
+class _WindowsTopBarState extends State<_WindowsTopBar> {
+  final searchFocus = FocusNode();
+
+  @override
+  void dispose() {
+    searchFocus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CallbackShortcuts(
+    bindings: {
+      const SingleActivator(LogicalKeyboardKey.keyK, control: true):
+          searchFocus.requestFocus,
+    },
+    child: Focus(
+      autofocus: true,
+      child: Glass(
+        radius: 28,
+        accent: AppPalette.primary,
+        frosted: true,
+        // A lighter lens makes the wallpaper visibly refract under the
+        // desktop header instead of reading as a plain white panel.
+        depth: 1.72,
+        opacity: .70,
+        padding: const EdgeInsets.fromLTRB(18, 8, 10, 8),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 150,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    widget.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      letterSpacing: -.6,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  Text(
+                    widget.user.effectiveRole.label,
+                    style: const TextStyle(
+                      color: AppPalette.muted,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ],
               ),
             ),
-          ),
+            Expanded(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 470),
+                  child: SizedBox(
+                    height: 42,
+                    child: TextField(
+                      focusNode: searchFocus,
+                      textInputAction: TextInputAction.search,
+                      style: const TextStyle(fontSize: 13),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        hintText: 'Rechercher un produit, une machine, …',
+                        hintStyle: const TextStyle(
+                          color: AppPalette.muted,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                        suffixIcon: SizedBox(
+                          width: 58,
+                          child: Container(
+                            margin: const EdgeInsets.all(7),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: AppPalette.primary.withValues(alpha: .18),
+                              borderRadius: BorderRadius.circular(7),
+                              border: Border.all(
+                                color: AppPalette.primary.withValues(alpha: .42),
+                              ),
+                            ),
+                            child: const Text(
+                              'Ctrl K',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                color: AppPalette.text,
+                              ),
+                            ),
+                          ),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 9,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            if (widget.canExport)
+              _DashboardHeaderButton(
+                label: 'Exporter vers Excel',
+                onTap: widget.onOpenExport,
+                child: const Icon(Icons.table_view_rounded, size: 21),
+              ),
+            if (widget.canAccessAnalytics) ...[
+              const SizedBox(width: 7),
+              _DashboardHeaderButton(
+                label: 'Analyses',
+                onTap: widget.onOpenAnalytics,
+                child: const Icon(Icons.bar_chart_rounded, size: 21),
+              ),
+            ],
+            const SizedBox(width: 7),
+            _DashboardHeaderButton(
+              label: 'Profil',
+              onTap: widget.onOpenProfile,
+              child: Text(
+                widget.user.fullName.characters.first.toUpperCase(),
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
         ),
       ),
-    ],
+    ),
   );
 }
 
@@ -8607,52 +8913,84 @@ class _WindowsNavigationRail extends StatelessWidget {
   const _WindowsNavigationRail({
     required this.user,
     required this.selectedIndex,
+    required this.compact,
+    required this.onToggle,
     required this.onSelected,
     required this.onLogout,
   });
 
   final AppUser user;
   final int selectedIndex;
+  final bool compact;
+  final VoidCallback onToggle;
   final ValueChanged<int> onSelected;
   final VoidCallback onLogout;
 
   static const _entries = <_DesktopNavigationEntry>[
-    _DesktopNavigationEntry('Vue générale', Icons.space_dashboard_rounded),
-    _DesktopNavigationEntry('Produits', Icons.grid_view_rounded),
+    _DesktopNavigationEntry('Vue générale', Icons.grid_view_rounded),
+    _DesktopNavigationEntry('Produits', Icons.view_in_ar_outlined),
     _DesktopNavigationEntry('Stock', Icons.inventory_2_rounded),
     _DesktopNavigationEntry('Machines', Icons.precision_manufacturing_rounded),
-    _DesktopNavigationEntry('Équipe', Icons.groups_rounded),
-    _DesktopNavigationEntry('Validations', Icons.task_alt_rounded),
+    _DesktopNavigationEntry('Équipe', Icons.groups_outlined),
+    _DesktopNavigationEntry('Validations', Icons.verified_user_outlined),
   ];
 
   @override
-  Widget build(BuildContext context) => Container(
-    width: 246,
+  Widget build(BuildContext context) => AnimatedContainer(
+    duration: MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : const Duration(milliseconds: 280),
+    curve: Curves.easeOutCubic,
+    width: compact ? 76 : 246,
     margin: const EdgeInsets.fromLTRB(14, 12, 0, 18),
-    padding: const EdgeInsets.fromLTRB(12, 16, 12, 12),
-    decoration: BoxDecoration(
-      color: AppPalette.desktopRail.withValues(alpha: .96),
-      borderRadius: BorderRadius.circular(28),
-      border: Border.all(color: AppPalette.line.withValues(alpha: .78)),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const _DesktopBrand(),
-        const SizedBox(height: 26),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 10),
-          child: Text(
-            'ESPACE DE TRAVAIL',
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w900,
-              color: AppPalette.muted,
-              letterSpacing: 1.25,
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: AppPalette.line.withValues(alpha: .72)),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            AppPalette.surface.withValues(alpha: .78),
+            const Color(0xFFB9E0FA).withValues(alpha: .62),
+            AppPalette.surfaceRaised.withValues(alpha: .70),
+          ],
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: AppPalette.primary.withValues(alpha: .12),
+            blurRadius: 24,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          compact ? 8 : 12,
+          12,
+          compact ? 8 : 12,
+          12,
+        ),
+        child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+        _DesktopBrand(compact: compact, onToggle: onToggle),
+        SizedBox(height: compact ? 20 : 26),
+        if (!compact) ...[
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 10),
+            child: Text(
+              'ESPACE DE TRAVAIL',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w900,
+                color: AppPalette.muted,
+                letterSpacing: 1.25,
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 10),
+          const SizedBox(height: 10),
+        ],
         ..._entries.indexed
             .where((entry) {
               final index = entry.$1;
@@ -8663,19 +9001,42 @@ class _WindowsNavigationRail extends StatelessWidget {
               (entry) => _DesktopNavigationButton(
                 entry: entry.$2,
                 selected: selectedIndex == entry.$1,
+                compact: compact,
                 onTap: () => onSelected(entry.$1),
               ),
             ),
         const Spacer(),
         Container(
-          padding: const EdgeInsets.all(12),
+          padding: EdgeInsets.all(compact ? 7 : 12),
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: .035),
+            color: AppPalette.surface.withValues(alpha: .70),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(color: AppPalette.line.withValues(alpha: .75)),
           ),
-          child: Row(
-            children: [
+          child: compact
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 17,
+                      backgroundColor: AppPalette.desktopAccentSoft,
+                      foregroundColor: AppPalette.desktopAccent,
+                      child: Text(
+                        user.fullName.substring(0, 1).toUpperCase(),
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    IconButton(
+                      tooltip: 'Déconnexion',
+                      onPressed: onLogout,
+                      icon: const Icon(Icons.logout_rounded, size: 18),
+                      color: AppPalette.muted,
+                    ),
+                  ],
+                )
+              : Row(
+                  children: [
               CircleAvatar(
                 radius: 17,
                 backgroundColor: AppPalette.desktopAccentSoft,
@@ -8717,21 +9078,22 @@ class _WindowsNavigationRail extends StatelessWidget {
                 icon: const Icon(Icons.logout_rounded, size: 18),
                 color: AppPalette.muted,
               ),
-            ],
-          ),
+                  ],
+                ),
         ),
-      ],
+        ],
+        ),
+      ),
     ),
   );
 }
 
 class _DesktopBrand extends StatelessWidget {
-  const _DesktopBrand();
+  const _DesktopBrand({required this.compact, required this.onToggle});
+  final bool compact;
+  final VoidCallback onToggle;
 
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Container(
+  Widget _mark() => Container(
         width: 40,
         height: 40,
         decoration: BoxDecoration(
@@ -8748,10 +9110,42 @@ class _DesktopBrand extends StatelessWidget {
           Icons.precision_manufacturing_rounded,
           color: AppPalette.background,
         ),
-      ),
-      const SizedBox(width: 10),
-      const Expanded(
-        child: Column(
+      );
+
+  @override
+  Widget build(BuildContext context) => Glass(
+    radius: 20,
+    accent: AppPalette.primary,
+    frosted: true,
+    depth: 1.34,
+    opacity: .72,
+    padding: const EdgeInsets.all(6),
+    child: compact
+      ? SizedBox(
+          height: 84,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Align(
+                alignment: Alignment.centerRight,
+                child: IconButton(
+                  tooltip: 'Agrandir le menu',
+                  onPressed: onToggle,
+                  icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
+                  iconSize: 16,
+                  color: AppPalette.muted,
+                ),
+              ),
+              _mark(),
+            ],
+          ),
+        )
+      : Row(
+          children: [
+            _mark(),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
@@ -8769,8 +9163,16 @@ class _DesktopBrand extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    ],
+            ),
+            IconButton(
+              tooltip: 'Réduire le menu',
+              onPressed: onToggle,
+              icon: const Icon(Icons.keyboard_double_arrow_left_rounded),
+              iconSize: 16,
+              color: AppPalette.muted,
+            ),
+          ],
+        ),
   );
 }
 
@@ -8784,33 +9186,46 @@ class _DesktopNavigationButton extends StatelessWidget {
   const _DesktopNavigationButton({
     required this.entry,
     required this.selected,
+    required this.compact,
     required this.onTap,
   });
 
   final _DesktopNavigationEntry entry;
   final bool selected;
+  final bool compact;
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 5),
-    child: InkWell(
+  Widget build(BuildContext context) {
+    final button = Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: _LiquidTapTarget(
+      radius: 14,
+      selected: selected,
+      accent: selected ? AppPalette.primary : AppPalette.secondary,
+      idleOpacity: .16,
+      selectedOpacity: .72,
       onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 240),
-        curve: Curves.easeOutCubic,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        decoration: BoxDecoration(
-          color: selected ? AppPalette.desktopAccentSoft : Colors.transparent,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: selected
-                ? AppPalette.desktopAccent.withValues(alpha: .26)
-                : Colors.transparent,
-          ),
-        ),
-        child: Row(
+      child: Padding(
+        padding: compact
+            ? const EdgeInsets.symmetric(vertical: 11)
+            : const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        child: compact
+            ? Center(
+                child: AnimatedScale(
+                  duration: const Duration(milliseconds: 240),
+                  curve: Curves.easeOutBack,
+                  scale: selected ? 1.1 : 1,
+                  child: Icon(
+                    entry.icon,
+                    color: selected
+                        ? AppPalette.desktopAccent
+                        : AppPalette.muted,
+                    size: 21,
+                  ),
+                ),
+              )
+            : Row(
           children: [
             AnimatedScale(
               duration: const Duration(milliseconds: 240),
@@ -8823,14 +9238,17 @@ class _DesktopNavigationButton extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 12),
-            AnimatedDefaultTextStyle(
+            AnimatedOpacity(
               duration: const Duration(milliseconds: 180),
-              style: TextStyle(
-                color: selected ? AppPalette.text : AppPalette.muted,
-                fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
-                fontSize: 13,
+              opacity: selected ? 1 : .86,
+              child: Text(
+                entry.label,
+                style: TextStyle(
+                  color: selected ? AppPalette.text : AppPalette.muted,
+                  fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+                  fontSize: 13,
+                ),
               ),
-              child: Text(entry.label),
             ),
             const Spacer(),
             AnimatedOpacity(
@@ -8846,10 +9264,12 @@ class _DesktopNavigationButton extends StatelessWidget {
               ),
             ),
           ],
+              ),
         ),
       ),
-    ),
-  );
+    );
+    return compact ? Tooltip(message: entry.label, child: button) : button;
+  }
 }
 
 class Page extends StatelessWidget {
@@ -8857,11 +9277,11 @@ class Page extends StatelessWidget {
   final Widget child;
   @override
   Widget build(BuildContext context) {
-    final isWindows = Platform.isWindows;
+    final isWindows = _usesWorkspaceRail(context);
     return SingleChildScrollView(
       padding: isWindows
           ? const EdgeInsets.fromLTRB(28, 8, 28, 32)
-          : const EdgeInsets.fromLTRB(22, 14, 22, 115),
+          : const EdgeInsets.fromLTRB(16, 13, 16, 100),
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: isWindows ? 1260 : 1050),
@@ -8886,25 +9306,15 @@ class SectionHero extends StatelessWidget {
   final Widget? trailing;
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(18),
-    decoration: BoxDecoration(
-      color: AppPalette.surface,
-      borderRadius: BorderRadius.circular(24),
-      border: Border.all(color: AppPalette.line),
-    ),
+  Widget build(BuildContext context) => Glass(
+    padding: const EdgeInsets.all(17),
+    radius: 26,
+    accent: AppPalette.primary,
+    frosted: true,
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: AppPalette.primary,
-            borderRadius: BorderRadius.circular(15),
-          ),
-          child: Icon(icon, color: AppPalette.background),
-        ),
+        _AtelierIcon(icon, size: 47),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
@@ -8948,23 +9358,11 @@ class ManagementScreen extends StatelessWidget {
       child: SafeArea(
         child: Column(
           children: [
-            SizedBox(
-              height: 126,
-              child: Align(
-                alignment: Alignment.topLeft,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 0, 0),
-                  child: IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.arrow_back_rounded),
-                    color: AppPalette.primary,
-                    style: IconButton.styleFrom(
-                      backgroundColor: AppPalette.surface,
-                      side: const BorderSide(color: AppPalette.line),
-                    ),
-                    tooltip: 'Retour à $title',
-                  ),
-                ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 2),
+                child: _AtelierBackButton(tooltip: 'Retour à $title'),
               ),
             ),
             Expanded(child: child),
@@ -8987,8 +9385,28 @@ class _AppEntranceState extends State<AppEntrance>
     with SingleTickerProviderStateMixin {
   late final AnimationController controller = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 380),
-  )..forward();
+    duration: const Duration(milliseconds: 320),
+  );
+  late final Animation<double> opacity = controller.drive(
+    CurveTween(curve: Curves.easeOutCubic),
+  );
+  late final Animation<Offset> position = controller.drive(
+    Tween(
+      begin: const Offset(0, .018),
+      end: Offset.zero,
+    ).chain(CurveTween(curve: Curves.easeOutBack)),
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      controller.value = 1;
+    } else if (controller.isDismissed) {
+      controller.forward();
+    }
+  }
+
   @override
   void dispose() {
     controller.dispose();
@@ -8997,14 +9415,8 @@ class _AppEntranceState extends State<AppEntrance>
 
   @override
   Widget build(BuildContext context) => FadeTransition(
-    opacity: CurvedAnimation(parent: controller, curve: Curves.easeOut),
-    child: SlideTransition(
-      position: Tween<Offset>(begin: const Offset(0, .025), end: Offset.zero)
-          .animate(
-            CurvedAnimation(parent: controller, curve: Curves.easeOutCubic),
-          ),
-      child: widget.child,
-    ),
+    opacity: opacity,
+    child: SlideTransition(position: position, child: widget.child),
   );
 }
 
@@ -9098,6 +9510,7 @@ class ProductsPage extends StatefulWidget {
     super.key,
     required this.products,
     required this.categories,
+    this.catalogFamilies = const [],
     required this.stock,
     required this.depots,
     required this.depotStock,
@@ -9108,6 +9521,7 @@ class ProductsPage extends StatefulWidget {
   });
   final List<Product> products;
   final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final int Function(String) stock;
   final List<Depot> depots;
   final int Function(String, String) depotStock;
@@ -9124,6 +9538,8 @@ class _ProductsPageState extends State<ProductsPage> {
   String? categoryId;
   var showFilters = false;
 
+  bool get hasFilters => categoryId != null || search.text.trim().isNotEmpty;
+
   List<Product> get filteredProducts {
     final query = search.text.trim().toLowerCase();
     final allowed = categoryId == null
@@ -9137,7 +9553,9 @@ class _ProductsPageState extends State<ProductsPage> {
       // of competing with the normal catalogue.
       return !product.isManufacturedVariant &&
           (query.isEmpty ||
-              product.displayReference.toLowerCase().contains(query)) &&
+              '${product.name} ${product.displayReference}'
+                  .toLowerCase()
+                  .contains(query)) &&
           (allowed == null || allowed.contains(product.id));
     }).toList();
   }
@@ -9179,7 +9597,7 @@ class _ProductsPageState extends State<ProductsPage> {
             OutlinedButton.icon(
               onPressed: widget.onOpenCategories,
               icon: const Icon(Icons.category_outlined),
-              label: const Text('Catégories'),
+              label: const Text('Familles'),
             ),
             if (widget.canEdit)
               IconButton.filled(
@@ -9208,7 +9626,7 @@ class _ProductsPageState extends State<ProductsPage> {
                           ),
                         ),
                         const SizedBox(height: 10),
-                        DropdownButtonFormField<String>(
+                        LiquidSelectFormField<String>(
                           initialValue: categoryId,
                           decoration: const InputDecoration(
                             labelText: 'Filtrer par catégorie',
@@ -9236,77 +9654,84 @@ class _ProductsPageState extends State<ProductsPage> {
               : const SizedBox.shrink(),
         ),
         const SizedBox(height: 16),
-        if (widget.products.isEmpty)
+        if (widget.products.isEmpty && widget.categories.isEmpty)
           const Empty(
             icon: Icons.photo_library_outlined,
             title: 'Aucun produit',
             detail: 'Ajoutez votre premier produit.',
           )
-        else if (filteredProducts.isEmpty)
+        else if (filteredProducts.isEmpty && hasFilters)
           const Empty(
             icon: Icons.search_off_rounded,
             title: 'Aucun résultat',
             detail: 'Modifiez le nom ou la catégorie sélectionnée.',
           )
         else
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final compact = constraints.maxWidth < 400;
-              const spacing = 12.0;
-              final cardWidth = compact
-                  ? (constraints.maxWidth - spacing) / 2
-                  : 180.0;
-              return Wrap(
-                spacing: compact ? spacing : 14,
-                runSpacing: compact ? spacing : 14,
-                children: filteredProducts
-                    .map(
-                      (product) => SizedBox(
-                        width: cardWidth,
-                        child: ProductCard(
-                          product: product,
-                          onTap: () => Navigator.of(context).push(
-                            PageRouteBuilder<void>(
-                              pageBuilder:
-                                  (context, animation, secondaryAnimation) =>
-                                      ProductDetailsPage(
-                                        product: product,
-                                        stockPieces: widget.stock(product.id),
-                                        allProducts: widget.products,
-                                        stock: widget.stock,
-                                        categories: widget.categories,
-                                        depots: widget.depots,
-                                        depotStock: widget.depotStock,
-                                        canEdit: widget.canEdit,
-                                        onAddStock: widget.onAddStock,
-                                      ),
-                              transitionsBuilder:
-                                  (
-                                    context,
-                                    animation,
-                                    secondaryAnimation,
-                                    child,
-                                  ) => FadeTransition(
-                                    opacity: animation,
-                                    child: ScaleTransition(
-                                      scale: Tween<double>(begin: .92, end: 1)
-                                          .animate(
-                                            CurvedAnimation(
-                                              parent: animation,
-                                              curve: Curves.easeOutCubic,
+          CatalogProductBrowser(
+            key: ValueKey((categoryId, search.text.trim().toLowerCase())),
+            products: filteredProducts,
+            categories: widget.categories,
+            catalogFamilies: widget.catalogFamilies,
+            showEmptyCategories: !hasFilters,
+            buildProducts: (products) => LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxWidth < 400;
+                const spacing = 12.0;
+                final cardWidth = compact
+                    ? (constraints.maxWidth - spacing) / 2
+                    : 180.0;
+                return Wrap(
+                  spacing: compact ? spacing : 14,
+                  runSpacing: compact ? spacing : 14,
+                  children: products
+                      .map(
+                        (product) => SizedBox(
+                          width: cardWidth,
+                          child: ProductCard(
+                            product: product,
+                            onTap: () => Navigator.of(context).push(
+                              PageRouteBuilder<void>(
+                                pageBuilder:
+                                    (context, animation, secondaryAnimation) =>
+                                        ProductDetailsPage(
+                                          product: product,
+                                          stockPieces: widget.stock(product.id),
+                                          allProducts: widget.products,
+                                          stock: widget.stock,
+                                          categories: widget.categories,
+                                          depots: widget.depots,
+                                          depotStock: widget.depotStock,
+                                          canEdit: widget.canEdit,
+                                          onAddStock: widget.onAddStock,
+                                        ),
+                                transitionsBuilder:
+                                    (
+                                      context,
+                                      animation,
+                                      secondaryAnimation,
+                                      child,
+                                    ) => FadeTransition(
+                                      opacity: animation,
+                                      child: ScaleTransition(
+                                        scale: Tween<double>(begin: .92, end: 1)
+                                            .animate(
+                                              CurvedAnimation(
+                                                parent: animation,
+                                                curve: Curves.easeOutCubic,
+                                              ),
                                             ),
-                                          ),
-                                      child: child,
+                                        child: child,
+                                      ),
                                     ),
-                                  ),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    )
-                    .toList(),
-              );
-            },
+                      )
+                      .toList(),
+                );
+              },
+            ),
           ),
       ],
     ),
@@ -9350,7 +9775,7 @@ class ProductCard extends StatelessWidget {
             const SizedBox(height: 3),
             Text(
               productSpecification(product),
-              style: const TextStyle(color: Color(0xFF725280), fontSize: 12),
+              style: const TextStyle(color: AppPalette.muted, fontSize: 12),
             ),
           ],
         ),
@@ -9378,12 +9803,12 @@ class ProductImage extends StatelessWidget {
           ? DecoratedBox(
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [Color(0xFFCE93F9), Color(0xFF6B21A8)],
+                  colors: [AppPalette.desktopAccentSoft, AppPalette.surface],
                 ),
               ),
               child: const Icon(
                 Icons.layers_rounded,
-                color: Colors.white,
+                color: AppPalette.primary,
                 size: 44,
               ),
             )
@@ -9410,10 +9835,10 @@ class CategoryImage extends StatelessWidget {
           ? const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [Color(0xFFDDD6FE), Color(0xFF7E22CE)],
+                  colors: [AppPalette.surfaceRaised, AppPalette.background],
                 ),
               ),
-              child: Icon(Icons.category_rounded, color: Colors.white),
+              child: Icon(Icons.category_rounded, color: AppPalette.secondary),
             )
           : Image.memory(category.image, fit: BoxFit.cover),
     ),
@@ -9540,7 +9965,7 @@ class ProductDetailsPage extends StatelessWidget {
                             const SizedBox(height: 4),
                             Text(
                               product.kind.label,
-                              style: const TextStyle(color: Color(0xFF725280)),
+                              style: const TextStyle(color: AppPalette.muted),
                             ),
                             if (product.reference.isNotEmpty) ...[
                               const SizedBox(height: 10),
@@ -9756,9 +10181,9 @@ class _DerivedProductTile extends StatelessWidget {
       child: Ink(
         padding: const EdgeInsets.all(9),
         decoration: BoxDecoration(
-          color: const Color(0xFFF7F4FF),
+          color: AppPalette.surfaceRaised,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFE4D9FF)),
+          border: Border.all(color: AppPalette.line),
         ),
         child: Row(
           children: [
@@ -9902,21 +10327,13 @@ class AnalyticsPage extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(12, 12, 22, 16),
                 child: Row(
                   children: [
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                      color: AppPalette.primary,
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white,
-                      ),
-                      tooltip: 'Retour',
-                    ),
+                    const _AtelierBackButton(),
                     const SizedBox(width: 12),
                     const Expanded(
                       child: Text(
                         'Analyses',
                         style: TextStyle(
-                          color: Colors.white,
+                          color: AppPalette.text,
                           fontSize: 23,
                           fontWeight: FontWeight.w900,
                         ),
@@ -9930,38 +10347,25 @@ class AnalyticsPage extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        width: double.infinity,
+                      Glass(
+                        radius: 28,
                         padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [Color(0xFF243B7A), Color(0xFF7B6BE3)],
-                          ),
-                          borderRadius: BorderRadius.circular(28),
-                        ),
+                        accent: AppPalette.secondary,
+                        frosted: true,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Row(
                               children: [
-                                Container(
-                                  padding: const EdgeInsets.all(10),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: .18),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(
-                                    Icons.insights_rounded,
-                                    color: Colors.white,
-                                  ),
+                                const _AtelierIcon(
+                                  Icons.insights_rounded,
+                                  color: AppPalette.secondary,
                                 ),
                                 const Spacer(),
                                 Text(
                                   '$available produits disponibles',
                                   style: const TextStyle(
-                                    color: Color(0xFFE9E7FF),
+                                    color: AppPalette.secondary,
                                     fontWeight: FontWeight.w800,
                                   ),
                                 ),
@@ -9971,7 +10375,7 @@ class AnalyticsPage extends StatelessWidget {
                             const Text(
                               'Vue d’ensemble de l’atelier',
                               style: TextStyle(
-                                color: Colors.white,
+                                color: AppPalette.text,
                                 fontSize: 23,
                                 fontWeight: FontWeight.w900,
                               ),
@@ -9979,7 +10383,7 @@ class AnalyticsPage extends StatelessWidget {
                             const SizedBox(height: 5),
                             Text(
                               '$totalPieces unités actuellement suivies dans le stock.',
-                              style: const TextStyle(color: Color(0xFFE9E7FF)),
+                              style: const TextStyle(color: AppPalette.muted),
                             ),
                           ],
                         ),
@@ -10446,6 +10850,8 @@ class StockPage extends StatelessWidget {
   const StockPage({
     super.key,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.stock,
     required this.draftCount,
     required this.canEdit,
@@ -10456,6 +10862,8 @@ class StockPage extends StatelessWidget {
     required this.onOpenPayments,
   });
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final int Function(String) stock;
   final int draftCount;
   final bool canEdit;
@@ -10478,85 +10886,47 @@ class StockPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF292929), Color(0xFF161616)],
-              ),
-              borderRadius: BorderRadius.circular(28),
-            ),
+          Glass(
+            padding: const EdgeInsets.all(18),
+            radius: 28,
+            accent: AppPalette.primary,
+            frosted: true,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: .20),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.inventory_2_rounded,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const Spacer(),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 11,
-                        vertical: 7,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: .19),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: .22),
-                        ),
-                      ),
-                      child: Text(
-                        '$availableProducts disponibles',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w800,
-                          fontSize: 12,
-                        ),
+                    const _AtelierIcon(Icons.inventory_2_outlined, size: 42),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Inventaire',
+                            style: TextStyle(
+                              fontSize: 23,
+                              letterSpacing: -.5,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          Text(
+                            '$availableProducts disponibles sur ${products.length}',
+                            style: const TextStyle(color: AppPalette.muted),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 20),
-                const Text(
-                  'Stock',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 27,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '${products.length} produits suivis dans votre atelier',
-                  style: const TextStyle(
-                    color: Color(0xFFF7F3FF),
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 18),
+                const SizedBox(height: 17),
+                const Divider(height: 1),
+                const SizedBox(height: 14),
                 Row(
                   children: [
                     _StockMetric(
                       value: '$totalPieces',
                       label: 'Unités en stock',
-                    ),
-                    Container(
-                      width: 1,
-                      height: 36,
-                      color: Colors.white.withValues(alpha: .25),
                     ),
                     _StockMetric(value: '$draftCount', label: 'En attente'),
                   ],
@@ -10581,8 +10951,7 @@ class StockPage extends StatelessWidget {
                     icon: Icons.add_shopping_cart_rounded,
                     title: 'Nouvel achat',
                     subtitle: 'Entrée de stock',
-                    colors: const [Color(0xFFFFD100), Color(0xFFC49F00)],
-                    foreground: const Color(0xFF151515),
+                    accent: AppPalette.primary,
                     onTap: onPurchase,
                   ),
                 ),
@@ -10592,7 +10961,7 @@ class StockPage extends StatelessWidget {
                     icon: Icons.point_of_sale_rounded,
                     title: 'Nouvelle vente',
                     subtitle: 'Sortie de stock',
-                    colors: const [Color(0xFF2A2A2A), Color(0xFF1C1C1C)],
+                    accent: AppPalette.secondary,
                     onTap: onSale,
                   ),
                 ),
@@ -10665,13 +11034,21 @@ class StockPage extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          ...products.map(
-            (product) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _StockProductTile(
-                product: product,
-                pieces: stock(product.id),
-              ),
+          CatalogProductBrowser(
+            products: products,
+            categories: categories,
+            catalogFamilies: catalogFamilies,
+            buildProducts: (items) => Column(
+              children: [
+                for (final product in items)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: _StockProductTile(
+                      product: product,
+                      pieces: stock(product.id),
+                    ),
+                  ),
+              ],
             ),
           ),
         ],
@@ -11113,62 +11490,40 @@ class _StockActionButton extends StatelessWidget {
     required this.icon,
     required this.title,
     required this.subtitle,
-    required this.colors,
+    required this.accent,
     required this.onTap,
-    this.foreground = Colors.white,
   });
   final IconData icon;
   final String title;
   final String subtitle;
-  final List<Color> colors;
+  final Color accent;
   final VoidCallback onTap;
-  final Color foreground;
 
   @override
-  Widget build(BuildContext context) => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(22),
-      child: Ink(
-        height: 112,
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: colors,
+  Widget build(BuildContext context) => _LiquidTapTarget(
+    radius: 22,
+    accent: accent,
+    onTap: onTap,
+    child: Padding(
+      padding: const EdgeInsets.all(13),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _AtelierIcon(icon, color: accent, size: 36),
+          const SizedBox(height: 12),
+          Text(
+            title,
+            style: const TextStyle(
+              color: AppPalette.text,
+              fontWeight: FontWeight.w800,
+            ),
           ),
-          borderRadius: BorderRadius.circular(22),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(7),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: .20),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(icon, color: foreground, size: 20),
-            ),
-            const Spacer(),
-            Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: foreground, fontWeight: FontWeight.w900),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              subtitle,
-              style: TextStyle(
-                color: foreground.withValues(alpha: .78),
-                fontSize: 11,
-              ),
-            ),
-          ],
-        ),
+          const SizedBox(height: 3),
+          Text(
+            subtitle,
+            style: const TextStyle(color: AppPalette.muted, fontSize: 11),
+          ),
+        ],
       ),
     ),
   );
@@ -11189,7 +11544,7 @@ class _StockMetric extends StatelessWidget {
           Text(
             value,
             style: const TextStyle(
-              color: Colors.white,
+              color: AppPalette.text,
               fontSize: 20,
               fontWeight: FontWeight.w900,
             ),
@@ -11198,7 +11553,7 @@ class _StockMetric extends StatelessWidget {
           Text(
             label,
             style: const TextStyle(
-              color: Color(0xFFF6F2FF),
+              color: AppPalette.muted,
               fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
@@ -11222,19 +11577,14 @@ class _StockSecondaryAction extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: Ink(
-        height: 66,
+  Widget build(BuildContext context) => _LiquidTapTarget(
+    radius: 20,
+    accent: color,
+    onTap: onTap,
+    child: SizedBox(
+      height: 66,
+      child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 13),
-        decoration: BoxDecoration(
-          color: AppPalette.surfaceRaised,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppPalette.line),
-        ),
         child: Row(
           children: [
             Container(
@@ -11341,6 +11691,8 @@ class StockRecordsPage extends StatefulWidget {
     required this.products,
     required this.additions,
     required this.sales,
+    required this.transfers,
+    required this.depots,
     required this.saleReturns,
     required this.suppliers,
     required this.clients,
@@ -11354,6 +11706,8 @@ class StockRecordsPage extends StatefulWidget {
   final List<Product> products;
   final List<StockAddition> additions;
   final List<Sale> sales;
+  final List<StockTransfer> transfers;
+  final List<Depot> depots;
   final List<SaleReturn> saleReturns;
   final List<Supplier> suppliers;
   final List<Client> clients;
@@ -11368,10 +11722,69 @@ class StockRecordsPage extends StatefulWidget {
   State<StockRecordsPage> createState() => _StockRecordsPageState();
 }
 
+enum _StockRecordSection { purchases, sales, transfers }
+
 class _StockRecordsPageState extends State<StockRecordsPage> {
-  bool purchasesSelected = true;
+  _StockRecordSection section = _StockRecordSection.purchases;
+  final activeFilters = <_StockRecordSection>{};
+  Set<String> supplierFilter = {};
+  Set<String> clientFilter = {};
+  String? firstDepot;
+  String? secondDepot;
   late List<SaleReturn> saleReturns;
   late List<StockAddition> additions;
+
+  Widget recordFilters() => switch (section) {
+    _StockRecordSection.purchases => SearchChoiceField(
+      label: 'Fournisseurs',
+      options: _choices(
+        widget.suppliers,
+        (item) => item.id,
+        (item) => _partnerLabel(item.name, item.company),
+      ),
+      selected: supplierFilter,
+      multiple: true,
+      onChanged: (ids) => setState(() => supplierFilter = ids),
+    ),
+    _StockRecordSection.sales => SearchChoiceField(
+      label: 'Clients',
+      options: _choices(
+        widget.clients,
+        (item) => item.id,
+        (item) => _partnerLabel(item.name, item.company),
+      ),
+      selected: clientFilter,
+      multiple: true,
+      onChanged: (ids) => setState(() => clientFilter = ids),
+    ),
+    _StockRecordSection.transfers => _TransferDepotFields(
+      depots: widget.depots,
+      first: firstDepot,
+      second: secondDepot,
+      onChanged: (first, second) => setState(() {
+        firstDepot = first;
+        secondDepot = second;
+      }),
+    ),
+  };
+
+  Widget _transferTile(StockTransfer item) {
+    final itemProduct = product(item.productId);
+    return ListTile(
+      leading: const Icon(Icons.swap_horiz),
+      title: Text(itemProduct?.displayReference ?? 'Produit'),
+      subtitle: Text(
+        '${widget.depotName(item.sourceDepotId)} → ${widget.depotName(item.destinationDepotId)}\n'
+        '${dateText(item.createdAt)} · ${item.draft ? 'Brouillon' : 'Validé'}',
+      ),
+      isThreeLine: true,
+      trailing: Text(
+        itemProduct == null
+            ? '${item.pieces} pièces'
+            : productQuantityLabel(itemProduct, item.pieces),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -11415,9 +11828,38 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final hasRecords = purchasesSelected
-        ? additions.isNotEmpty
-        : widget.sales.isNotEmpty;
+    final filtering = activeFilters.contains(section);
+    final records = switch (section) {
+      _StockRecordSection.purchases =>
+        additions
+            .where(
+              (item) =>
+                  !filtering ||
+                  supplierFilter.isEmpty ||
+                  supplierFilter.contains(item.supplierId),
+            )
+            .map(_purchaseTile)
+            .toList(),
+      _StockRecordSection.sales =>
+        widget.sales
+            .where(
+              (item) =>
+                  !filtering ||
+                  clientFilter.isEmpty ||
+                  clientFilter.contains(item.clientId),
+            )
+            .map(_saleTile)
+            .toList(),
+      _StockRecordSection.transfers =>
+        widget.transfers
+            .where(
+              (item) =>
+                  !filtering ||
+                  transferMatchesDepots(item, firstDepot, secondDepot),
+            )
+            .map(_transferTile)
+            .toList(),
+    };
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: Aura(
@@ -11430,15 +11872,7 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                   padding: const EdgeInsets.fromLTRB(12, 12, 22, 20),
                   child: Row(
                     children: [
-                      IconButton(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.arrow_back_rounded),
-                        color: AppPalette.primary,
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.white,
-                        ),
-                        tooltip: 'Retour',
-                      ),
+                      const _AtelierBackButton(),
                       const SizedBox(width: 12),
                       const Expanded(
                         child: Column(
@@ -11450,13 +11884,13 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                               style: TextStyle(
                                 fontSize: 21,
                                 fontWeight: FontWeight.w900,
-                                color: Colors.white,
+                                color: AppPalette.text,
                               ),
                             ),
                             SizedBox(height: 3),
                             Text(
-                              'Consultez séparément les achats et les ventes.',
-                              style: TextStyle(color: Color(0xFFE9E7FF)),
+                              'Achats, ventes et transferts entre dépôts.',
+                              style: TextStyle(color: AppPalette.muted),
                             ),
                           ],
                         ),
@@ -11471,46 +11905,47 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Center(
-                        child: SegmentedButton<bool>(
+                        child: SegmentedButton<_StockRecordSection>(
                           segments: const [
                             ButtonSegment(
-                              value: true,
-                              icon: Icon(Icons.shopping_cart_checkout_rounded),
+                              value: _StockRecordSection.purchases,
                               label: Text('Achats'),
                             ),
                             ButtonSegment(
-                              value: false,
-                              icon: Icon(Icons.point_of_sale_rounded),
+                              value: _StockRecordSection.sales,
                               label: Text('Ventes'),
                             ),
+                            ButtonSegment(
+                              value: _StockRecordSection.transfers,
+                              label: Text('Transferts'),
+                            ),
                           ],
-                          selected: {purchasesSelected},
-                          onSelectionChanged: (selection) => setState(
-                            () => purchasesSelected = selection.first,
-                          ),
+                          selected: {section},
+                          onSelectionChanged: (selection) =>
+                              setState(() => section = selection.first),
                         ),
                       ),
-                      const SizedBox(height: 18),
-                      if (!hasRecords)
-                        Empty(
-                          icon: purchasesSelected
-                              ? Icons.shopping_cart_outlined
-                              : Icons.point_of_sale_outlined,
-                          title: purchasesSelected
-                              ? 'Aucun achat enregistré'
-                              : 'Aucune vente enregistrée',
-                          detail: purchasesSelected
-                              ? 'Les prochains achats apparaîtront dans ce registre.'
-                              : 'Les prochaines ventes apparaîtront dans ce registre.',
+                      CheckboxListTile(
+                        value: filtering,
+                        title: const Text('Filtrer cette section'),
+                        onChanged: (enabled) => setState(() {
+                          if (enabled == true) {
+                            activeFilters.add(section);
+                          } else {
+                            activeFilters.remove(section);
+                          }
+                        }),
+                      ),
+                      if (filtering) recordFilters(),
+                      const SizedBox(height: 12),
+                      if (records.isEmpty)
+                        const Empty(
+                          icon: Icons.receipt_long_outlined,
+                          title: 'Aucun enregistrement',
+                          detail: 'Les enregistrements correspondant à cette section apparaîtront ici.',
                         )
                       else
-                        Glass(
-                          child: Column(
-                            children: purchasesSelected
-                                ? additions.map(_purchaseTile).toList()
-                                : widget.sales.map(_saleTile).toList(),
-                          ),
-                        ),
+                        Glass(child: Column(children: records)),
                     ],
                   ),
                 ),
@@ -11723,6 +12158,8 @@ class DepotsPage extends StatelessWidget {
     super.key,
     required this.depots,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.stock,
     required this.canEdit,
     required this.canTransfer,
@@ -11731,6 +12168,8 @@ class DepotsPage extends StatelessWidget {
   });
   final List<Depot> depots;
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final int Function(String, String) stock;
   final bool canEdit;
   final bool canTransfer;
@@ -11794,6 +12233,8 @@ class DepotsPage extends StatelessWidget {
                         builder: (_) => DepotDetailsPage(
                           depot: depot,
                           products: products,
+                          categories: categories,
+                          catalogFamilies: catalogFamilies,
                           stock: stock,
                         ),
                       ),
@@ -11819,7 +12260,7 @@ class DepotsPage extends StatelessWidget {
                                 Text(
                                   '$pieces pièce(s)',
                                   style: const TextStyle(
-                                    color: Color(0xFF725280),
+                                    color: AppPalette.muted,
                                   ),
                                 ),
                               ],
@@ -11855,10 +12296,14 @@ class DepotDetailsPage extends StatelessWidget {
     super.key,
     required this.depot,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.stock,
   });
   final Depot depot;
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final int Function(String, String) stock;
 
   @override
@@ -11909,36 +12354,41 @@ class DepotDetailsPage extends StatelessWidget {
                         'Aucun stock n’est actuellement attribué à ce dépôt.',
                   )
                 else
-                  Glass(
-                    child: Column(
-                      children: stored
-                          .map(
-                            (product) => ListTile(
-                              leading: SizedBox(
-                                width: 48,
-                                child: ProductImage(
-                                  product: product,
-                                  height: 48,
+                  CatalogProductBrowser(
+                    products: stored,
+                    categories: categories,
+                    catalogFamilies: catalogFamilies,
+                    buildProducts: (items) => Glass(
+                      child: Column(
+                        children: items
+                            .map(
+                              (product) => ListTile(
+                                leading: SizedBox(
+                                  width: 48,
+                                  child: ProductImage(
+                                    product: product,
+                                    height: 48,
+                                  ),
+                                ),
+                                title: Text(
+                                  product.displayReference,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  '${formatNumber(stock(product.id, depot.id) * product.lengthMeters)} m',
+                                ),
+                                trailing: Text(
+                                  '${stock(product.id, depot.id)} pièces',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                  ),
                                 ),
                               ),
-                              title: Text(
-                                product.displayReference,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                              subtitle: Text(
-                                '${formatNumber(stock(product.id, depot.id) * product.lengthMeters)} m',
-                              ),
-                              trailing: Text(
-                                '${stock(product.id, depot.id)} pièces',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                            ),
-                          )
-                          .toList(),
+                            )
+                            .toList(),
+                      ),
                     ),
                   ),
               ],
@@ -12126,11 +12576,11 @@ class MachinesPage extends StatelessWidget {
                               m.temporary
                                   ? 'Fin prévue : ${m.deadline == null ? 'non définie' : dateText(m.deadline!)} · ${m.type == MachineType.roulage ? 'Roulage' : 'Standard'}'
                                   : 'Exemplaire ${unit.usable ? 'disponible' : 'indisponible'} · ${m.type == MachineType.roulage ? 'Roulage' : 'Standard'}',
-                              style: const TextStyle(color: Color(0xFF725280)),
+                              style: const TextStyle(color: AppPalette.muted),
                             ),
                             Text(
                               'Catégorie : ${categoryName(m.categoryId)}',
-                              style: const TextStyle(color: Color(0xFF725280)),
+                              style: const TextStyle(color: AppPalette.muted),
                             ),
                             Text(
                               'Produit fabriqué : ${productName(m.outputId)}',
@@ -12184,7 +12634,7 @@ class MachinesPage extends StatelessWidget {
                               const Text(
                                 'Accès réservé à l’opérateur assigné',
                                 style: TextStyle(
-                                  color: Color(0xFF725280),
+                                  color: AppPalette.muted,
                                   fontSize: 12,
                                 ),
                               ),
@@ -12272,84 +12722,6 @@ class MachinesPage extends StatelessWidget {
   );
 }
 
-class CategoriesPage extends StatelessWidget {
-  const CategoriesPage({
-    super.key,
-    required this.categories,
-    required this.products,
-    required this.admin,
-    required this.onAdd,
-    required this.onEdit,
-  });
-  final List<ProductCategory> categories;
-  final List<Product> products;
-  final bool admin;
-  final VoidCallback onAdd;
-  final ValueChanged<ProductCategory> onEdit;
-
-  @override
-  Widget build(BuildContext context) => Page(
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SectionHero(
-          icon: Icons.category_rounded,
-          title: 'Catégories',
-          subtitle: 'Organisez les produits utilisés par vos machines.',
-          trailing: admin
-              ? IconButton.filled(
-                  onPressed: onAdd,
-                  icon: const Icon(Icons.add),
-                  tooltip: 'Ajouter une catégorie',
-                )
-              : null,
-        ),
-        const SizedBox(height: 16),
-        if (categories.isEmpty)
-          const Empty(
-            icon: Icons.category_outlined,
-            title: 'Aucune catégorie',
-            detail: 'Créez une catégorie puis sélectionnez ses produits.',
-          )
-        else
-          ...categories.map((category) {
-            final names = products
-                .where(
-                  (product) =>
-                      product.canBeUsedInMachine &&
-                      category.productIds.contains(product.id),
-                )
-                .map((product) => product.displayReference)
-                .join(' · ');
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Glass(
-                child: ListTile(
-                  leading: CategoryImage(category: category, size: 48),
-                  title: Text(
-                    category.name,
-                    style: const TextStyle(fontWeight: FontWeight.w900),
-                  ),
-                  subtitle: Text(
-                    names.isEmpty ? 'Aucun produit sélectionné' : names,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: admin
-                      ? IconButton.filledTonal(
-                          icon: const Icon(Icons.edit_outlined),
-                          onPressed: () => onEdit(category),
-                          tooltip: 'Modifier',
-                        )
-                      : null,
-                ),
-              ),
-            );
-          }),
-      ],
-    ),
-  );
-}
 
 class CategoryForm extends StatefulWidget {
   const CategoryForm({super.key, this.initial});
@@ -12368,6 +12740,12 @@ class _CategoryFormState extends State<CategoryForm> {
     if (widget.initial != null && widget.initial!.image.isNotEmpty) {
       image = widget.initial!.image;
     }
+  }
+
+  @override
+  void dispose() {
+    name.dispose();
+    super.dispose();
   }
 
   Future<void> pickImage() async {
@@ -12389,8 +12767,8 @@ class _CategoryFormState extends State<CategoryForm> {
   }
 
   void save() {
-    if (name.text.trim().isEmpty || image == null) {
-      message(context, 'Ajoutez une photo et un nom.');
+    if (name.text.trim().isEmpty) {
+      message(context, 'Indiquez le nom de la catégorie.');
       return;
     }
     Navigator.pop(
@@ -12401,7 +12779,8 @@ class _CategoryFormState extends State<CategoryForm> {
             DateTime.now().microsecondsSinceEpoch.toString(),
         name: name.text.trim(),
         productIds: widget.initial?.productIds ?? const [],
-        image: image!,
+        image: image ?? Uint8List(0),
+        families: widget.initial?.families ?? const [],
       ),
     );
   }
@@ -12421,14 +12800,10 @@ class _CategoryFormState extends State<CategoryForm> {
         const SizedBox(height: 14),
         ImageInput(
           bytes: image,
-          label: 'Photo de la catégorie *',
+          label: 'Photo de la catégorie',
           onTap: pickImage,
         ),
         const SizedBox(height: 12),
-        const Text(
-          'Les produits bruts seront rattachés à cette catégorie lors de leur ajout.',
-          style: TextStyle(color: Color(0xFF725280), fontSize: 12),
-        ),
         const SizedBox(height: 20),
         SizedBox(
           width: double.infinity,
@@ -12749,7 +13124,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
                       ],
                       if (widget.admin) ...[
                         const SizedBox(height: 12),
-                        DropdownButtonFormField<String>(
+                        LiquidSelectFormField<String>(
                           initialValue: selectedDepots[operation.id],
                           decoration: const InputDecoration(
                             labelText:
@@ -13190,7 +13565,7 @@ class ValidationPage extends StatelessWidget {
               OutlinedButton.icon(
                 onPressed: () async => onCancel(),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFFB91C1C),
+                  foregroundColor: AppPalette.coral,
                 ),
                 icon: const Icon(Icons.cancel_outlined, size: 18),
                 label: const Text('Annuler'),
@@ -13638,7 +14013,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: Text(title),
-          content: DropdownButtonFormField<T>(
+          content: LiquidSelectFormField<T>(
             isExpanded: true,
             decoration: const InputDecoration(labelText: 'Élément'),
             items: values
@@ -13660,9 +14035,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
               onPressed: selected == null
                   ? null
                   : () => Navigator.pop(context, selected),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFB91C1C),
-              ),
+              style: _criticalActionStyle,
               child: const Text('Continuer'),
             ),
           ],
@@ -13684,9 +14057,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFB91C1C),
-              ),
+              style: _criticalActionStyle,
               child: const Text('Supprimer'),
             ),
           ],
@@ -13868,12 +14239,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
     );
     if (name == null || name.isEmpty) return;
     await widget.database.updateCategory(
-      ProductCategory(
-        id: item.id,
-        name: name,
-        productIds: item.productIds,
-        image: item.image,
-      ),
+      item.copyWith(name: name),
     );
     await _finish('Catégorie modifiée.');
   }
@@ -14154,7 +14520,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              DropdownButtonFormField<Product>(
+              LiquidSelectFormField<Product>(
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Produit'),
                 items: widget.products
@@ -14171,7 +14537,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                 onChanged: (value) => setDialogState(() => product = value),
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<Depot>(
+              LiquidSelectFormField<Depot>(
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Dépôt'),
                 items: widget.depots
@@ -14233,20 +14599,20 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
             children: [
               IconButton(
                 onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.arrow_back, color: Colors.white),
+                icon: const Icon(Icons.arrow_back, color: AppPalette.primary),
               ),
               const Text(
                 'Mode développeur',
                 style: TextStyle(
                   fontSize: 26,
                   fontWeight: FontWeight.w900,
-                  color: Colors.white,
+                  color: AppPalette.text,
                 ),
               ),
               const SizedBox(height: 6),
               const Text(
                 'Zone réservée au propriétaire. Modifiez ou supprimez tout élément ; les suppressions sont définitives.',
-                style: TextStyle(color: Color(0xFFFEE2E2)),
+                style: TextStyle(color: AppPalette.coral),
               ),
               const SizedBox(height: 22),
               Glass(
@@ -14545,8 +14911,13 @@ class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
                       const SizedBox(height: 8),
                       if (items.isEmpty) const Text('Aucun appareil approuvé.'),
                       ...items.map(
-                        (device) => Glass(
-                          child: ListTile(
+                        (device) => Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Glass(
+                            radius: 22,
+                            frosted: true,
+                            padding: const EdgeInsets.all(4),
+                            child: ListTile(
                             leading: Icon(
                               device.primary
                                   ? Icons.star_rounded
@@ -14560,23 +14931,24 @@ class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
                               'Sortie : ${device.lastLogoutAt == null ? 'En cours' : dateText(device.lastLogoutAt!)}',
                             ),
                             isThreeLine: true,
-                            trailing: PopupMenuButton<String>(
-                              onSelected: (value) =>
-                                  changeStatus(device, value),
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(
-                                  value: 'active',
-                                  child: Text('Autoriser'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'suspended',
-                                  child: Text('Suspendre'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'blocked',
-                                  child: Text('Bloquer'),
-                                ),
-                              ],
+                              trailing: PopupMenuButton<String>(
+                                onSelected: (value) =>
+                                    changeStatus(device, value),
+                                itemBuilder: (_) => const [
+                                  PopupMenuItem(
+                                    value: 'active',
+                                    child: Text('Autoriser'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'suspended',
+                                    child: Text('Suspendre'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'blocked',
+                                    child: Text('Bloquer'),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -14754,8 +15126,10 @@ class _UsersPageState extends State<UsersPage> {
                     (u) => ListTile(
                       onTap: () => open(u),
                       leading: CircleAvatar(
-                        backgroundColor: const Color(0xFFE9D5FF),
-                        foregroundColor: const Color(0xFF6B21A8),
+                        backgroundColor: AppPalette.primary.withValues(
+                          alpha: .16,
+                        ),
+                        foregroundColor: AppPalette.primaryDark,
                         child: Text(u.fullName.substring(0, 1).toUpperCase()),
                       ),
                       title: Text(
@@ -14786,10 +15160,14 @@ class StockTransferForm extends StatefulWidget {
   const StockTransferForm({
     super.key,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.depots,
     required this.available,
   });
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final List<Depot> depots;
   final int Function(String productId, String depotId) available;
   @override
@@ -14805,9 +15183,12 @@ class _StockTransferFormState extends State<StockTransferForm> {
 
   void save() {
     if (!(form.currentState?.validate() ?? false)) return;
+    if (productId == null) {
+      message(context, 'Choisissez un produit.');
+      return;
+    }
     final quantity = int.tryParse(pieces.text) ?? 0;
-    if (productId == null ||
-        sourceDepotId == null ||
+    if (sourceDepotId == null ||
         destinationDepotId == null ||
         sourceDepotId == destinationDepotId ||
         quantity <= 0 ||
@@ -14836,23 +15217,26 @@ class _StockTransferFormState extends State<StockTransferForm> {
       key: form,
       child: Column(
         children: [
-          DropdownButtonFormField<String>(
-            initialValue: productId,
-            decoration: const InputDecoration(labelText: 'Produit *'),
-            items: widget.products
-                .map(
-                  (item) => DropdownMenuItem(
-                    value: item.id,
-                    child: Text(item.displayReference),
-                  ),
-                )
-                .toList(),
-            onChanged: (value) => setState(() => productId = value),
-            validator: (value) =>
-                value == null ? 'Choisissez un produit.' : null,
+          CatalogProductBrowser(
+            products: widget.products,
+            categories: widget.categories,
+            catalogFamilies: widget.catalogFamilies,
+            buildProducts: (products) => ProductPicker(
+              products: products,
+              selected: productId == null ? <String>{} : {productId!},
+              onTap: (product) => setState(() => productId = product.id),
+            ),
           ),
+          if (widget.products
+                  .where((product) => product.id == productId)
+                  .firstOrNull
+              case final product?)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text('Produit sélectionné : ${product.displayReference}'),
+            ),
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
+          LiquidSelectFormField<String>(
             initialValue: sourceDepotId,
             decoration: const InputDecoration(labelText: 'Dépôt de départ *'),
             items: widget.depots
@@ -14866,7 +15250,7 @@ class _StockTransferFormState extends State<StockTransferForm> {
                 value == null ? 'Choisissez le dépôt de départ.' : null,
           ),
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
+          LiquidSelectFormField<String>(
             initialValue: destinationDepotId,
             decoration: const InputDecoration(labelText: 'Dépôt d’arrivée *'),
             items: widget.depots
@@ -15049,10 +15433,12 @@ class ProductForm extends StatefulWidget {
     required this.kind,
     required this.depots,
     required this.categories,
+    this.catalogFamilies = const [],
   });
   final ProductKind kind;
   final List<Depot> depots;
   final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
 
   @override
   State<ProductForm> createState() => _ProductFormState();
@@ -15061,6 +15447,7 @@ class ProductForm extends StatefulWidget {
 class _ProductFormState extends State<ProductForm> {
   final form = GlobalKey<FormState>();
   final manufacturedName = TextEditingController();
+  final reference = TextEditingController();
   final length = TextEditingController();
   final width = TextEditingController();
   final metersPerPiece = TextEditingController();
@@ -15069,11 +15456,24 @@ class _ProductFormState extends State<ProductForm> {
   Uint8List? image;
   String? initialDepotId;
   String? categoryId;
+  String? familyId;
   MaterialType material = MaterialType.steel;
   LengthUnit lengthUnit = LengthUnit.meter;
   LengthUnit widthUnit = LengthUnit.meter;
   ThicknessUnit thicknessUnit = ThicknessUnit.millimeter;
   HoseUnit hoseUnit = HoseUnit.piece;
+
+  @override
+  void dispose() {
+    manufacturedName.dispose();
+    reference.dispose();
+    length.dispose();
+    width.dispose();
+    metersPerPiece.dispose();
+    thickness.dispose();
+    initialStock.dispose();
+    super.dispose();
+  }
 
   bool get isManufactured => widget.kind == ProductKind.manufactured;
   bool get hasStandardMeasurements => widget.kind == ProductKind.standard;
@@ -15104,13 +15504,17 @@ class _ProductFormState extends State<ProductForm> {
   double? get calculatedInsideDiameter => calculatedOutsideDiameter == null
       ? null
       : calculatedOutsideDiameter! - (2 * enteredThicknessCentimetres);
-  String get categoryName =>
-      widget.categories
-          .where((category) => category.id == categoryId)
-          .map((category) => category.name)
-          .firstOrNull ??
-      (isManufactured ? manufacturedName.text.trim() : 'Produit');
-  String get automaticReference {
+  List<_CatalogGroup> get groups =>
+      _catalogGroups(widget.categories, widget.catalogFamilies);
+  _CatalogGroup? get selectedGroup =>
+      groups.where((group) => group.id == familyId).firstOrNull;
+  _CatalogSection? get selectedSection => selectedGroup?.sections
+      .where((section) => section.category.id == categoryId)
+      .firstOrNull;
+
+  String get categoryName => selectedSection?.category.name ?? 'Produit';
+  String get productName {
+    if (isManufactured) return manufacturedName.text.trim();
     if (!usesDimensionFields) return categoryName;
     // Width is displayed as "Longueur" and length as "Largeur" in this UI.
     return '$categoryName ${formatNumber(widthMeters * 1000)}*${formatNumber(lengthMeters * 1000)}*${formatNumber(thicknessMillimetres)}';
@@ -15166,11 +15570,14 @@ class _ProductFormState extends State<ProductForm> {
     Navigator.pop(
       context,
       ProductCreation(
-        categoryId: isManufactured ? null : categoryId,
+        categoryId: categoryId,
+        familyId: selectedSection?.legacyFamilyId,
         product: Product(
           id: DateTime.now().microsecondsSinceEpoch.toString(),
-          name: automaticReference,
-          reference: automaticReference,
+          name: productName,
+          reference: hasStandardMeasurements
+              ? productName
+              : reference.text.trim(),
           width: usesDimensionFields ? widthMeters : 1.5,
           lengthMeters: lengthMeters,
           lengthUnit: isHose ? LengthUnit.meter : lengthUnit,
@@ -15202,21 +15609,45 @@ class _ProductFormState extends State<ProductForm> {
         children: [
           ImageInput(bytes: image, label: 'Photo du produit *', onTap: pick),
           const SizedBox(height: 14),
-          if (!isManufactured) ...[
-            DropdownButtonFormField<String>(
-              initialValue: categoryId,
-              decoration: const InputDecoration(labelText: 'Catégorie *'),
-              items: widget.categories
-                  .map(
-                    (category) => DropdownMenuItem(
-                      value: category.id,
-                      child: Text(category.name),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (value) => setState(() => categoryId = value),
-              validator: (value) =>
-                  value == null ? 'Choisissez une catégorie.' : null,
+          if (!isManufactured || widget.categories.isNotEmpty || widget.catalogFamilies.isNotEmpty) ...[
+            LiquidSelectFormField<String>(
+              initialValue: familyId,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Famille *'),
+              items: [
+                for (final family in groups)
+                  DropdownMenuItem(value: family.id, child: Text(family.name)),
+              ],
+              onChanged: (value) => setState(() {
+                familyId = value;
+                categoryId = null;
+              }),
+              validator: (value) => value == null ? 'Choisissez une famille.' : null,
+            ),
+            if (selectedGroup case final family?) ...[
+              const SizedBox(height: 14),
+              LiquidSelectFormField<String>(
+                key: ValueKey(family.id),
+                initialValue: categoryId,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Catégorie *'),
+                items: [
+                  for (final section in family.sections)
+                    DropdownMenuItem(value: section.category.id, child: Text(section.category.name)),
+                ],
+                onChanged: (value) => setState(() => categoryId = value),
+                validator: (value) => value == null ? 'Choisissez une catégorie.' : null,
+              ),
+              if (family.sections.isEmpty)
+                const Text('Ajoutez d’abord une catégorie à cette famille.'),
+            ],
+            const SizedBox(height: 14),
+          ],
+          if (!hasStandardMeasurements) ...[
+            TextFormField(
+              controller: reference,
+              decoration: const InputDecoration(labelText: 'Référence *'),
+              validator: required,
             ),
             const SizedBox(height: 14),
           ],
@@ -15329,7 +15760,7 @@ class _ProductFormState extends State<ProductForm> {
                 const SizedBox(width: 10),
                 SizedBox(
                   width: 112,
-                  child: DropdownButtonFormField<LengthUnit>(
+                  child: LiquidSelectFormField<LengthUnit>(
                     initialValue: widthUnit,
                     decoration: const InputDecoration(labelText: 'Unité'),
                     items: LengthUnit.values
@@ -15362,7 +15793,7 @@ class _ProductFormState extends State<ProductForm> {
                 const SizedBox(width: 10),
                 SizedBox(
                   width: 112,
-                  child: DropdownButtonFormField<LengthUnit>(
+                  child: LiquidSelectFormField<LengthUnit>(
                     initialValue: lengthUnit,
                     decoration: const InputDecoration(labelText: 'Unité'),
                     items: LengthUnit.values
@@ -15395,7 +15826,7 @@ class _ProductFormState extends State<ProductForm> {
                 const SizedBox(width: 10),
                 SizedBox(
                   width: 112,
-                  child: DropdownButtonFormField<ThicknessUnit>(
+                  child: LiquidSelectFormField<ThicknessUnit>(
                     initialValue: thicknessUnit,
                     decoration: const InputDecoration(labelText: 'Unité'),
                     items: ThicknessUnit.values
@@ -15423,8 +15854,8 @@ class _ProductFormState extends State<ProductForm> {
                           'Largeur : ${formatNumber(number(length.text))} ${lengthUnit.label} = ${formatNumber(enteredWidthCentimetres)} cm\n'
                           'Épaisseur : ${formatNumber(number(thickness.text))} ${thicknessUnit.label} = ${formatNumber(enteredThicknessCentimetres)} cm\n\n'
                           'Diamètre extérieur : ${formatNumber(enteredWidthCentimetres)} ÷ π = Ø ${formatNumber(calculatedOutsideDiameter!)} cm\n'
-                          'Diamètre intérieur : ${formatNumber(calculatedOutsideDiameter!)} − (2 × ${formatNumber(enteredThicknessCentimetres)}) = Ø ${formatNumber(calculatedInsideDiameter!)} cm\n\n'
-                          'Référence : $automaticReference',
+                          'Diamètre intérieur : ${formatNumber(calculatedOutsideDiameter!)} − (2 × ${formatNumber(enteredThicknessCentimetres)}) = Ø ${formatNumber(calculatedInsideDiameter!)} cm'
+                          '${hasStandardMeasurements ? '\n\nRéférence : $productName' : ''}',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
@@ -15457,7 +15888,7 @@ class _ProductFormState extends State<ProductForm> {
             },
           ),
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
+          LiquidSelectFormField<String>(
             initialValue: initialDepotId,
             decoration: const InputDecoration(
               labelText: 'Dépôt du stock initial *',
@@ -15491,6 +15922,8 @@ class StockForm extends StatefulWidget {
   const StockForm({
     super.key,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.stock,
     required this.depots,
     required this.suppliers,
@@ -15499,6 +15932,8 @@ class StockForm extends StatefulWidget {
     this.initialProductId,
   });
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final int Function(String) stock;
   final List<Depot> depots;
   final List<Supplier> suppliers;
@@ -15728,6 +16163,8 @@ class SaleForm extends StatefulWidget {
   const SaleForm({
     super.key,
     required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
     required this.depots,
     required this.clients,
     required this.available,
@@ -15735,6 +16172,8 @@ class SaleForm extends StatefulWidget {
     required this.allowGallery,
   });
   final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
   final List<Depot> depots;
   final List<Client> clients;
   final int Function(String, String) available;
@@ -15769,15 +16208,9 @@ class _SaleFormState extends State<SaleForm> {
     return null;
   }
 
-  List<Product> get visibleProducts => openedProductFamilyId == null
-      ? widget.products
-            .where((product) => !product.isManufacturedVariant)
-            .toList()
-      : widget.products
-            .where(
-              (product) => product.parentProductId == openedProductFamilyId,
-            )
-            .toList();
+  List<Product> get catalogProducts => widget.products
+      .where((product) => !product.isManufacturedVariant)
+      .toList();
 
   List<Product> derivedFrom(Product product) => widget.products
       .where((item) => item.parentProductId == product.id)
@@ -15799,11 +16232,9 @@ class _SaleFormState extends State<SaleForm> {
     setState(() {
       productId = product.id;
       depotId = null;
-      if (product.isHose) {
-        unit = product.hoseManagedByMeter
-            ? InventoryUnit.meter
-            : InventoryUnit.piece;
-      }
+      unit = product.hoseManagedByMeter
+          ? InventoryUnit.meter
+          : InventoryUnit.piece;
     });
   }
 
@@ -15898,22 +16329,16 @@ class _SaleFormState extends State<SaleForm> {
         Row(
           children: [
             Expanded(
-              child: DropdownButtonFormField<String>(
-                initialValue: clientId,
-                decoration: const InputDecoration(labelText: 'Client *'),
-                items: widget.clients
-                    .map(
-                      (client) => DropdownMenuItem(
-                        value: client.id,
-                        child: Text(
-                          client.company.isEmpty
-                              ? client.name
-                              : '${client.name.isEmpty ? 'Client' : client.name} · ${client.company}',
-                        ),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (value) => setState(() => clientId = value),
+              child: SearchChoiceField(
+                label: 'Client *',
+                options: _choices(
+                  widget.clients,
+                  (client) => client.id,
+                  (client) => _partnerLabel(client.name, client.company),
+                ),
+                selected: {?clientId},
+                allowClear: false,
+                onChanged: (ids) => setState(() => clientId = ids.first),
               ),
             ),
             const SizedBox(width: 8),
@@ -15949,14 +16374,34 @@ class _SaleFormState extends State<SaleForm> {
           ],
         ),
         const SizedBox(height: 8),
-        ProductPicker(
-          products: visibleProducts,
-          selected: productId == null ? <String>{} : {productId!},
-          onTap: chooseProduct,
+        Visibility(
+          visible: openedProductFamily == null,
+          maintainState: true,
+          child: CatalogProductBrowser(
+            products: catalogProducts,
+            categories: widget.categories,
+            catalogFamilies: widget.catalogFamilies,
+            buildProducts: (products) => ProductPicker(
+              products: products,
+              selected: productId == null ? <String>{} : {productId!},
+              onTap: chooseProduct,
+            ),
+          ),
         ),
+        if (openedProductFamily case final product?)
+          ProductPicker(
+            products: derivedFrom(product),
+            selected: productId == null ? <String>{} : {productId!},
+            onTap: chooseProduct,
+          ),
+        if (selectedProduct case final product?)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text('Produit sélectionné : ${product.displayReference}'),
+          ),
         if (productId != null) ...[
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
+          LiquidSelectFormField<String>(
             initialValue: depotId,
             decoration: const InputDecoration(labelText: 'Dépôt de sortie *'),
             items: widget.depots
@@ -15997,7 +16442,7 @@ class _SaleFormState extends State<SaleForm> {
             const SizedBox(width: 10),
             SizedBox(
               width: 145,
-              child: DropdownButtonFormField<InventoryUnit>(
+              child: LiquidSelectFormField<InventoryUnit>(
                 initialValue: unit,
                 decoration: const InputDecoration(labelText: 'Unité'),
                 items: availableUnits
@@ -16025,13 +16470,13 @@ class _SaleFormState extends State<SaleForm> {
                   ? 'Sortie de stock : $pieces pièce(s) = ${formatNumber(pieces * selectedProduct!.lengthMeters)} m'
                   : 'Sortie de stock : $pieces pièce(s)',
               style: const TextStyle(
-                color: Color(0xFF725280),
+                color: AppPalette.muted,
                 fontWeight: FontWeight.w700,
               ),
             ),
           ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<TransportCharge>(
+        LiquidSelectFormField<TransportCharge>(
           initialValue: transportCharge,
           decoration: const InputDecoration(labelText: 'Transport *'),
           items: TransportCharge.values
@@ -16189,38 +16634,41 @@ class _StockFormState extends State<StockForm> {
           style: TextStyle(fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 10),
-        ProductPicker(
+        CatalogProductBrowser(
           products: widget.products,
-          selected: selected == null ? <String>{} : <String>{selected!},
-          onTap: (product) => setState(() {
-            selected = product.id;
-            if (product.isHose) {
+          categories: widget.categories,
+          catalogFamilies: widget.catalogFamilies,
+          initialProductId: widget.initialProductId,
+          buildProducts: (products) => ProductPicker(
+            products: products,
+            selected: selected == null ? <String>{} : {selected!},
+            onTap: (product) => setState(() {
+              selected = product.id;
               unit = product.hoseManagedByMeter
                   ? InventoryUnit.meter
                   : InventoryUnit.piece;
-            }
-          }),
+            }),
+          ),
         ),
+        if (selectedProduct case final product?)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text('Produit sélectionné : ${product.displayReference}'),
+          ),
         const SizedBox(height: 16),
         Row(
           children: [
             Expanded(
-              child: DropdownButtonFormField<String>(
-                initialValue: supplierId,
-                decoration: const InputDecoration(labelText: 'Fournisseur *'),
-                items: widget.suppliers
-                    .map(
-                      (supplier) => DropdownMenuItem(
-                        value: supplier.id,
-                        child: Text(
-                          supplier.company.isEmpty
-                              ? supplier.name
-                              : '${supplier.name} · ${supplier.company}',
-                        ),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (value) => setState(() => supplierId = value),
+              child: SearchChoiceField(
+                label: 'Fournisseur *',
+                options: _choices(
+                  widget.suppliers,
+                  (supplier) => supplier.id,
+                  (supplier) => _partnerLabel(supplier.name, supplier.company),
+                ),
+                selected: {?supplierId},
+                allowClear: false,
+                onChanged: (ids) => setState(() => supplierId = ids.first),
               ),
             ),
             const SizedBox(width: 8),
@@ -16232,7 +16680,7 @@ class _StockFormState extends State<StockForm> {
           ],
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
+        LiquidSelectFormField<String>(
           initialValue: depotId,
           decoration: const InputDecoration(
             labelText: 'Dépôt de destination *',
@@ -16276,7 +16724,7 @@ class _StockFormState extends State<StockForm> {
             const SizedBox(width: 10),
             SizedBox(
               width: 145,
-              child: DropdownButtonFormField<InventoryUnit>(
+              child: LiquidSelectFormField<InventoryUnit>(
                 initialValue: unit,
                 decoration: const InputDecoration(labelText: 'Unité'),
                 items: availableUnits
@@ -16295,7 +16743,7 @@ class _StockFormState extends State<StockForm> {
           ],
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<TransportCharge>(
+        LiquidSelectFormField<TransportCharge>(
           initialValue: transportCharge,
           decoration: const InputDecoration(labelText: 'Transport *'),
           items: TransportCharge.values
@@ -16362,7 +16810,7 @@ class _StockFormState extends State<StockForm> {
                   '${productQuantityLabel(selectedProduct!, widget.stock(selectedProduct!.id) + addedPieces)} au total',
                   style: const TextStyle(
                     fontSize: 12,
-                    color: Color(0xFF725280),
+                    color: AppPalette.muted,
                   ),
                 ),
               ],
@@ -16626,7 +17074,7 @@ class _PaymentFormState extends State<PaymentForm> {
                   Row(
                     children: [
                       Expanded(
-                        child: DropdownButtonFormField<String>(
+                        child: LiquidSelectFormField<String>(
                           initialValue: line.competitorId,
                           decoration: const InputDecoration(
                             labelText: 'Compétiteur *',
@@ -17035,7 +17483,7 @@ class _MachineFormState extends State<MachineForm> {
               temporary
                   ? 'Choisissez ensuite la matière envoyée : elle sera déduite du stock à la validation.'
                   : 'Le travailleur choisira le produit de cette catégorie au démarrage.',
-              style: const TextStyle(fontSize: 12, color: Color(0xFF725280)),
+              style: const TextStyle(fontSize: 12, color: AppPalette.muted),
             ),
             if (temporary && categoryId != null) ...[
               const SizedBox(height: 16),
@@ -17065,7 +17513,7 @@ class _MachineFormState extends State<MachineForm> {
                 ),
               if (temporaryInputProductId != null) ...[
                 const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
+                LiquidSelectFormField<String>(
                   initialValue: temporarySourceDepotId,
                   decoration: const InputDecoration(
                     labelText: 'Dépôt de départ *',
@@ -17201,17 +17649,17 @@ class ProductPicker extends StatelessWidget {
             padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
               color: isSelected
-                  ? const Color(0xFFE9D5FF)
-                  : Colors.white.withValues(alpha: .52),
+                  ? AppPalette.desktopAccentSoft
+                  : AppPalette.surfaceRaised.withValues(alpha: .56),
               borderRadius: BorderRadius.circular(18),
               border: Border.all(
-                color: isSelected ? const Color(0xFF9333EA) : Colors.white,
+                color: isSelected ? AppPalette.primary : AppPalette.line,
                 width: isSelected ? 2 : 1,
               ),
             ),
             child: AnimatedScale(
               duration: const Duration(milliseconds: 220),
-              scale: isSelected ? 1.03 : 1,
+              scale: isSelected ? 1.02 : 1,
               child: Column(
                 children: [
                   ProductImage(product: product, height: 68),
@@ -17229,6 +17677,203 @@ class ProductPicker extends StatelessWidget {
         ),
       );
     }).toList(),
+  );
+}
+
+class CatalogProductBrowser extends StatefulWidget {
+  const CatalogProductBrowser({
+    super.key,
+    required this.products,
+    required this.categories,
+    this.catalogFamilies = const [],
+    required this.buildProducts,
+    this.initialProductId,
+    this.showEmptyCategories = false,
+  });
+
+  final List<Product> products;
+  final List<ProductCategory> categories;
+  final List<CatalogFamily> catalogFamilies;
+  final Widget Function(List<Product> products) buildProducts;
+  final String? initialProductId;
+  final bool showEmptyCategories;
+
+  @override
+  State<CatalogProductBrowser> createState() => _CatalogProductBrowserState();
+}
+
+class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
+  String? familyId;
+  String? categoryId;
+
+  List<_CatalogGroup> get groups => _catalogGroups(
+    widget.categories,
+    widget.catalogFamilies,
+    products: widget.products,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    final product = widget.products
+        .where((item) => item.id == widget.initialProductId)
+        .firstOrNull;
+    if (product == null) return;
+    for (final group in groups) {
+      final section = group.sections
+          .where(
+            (item) => item.productIds.contains(_catalogMembershipId(product)),
+          )
+          .firstOrNull;
+      if (section == null) continue;
+      familyId = group.id;
+      categoryId = section.category.id;
+      break;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final availableIds = widget.products.map(_catalogMembershipId).toSet();
+    final allGroups = groups;
+    final family = allGroups.where((group) => group.id == familyId).firstOrNull;
+    if (family == null) {
+      return _catalogCards([
+        for (final group in allGroups)
+          if (widget.showEmptyCategories ||
+              group.sections.any(
+                (section) => section.productIds.any(availableIds.contains),
+              ))
+            _CatalogGroupCard(
+              name: group.name,
+              preview: group.sections
+                  .take(2)
+                  .map((section) => section.category.name)
+                  .toList(),
+              onTap: () => setState(() {
+                familyId = group.id;
+                categoryId = null;
+              }),
+            ),
+      ]);
+    }
+    final section = family.sections
+        .where((item) => item.category.id == categoryId)
+        .firstOrNull;
+    final products = section == null
+        ? const <Product>[]
+        : widget.products
+              .where(
+                (item) =>
+                    section.productIds.contains(_catalogMembershipId(item)),
+              )
+              .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextButton.icon(
+          icon: const Icon(Icons.arrow_back_rounded),
+          label: Text(section == null ? 'Familles' : 'Catégories'),
+          onPressed: () => setState(() {
+            if (section == null) familyId = null;
+            categoryId = null;
+          }),
+        ),
+        Text(
+          section == null
+              ? family.name
+              : '${family.name} · ${section.category.name}',
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 10),
+        if (section != null)
+          if (products.isEmpty)
+            const Text('Aucun produit dans cette catégorie.')
+          else
+            widget.buildProducts(products)
+        else if (family.sections.isEmpty)
+          const Text('Aucune catégorie dans cette famille.')
+        else
+          _catalogCards([
+            for (final item in family.sections)
+              _CatalogGroupCard(
+                name: item.category.name,
+                onTap: () => setState(() => categoryId = item.category.id),
+              ),
+          ]),
+      ],
+    );
+  }
+
+  Widget _catalogCards(List<_CatalogGroupCard> cards) => cards.isEmpty
+      ? const Text('Aucun produit disponible.')
+      : LayoutBuilder(
+          builder: (context, constraints) {
+            const gap = 12.0;
+            final width = min(144.0, (constraints.maxWidth - gap) / 2);
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: [
+                for (final card in cards) SizedBox(width: width, child: card),
+              ],
+            );
+          },
+        );
+}
+
+class _CatalogGroupCard extends StatelessWidget {
+  const _CatalogGroupCard({
+    required this.name,
+    required this.onTap,
+    this.preview = const [],
+  });
+
+  final String name;
+  final List<String> preview;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(16),
+    child: Column(
+      children: [
+        AspectRatio(
+          aspectRatio: 1,
+          child: Glass(
+            radius: 22,
+            accent: AppPalette.primary,
+            padding: const EdgeInsets.all(8),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const _AtelierIcon(Icons.folder_outlined, size: 38),
+                for (final label in preview)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 5),
+                    child: Text(
+                      label,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 5),
+        Text(
+          name,
+          textAlign: TextAlign.center,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w900),
+        ),
+      ],
+    ),
   );
 }
 
@@ -17250,22 +17895,13 @@ class CategoryPicker extends StatelessWidget {
       final isSelected = category.id == selected;
       return SizedBox(
         width: 145,
-        child: InkWell(
+        child: _LiquidTapTarget(
+          radius: 18,
+          selected: isSelected,
+          accent: isSelected ? AppPalette.primary : AppPalette.secondary,
           onTap: () => onTap(category),
-          borderRadius: BorderRadius.circular(18),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
+          child: Padding(
             padding: const EdgeInsets.all(7),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? const Color(0xFFE9D5FF)
-                  : Colors.white.withValues(alpha: .52),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(
-                color: isSelected ? const Color(0xFF9333EA) : Colors.white,
-                width: isSelected ? 2 : 1,
-              ),
-            ),
             child: Column(
               children: [
                 CategoryImage(category: category, size: 68),
@@ -17428,7 +18064,7 @@ class _StartOperationState extends State<StartOperation> {
           ),
           if (productId != null) ...[
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
+            LiquidSelectFormField<String>(
               initialValue: depotId,
               decoration: const InputDecoration(
                 labelText: 'Dépôt où se trouve le produit *',
@@ -17451,7 +18087,7 @@ class _StartOperationState extends State<StartOperation> {
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 'Stock disponible dans ce dépôt : ${widget.available(productId!, depotId!)} pièce(s)',
-                style: const TextStyle(color: Color(0xFF725280)),
+                style: const TextStyle(color: AppPalette.muted),
               ),
             ),
         ],
@@ -17497,7 +18133,7 @@ class _StartOperationState extends State<StartOperation> {
                 'Longueur calculée du cadous : ${formatNumber((int.parse(hopper.text)) * Operation.hopperSheetLengthMeters)} m '
                 '(${hopper.text} tôle(s) × ${formatNumber(Operation.hopperSheetLengthMeters)} m)',
                 style: const TextStyle(
-                  color: Color(0xFF725280),
+                  color: AppPalette.muted,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -17518,7 +18154,7 @@ class _StartOperationState extends State<StartOperation> {
         const SizedBox(height: 14),
         const Text(
           'Le stock sera réservé immédiatement et l’opération sera affichée comme « en cours ».',
-          style: TextStyle(fontSize: 12, color: Color(0xFF725280)),
+          style: TextStyle(fontSize: 12, color: AppPalette.muted),
         ),
         const SizedBox(height: 20),
         SizedBox(
@@ -17682,7 +18318,7 @@ class _FinishOperationState extends State<FinishOperation> {
           ),
           if (made > 0) ...[
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
+            LiquidSelectFormField<String>(
               initialValue: outputDepotId,
               decoration: InputDecoration(
                 labelText: 'Dépôt du produit fini ${widget.output.name} *',
@@ -17731,7 +18367,7 @@ class _FinishOperationState extends State<FinishOperation> {
           ),
           if (remaining > 0) ...[
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
+            LiquidSelectFormField<String>(
               initialValue: remainderDepotId,
               decoration: const InputDecoration(
                 labelText: 'Dépôt qui reçoit les pièces restantes *',
@@ -17771,7 +18407,7 @@ class _FinishOperationState extends State<FinishOperation> {
           ),
           if (waste > 0) ...[
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
+            LiquidSelectFormField<String>(
               initialValue: scrapDepotId,
               decoration: const InputDecoration(
                 labelText: 'Dépôt qui reçoit les déchets *',
@@ -17876,10 +18512,9 @@ class Receipt extends StatelessWidget {
   final AppUser operator;
   @override
   Widget build(BuildContext context) => AlertDialog(
-    backgroundColor: const Color(0xFFFEFBFF),
     title: const Row(
       children: [
-        Icon(Icons.receipt_long_rounded, color: Color(0xFF7E22CE)),
+        Icon(Icons.receipt_long_rounded, color: AppPalette.primary),
         SizedBox(width: 8),
         Text('Bon de production'),
       ],
@@ -18009,6 +18644,7 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   late bool canExport;
   String? loginStartTime;
   String? loginEndTime;
+  String? pendingPassword;
   late Future<List<UserSession>> sessions;
 
   @override
@@ -18062,6 +18698,71 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   String displayTime(String? value) =>
       value == null ? 'Non défini' : value.substring(0, 5);
 
+  Future<void> setPassword() async {
+    final password = TextEditingController();
+    final confirmation = TextEditingController();
+    String? error;
+    final next = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Nouveau mot de passe'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Définissez un nouveau mot de passe pour ${widget.user.fullName}.',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: password,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Nouveau mot de passe'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: confirmation,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Confirmer le mot de passe'),
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 8),
+                Text(error!, style: const TextStyle(color: AppPalette.coral)),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Annuler'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final validation = securePasswordValidator(password.text);
+                if (validation != null) {
+                  setDialogState(() => error = validation);
+                  return;
+                }
+                if (password.text != confirmation.text) {
+                  setDialogState(
+                    () => error = 'Les mots de passe ne correspondent pas.',
+                  );
+                  return;
+                }
+                Navigator.pop(dialogContext, password.text);
+              },
+              child: const Text('Définir'),
+            ),
+          ],
+        ),
+      ),
+    );
+    password.dispose();
+    confirmation.dispose();
+    if (next != null && mounted) setState(() => pendingPassword = next);
+  }
+
   void save() {
     if (roles.isEmpty) {
       message(context, 'Choisissez au moins un rôle pour cet utilisateur.');
@@ -18070,6 +18771,7 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
     Navigator.pop(
       context,
       widget.user.copyWith(
+        password: pendingPassword ?? widget.user.password,
         roles: roles,
         allowedPages: pages,
         writablePages: writablePages,
@@ -18142,6 +18844,29 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
               subtitle: Text('@${widget.user.username}'),
             ),
           ),
+          if (widget.canManage) ...[
+            const SizedBox(height: 12),
+            Glass(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(
+                  Icons.lock_reset_rounded,
+                  color: AppPalette.primary,
+                ),
+                title: const Text('Mot de passe'),
+                subtitle: Text(
+                  pendingPassword == null
+                      ? 'Définir un nouveau mot de passe pour cet utilisateur.'
+                      : 'Un nouveau mot de passe sera enregistré.',
+                ),
+                trailing: OutlinedButton(
+                  onPressed: setPassword,
+                  child: Text(pendingPassword == null ? 'Modifier' : 'Changer'),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 18),
           const Text(
             'Rôles (cumulables)',
@@ -18701,40 +19426,31 @@ class FormShell extends StatelessWidget {
       child: SafeArea(
         child: Column(
           children: [
-            SizedBox(
-              height: 122,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 22, 20),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Glass(
+                radius: 22,
+                padding: const EdgeInsets.fromLTRB(6, 6, 12, 6),
                 child: Row(
                   children: [
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                      color: AppPalette.primary,
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white,
-                      ),
-                      tooltip: 'Retour',
-                    ),
-                    const SizedBox(width: 12),
+                    const _AtelierBackButton(),
+                    const SizedBox(width: 11),
                     Expanded(
                       child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             title,
                             style: const TextStyle(
-                              fontSize: 21,
-                              fontWeight: FontWeight.w900,
-                              color: Colors.white,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
                             ),
                           ),
-                          if (subtitle != null) ...[
+                          if (subtitle case final description?) ...[
                             const SizedBox(height: 3),
                             Text(
-                              subtitle!,
-                              style: const TextStyle(color: Color(0xFFE9E7FF)),
+                              description,
+                              style: const TextStyle(color: AppPalette.muted),
                             ),
                           ],
                         ],
@@ -18746,7 +19462,7 @@ class FormShell extends StatelessWidget {
             ),
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 18, 20, 42),
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 30),
                 child: Center(
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 620),

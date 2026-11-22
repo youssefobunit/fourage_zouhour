@@ -22,7 +22,7 @@ await db.exec(`
 const migrations = readdirSync('supabase/migrations').filter(f=>f.endsWith('.sql')).sort();
 for (const file of migrations) await db.exec(readFileSync(`supabase/migrations/${file}`,'utf8'));
 // Re-running the security migrations must not duplicate policies or lose data.
-for (const file of migrations.filter(f=>f.startsWith('20261117'))) await db.exec(readFileSync(`supabase/migrations/${file}`,'utf8'));
+for (const file of migrations.filter(f=>f >= '202611170001')) await db.exec(readFileSync(`supabase/migrations/${file}`,'utf8'));
 const admin='10000000-0000-0000-0000-000000000001';
 const worker='10000000-0000-0000-0000-000000000002';
 const visitor='10000000-0000-0000-0000-000000000003';
@@ -105,5 +105,55 @@ await db.query(`update public.profiles set role='admin',allowed_pages=array['das
 assert.equal((await asUser(owner,'select is_forage_owner() owner')).rows[0].owner,true); checks++;
 await denied('non-owner admin permanent deletion',()=>changeWorkshop(admin,s=>s.machines=[]));
 await changeWorkshop(owner,s=>s.machines=[]); checks++;
+const product = {
+  id:'catalog-item',name:'Pièce',reference:'CAT-1',width:0,length_meters:0,
+  length_unit:'meter',thickness:0,manufactured:1,kind:'manufactured',
+  diameter_is_external:1,diameter_calculated_from_dimensions:0,hose_unit:'piece',
+  initial_stock:0,initial_depot_id:'general-depot',material_type:'steel'
+};
+const family = {id:'family-1',name:'Forets',product_ids:[product.id]};
+await changeWorkshop(owner,s=>{
+  s.products=[product];
+  s.categories=[{
+    id:'category-1',name:'Forage',product_ids:JSON.stringify([product.id]),
+    families:JSON.stringify([family])
+  }];
+});
+const readCategory = async () =>
+  (await asUser(owner,'select get_forage_workshop(true) data')).rows[0].data.categories[0];
+assert.deepEqual(JSON.parse((await readCategory()).families),[family]); checks++;
+await changeWorkshop(owner,s=>{
+  assert.equal(s.categories[0].families,undefined);
+  // Old app versions can drop manufactured IDs from the flat category list.
+  s.categories[0].product_ids='[]';
+});
+assert.deepEqual(JSON.parse((await readCategory()).product_ids),[product.id]); checks++;
+assert.deepEqual(JSON.parse((await readCategory()).families),[family]); checks++;
+await denied('unapproved family catalog read',()=>asUser(outsider,'select get_forage_workshop(true)'));
+await denied('family product outside its category',()=>changeWorkshop(owner,s=>{
+  s.categories[0].families=JSON.stringify([{...family,product_ids:['different-item']}]);
+}));
+await denied('product assigned to two families in one category',()=>changeWorkshop(owner,s=>{
+  s.categories[0].families=JSON.stringify([family,{...family,id:'family-2',name:'Autres'}]);
+}));
+await denied('stored family markup',()=>changeWorkshop(owner,s=>{
+  s.categories[0].families=JSON.stringify([{...family,name:'<script>'}]);
+}));
+const catalogFamily={id:'root-family',name:'Équipement de forage',category_ids:'["category-1"]'};
+await changeWorkshop(owner,s=>s.catalog_families=[catalogFamily]);
+const readCatalog = async () =>
+  (await asUser(owner,'select get_forage_workshop(true,true) data')).rows[0].data;
+assert.deepEqual((await readCatalog()).catalog_families,[catalogFamily]); checks++;
+await changeWorkshop(owner,s=>{
+  assert.equal(s.catalog_families,undefined);
+  s.categories[0].name='Forage et accessoires';
+});
+assert.deepEqual((await readCatalog()).catalog_families,[catalogFamily]); checks++;
+await denied('unknown category in a catalog family',()=>changeWorkshop(owner,s=>{
+  s.catalog_families=[{...catalogFamily,category_ids:'["not-a-category"]'}];
+}));
+await denied('one category assigned to two catalog families',()=>changeWorkshop(owner,s=>{
+  s.catalog_families=[catalogFamily,{...catalogFamily,id:'another',name:'Autres'}];
+}));
 console.log(`Passed ${checks} database security checks and migration replay.`);
 await db.close();
