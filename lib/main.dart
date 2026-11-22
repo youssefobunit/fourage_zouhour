@@ -691,22 +691,23 @@ class _DarkLiquidAppearance extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => Stack(
-    fit: StackFit.expand,
-    children: [
-      ColorFiltered(
-        colorFilter: const ColorFilter.matrix(<double>[
-          // Red: paper white -> rich amethyst, navy text -> pale lavender.
-          -.215, -.423, -.082, 0, 255,
-          // Green: gives the material its near-black plum depth.
-          -.263, -.517, -.100, 0, 245,
-          // Blue: retained to create a violet, not a muddy burgundy, scene.
-          -.185, -.364, -.071, 0, 255,
-          0, 0, 0, 1, 0,
-        ]),
-        child: child,
-      ),
-    ],
+  Widget build(BuildContext context) => ColorFiltered(
+    // `overlay` is non-linear: it drops the already-dark violet base to
+    // black-plum, while luminous typography and specular highlights stay
+    // bright. A normal semi-transparent black layer would dim both equally.
+    colorFilter: const ColorFilter.mode(Color(0xFF230038), BlendMode.overlay),
+    child: ColorFiltered(
+      colorFilter: const ColorFilter.matrix(<double>[
+        // Red: paper white -> rich amethyst, navy text -> pale lavender.
+        -.215, -.423, -.082, 0, 255,
+        // Green: gives the material its near-black plum depth.
+        -.263, -.517, -.100, 0, 245,
+        // Blue: retained to create a violet, not a muddy burgundy, scene.
+        -.185, -.364, -.071, 0, 255,
+        0, 0, 0, 1, 0,
+      ]),
+      child: child,
+    ),
   );
 }
 
