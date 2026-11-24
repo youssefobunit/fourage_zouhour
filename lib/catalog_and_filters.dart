@@ -431,12 +431,13 @@ class _SearchChoiceDialogState extends State<_SearchChoiceDialog> {
     final matches = widget.options.entries
         .where((entry) => _searchKey(entry.value).contains(query))
         .toList();
+    final scheme = Theme.of(context).colorScheme;
     return AlertDialog(
-      backgroundColor: AppPalette.surface,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       title: Text(widget.label),
       content: SizedBox(
         width: 420,
-        height: 340,
+        height: min(340.0, 66.0 + 56 * max(1, widget.options.length)),
         child: Column(
           children: [
             TextField(
@@ -470,15 +471,15 @@ class _SearchChoiceDialogState extends State<_SearchChoiceDialog> {
                                 ),
                                 decoration: BoxDecoration(
                                   color: selectedItem
-                                      ? AppPalette.primary.withValues(alpha: .18)
-                                      : AppPalette.surfaceRaised.withValues(
+                                      ? scheme.primary.withValues(alpha: .18)
+                                      : scheme.surfaceContainerHigh.withValues(
                                           alpha: .56,
                                         ),
                                   borderRadius: BorderRadius.circular(14),
                                   border: Border.all(
                                     color: selectedItem
-                                        ? AppPalette.primary.withValues(alpha: .56)
-                                        : AppPalette.line.withValues(alpha: .50),
+                                        ? scheme.primary.withValues(alpha: .56)
+                                        : scheme.outline.withValues(alpha: .50),
                                   ),
                                 ),
                                 child: Row(
@@ -486,16 +487,16 @@ class _SearchChoiceDialogState extends State<_SearchChoiceDialog> {
                                     Icon(
                                       Icons.inventory_2_outlined,
                                       color: selectedItem
-                                          ? AppPalette.primary
-                                          : AppPalette.muted,
+                                          ? scheme.primary
+                                          : scheme.onSurfaceVariant,
                                       size: 19,
                                     ),
                                     const SizedBox(width: 10),
                                     Expanded(child: Text(entry.value)),
                                     if (selectedItem)
-                                      const Icon(
+                                      Icon(
                                         Icons.check_rounded,
-                                        color: AppPalette.primary,
+                                        color: scheme.primary,
                                       ),
                                   ],
                                 ),
@@ -506,46 +507,33 @@ class _SearchChoiceDialogState extends State<_SearchChoiceDialog> {
                         final selectedItem = selected.contains(entry.key);
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 5),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(14),
-                            onTap: () => setState(() {
-                              selectedItem
-                                  ? selected.remove(entry.key)
-                                  : selected.add(entry.key);
-                            }),
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 180),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 11,
-                              ),
-                              decoration: BoxDecoration(
-                                color: selectedItem
-                                    ? AppPalette.primary.withValues(alpha: .18)
-                                    : AppPalette.surfaceRaised.withValues(
-                                        alpha: .56,
-                                      ),
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: selectedItem
-                                      ? AppPalette.primary.withValues(alpha: .56)
-                                      : AppPalette.line.withValues(alpha: .50),
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    selectedItem
-                                        ? Icons.check_box_rounded
-                                        : Icons.check_box_outline_blank_rounded,
-                                    color: selectedItem
-                                        ? AppPalette.primary
-                                        : AppPalette.muted,
+                          child: Material(
+                            color: selectedItem
+                                ? scheme.primary.withValues(alpha: .18)
+                                : scheme.surfaceContainerHigh.withValues(
+                                    alpha: .56,
                                   ),
-                                  const SizedBox(width: 10),
-                                  Expanded(child: Text(entry.value)),
-                                ],
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              side: BorderSide(
+                                color: selectedItem
+                                    ? scheme.primary.withValues(alpha: .56)
+                                    : scheme.outline.withValues(alpha: .50),
                               ),
+                            ),
+                            clipBehavior: Clip.antiAlias,
+                            child: CheckboxListTile(
+                              value: selectedItem,
+                              title: Text(entry.value),
+                              controlAffinity: ListTileControlAffinity.leading,
+                              dense: true,
+                              onChanged: (checked) => setState(() {
+                                if (checked == true) {
+                                  selected.add(entry.key);
+                                } else {
+                                  selected.remove(entry.key);
+                                }
+                              }),
                             ),
                           ),
                         );

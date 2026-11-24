@@ -5,9 +5,25 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// The database independently checks the current role for every read.
 class SecurityActivityPage extends StatefulWidget {
-  const SecurityActivityPage({super.key});
+  const SecurityActivityPage({
+    super.key,
+    this.loadEvents = _loadSecurityEvents,
+  });
+  final Future<List<Map<String, dynamic>>> Function() loadEvents;
   @override
   State<SecurityActivityPage> createState() => _SecurityActivityPageState();
+}
+
+Future<List<Map<String, dynamic>>> _loadSecurityEvents() async {
+  final client = Supabase.instance.client;
+  if (await client.rpc('is_admin') != true) {
+    throw StateError('Accès administrateur requis.');
+  }
+  return client
+      .from('forage_security_events')
+      .select('occurred_at,actor_id,event,target,details')
+      .order('id', ascending: false)
+      .limit(100);
 }
 
 class _SecurityActivityPageState extends State<SecurityActivityPage> {
@@ -27,15 +43,7 @@ class _SecurityActivityPageState extends State<SecurityActivityPage> {
     if (_loading) return;
     setState(() => _loading = true);
     try {
-      final client = Supabase.instance.client;
-      if (await client.rpc('is_admin') != true) {
-        throw StateError('Accès administrateur requis.');
-      }
-      final events = await client
-          .from('forage_security_events')
-          .select('occurred_at,actor_id,event,target,details')
-          .order('id', ascending: false)
-          .limit(100);
+      final events = await widget.loadEvents();
       if (mounted) {
         setState(() {
           _events = events;

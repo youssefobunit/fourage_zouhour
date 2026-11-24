@@ -1,7 +1,6 @@
 part of 'main.dart';
 
-/// A single wallpaper texture keeps the liquid lenses aligned with the
-/// original backdrop, including on renderers without shader image filters.
+/// The lenses share the backdrop's coordinates and drawing resources.
 class AtelierLiquidStage extends StatefulWidget {
   const AtelierLiquidStage({super.key, required this.child, this.dark = false});
   final Widget child;
@@ -13,15 +12,64 @@ class AtelierLiquidStage extends StatefulWidget {
 
 class _AtelierLiquidStageState extends State<AtelierLiquidStage> {
   final anchor = GlobalKey();
-  Size sceneSize = Size.zero;
-  ui.Image? wallpaper;
+  final _wallpapers = <bool, ImageInfo>{};
+  final _wallpaperListeners = <(ImageStream, ImageStreamListener)>[];
   ui.FragmentProgram? program;
-  bool _renderingWallpaper = false;
-
+  ui.Picture? _reflection;
+  Size _reflectionSize = Size.zero;
+  bool? _reflectionWasDark;
   @override
   void initState() {
     super.initState();
-    loadProgram();
+    unawaited(loadProgram());
+    _loadWallpaper(dark: false);
+    _loadWallpaper(dark: true);
+  }
+
+  void _loadWallpaper({required bool dark}) {
+    final mode = dark ? 'dark' : 'light';
+    // The two static textures are decoded once. The shader needs no
+    // framebuffer readback when the window changes size or theme.
+    final stream = AssetImage('assets/atelier-wallpaper-$mode.png')
+        .resolve(ImageConfiguration.empty);
+    final listener = ImageStreamListener(
+      (image, synchronousCall) {
+        final previous = _wallpapers[dark];
+        if (synchronousCall) {
+          _wallpapers[dark] = image;
+        } else {
+          setState(() => _wallpapers[dark] = image);
+        }
+        if (previous != null) {
+          WidgetsBinding.instance.addPostFrameCallback(
+            (_) => previous.dispose(),
+          );
+        }
+      },
+      onError: (error, _) => debugPrint('FORAGE wallpaper unavailable: $error'),
+    );
+    _wallpaperListeners.add((stream, listener));
+    stream.addListener(listener);
+  }
+
+  ui.Picture? _reflectionAt(Size size) {
+    if (size.isEmpty || !size.isFinite) return null;
+    if (_reflectionSize == size && _reflectionWasDark == widget.dark) {
+      return _reflection;
+    }
+    final recorder = ui.PictureRecorder();
+    _AtelierBackdrop(
+      dark: widget.dark,
+      reflection: true,
+    ).paint(Canvas(recorder), size);
+    final previous = _reflection;
+    _reflection = recorder.endRecording();
+    _reflectionSize = size;
+    _reflectionWasDark = widget.dark;
+    if (previous != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
+    }
+    return _reflection;
   }
 
   Future<void> loadProgram() async {
@@ -35,98 +83,32 @@ class _AtelierLiquidStageState extends State<AtelierLiquidStage> {
     }
   }
 
-  void updateWallpaper(Size size, double pixelRatio) {
-    if (size.isEmpty || !size.isFinite) return;
-    final scale = min(pixelRatio, 1440 / size.longestSide);
-    final width = max(1, (size.width * scale).ceil());
-    final height = max(1, (size.height * scale).ceil());
-    if (size == sceneSize &&
-        wallpaper?.width == width &&
-        wallpaper?.height == height &&
-        _wallpaperWasDark == widget.dark) {
-      return;
-    }
-    // Picture.toImageSync blocks the Windows raster thread.  Switching the
-    // appearance used to rebuild this bitmap during build, which made the
-    // native window report "not responding".  Defer the work and let the
-    // previous wallpaper (or painted fallback) remain visible meanwhile.
-    if (_renderingWallpaper) return;
-    _renderingWallpaper = true;
-    final dark = widget.dark;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_renderWallpaper(size, width, height, dark));
-    });
-  }
-
-  Future<void> _renderWallpaper(
-    Size size,
-    int width,
-    int height,
-    bool dark,
-  ) async {
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder)
-      ..scale(width / size.width, height / size.height);
-    _AtelierBackdrop(dark: dark).paint(canvas, size);
-    final picture = recorder.endRecording();
-    late final ui.Image next;
-    try {
-      next = await picture.toImage(width, height);
-    } catch (error) {
-      debugPrint('FORAGE liquid wallpaper unavailable: $error');
-      _renderingWallpaper = false;
-      return;
-    } finally {
-      picture.dispose();
-    }
-    if (!mounted || widget.dark != dark) {
-      next.dispose();
-      _renderingWallpaper = false;
-      if (mounted) setState(() {});
-      return;
-    }
-    final previous = wallpaper;
-    setState(() {
-      wallpaper = next;
-      sceneSize = size;
-      _wallpaperWasDark = dark;
-      _renderingWallpaper = false;
-    });
-    if (previous != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
-    }
-  }
-
-  bool? _wallpaperWasDark;
-
   @override
   void dispose() {
-    wallpaper?.dispose();
+    for (final (stream, listener) in _wallpaperListeners) {
+      stream.removeListener(listener);
+    }
+    for (final image in _wallpapers.values) {
+      image.dispose();
+    }
+    _reflection?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
-      // Rendering a scene bitmap through Picture.toImage blocks the Windows
-      // graphics driver on some machines (especially while the authenticated
-      // workspace is opening).  Desktop therefore uses the lightweight,
-      // direct liquid fallback; mobile retains the refracting scene texture.
-      final useSceneTexture =
-          !(Platform.isWindows || Platform.isLinux || Platform.isMacOS);
-      if (useSceneTexture) {
-        updateWallpaper(
-          constraints.biggest,
-          MediaQuery.devicePixelRatioOf(context),
-        );
-      }
+      final size = constraints.biggest;
+      final texture = _wallpapers[widget.dark]?.image;
+      final opticsReady = texture != null && program != null;
       return SizedBox.expand(
         key: anchor,
         child: _LiquidSceneData(
           anchor: anchor,
           program: program,
-          wallpaper: wallpaper,
-          size: sceneSize,
+          wallpaper: opticsReady ? texture : null,
+          reflection: opticsReady ? null : _reflectionAt(size),
+          size: size,
           dark: widget.dark,
           child: widget.child,
         ),
@@ -140,6 +122,7 @@ class _LiquidSceneData extends InheritedWidget {
     required this.anchor,
     required this.program,
     required this.wallpaper,
+    required this.reflection,
     required this.size,
     required this.dark,
     required super.child,
@@ -148,6 +131,7 @@ class _LiquidSceneData extends InheritedWidget {
   final GlobalKey anchor;
   final ui.FragmentProgram? program;
   final ui.Image? wallpaper;
+  final ui.Picture? reflection;
   final Size size;
   final bool dark;
 
@@ -167,6 +151,7 @@ class _LiquidSceneData extends InheritedWidget {
   bool updateShouldNotify(_LiquidSceneData oldWidget) =>
       oldWidget.program != program ||
       oldWidget.wallpaper != wallpaper ||
+      oldWidget.reflection != reflection ||
       oldWidget.size != size ||
       oldWidget.dark != dark;
 }
@@ -176,10 +161,11 @@ class _LiquidWallpaper extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (_LiquidSceneData.maybeOf(context)?.wallpaper == null) {
+    final scene = _LiquidSceneData.maybeOf(context);
+    if (scene?.wallpaper == null) {
       return CustomPaint(
         painter: _AtelierBackdrop(
-          dark: _LiquidSceneData.maybeOf(context)?.dark ?? false,
+          dark: scene?.dark ?? Theme.of(context).brightness == Brightness.dark,
         ),
       );
     }
@@ -193,6 +179,7 @@ typedef _LensStyle = ({
   double press,
   double opacity,
   Color accent,
+  bool dark,
 });
 
 class _LiquidLayer extends SingleChildRenderObjectWidget {
@@ -213,32 +200,46 @@ class _LiquidLayer extends SingleChildRenderObjectWidget {
   final Color accent;
   final bool wallpaperOnly;
 
-  _LensStyle get style => (
-    radius: radius,
-    depth: depth,
-    press: press,
-    opacity: opacity,
-    accent: accent,
-  );
+  _LensStyle _style(BuildContext context, _LiquidSceneData? scene) {
+    final scheme = Theme.of(context).colorScheme;
+    final dark = scene?.dark ?? scheme.brightness == Brightness.dark;
+    final useDarkAccent =
+        dark &&
+        (accent == AppPalette.primary ||
+            accent == AppPalette.secondary ||
+            accent == AppPalette.lilac ||
+            accent == AppPalette.muted);
+    return (
+      radius: radius,
+      depth: depth,
+      press: press,
+      opacity: opacity,
+      accent: useDarkAccent ? const Color(0xFFE36AFF) : accent,
+      dark: dark,
+    );
+  }
 
   @override
-  _RenderLiquidLayer createRenderObject(BuildContext context) =>
-      _RenderLiquidLayer(
-        _LiquidSceneData.maybeOf(context),
-        wallpaperOnly ? null : Scrollable.maybeOf(context)?.position,
-        style,
-        wallpaperOnly,
-      );
+  _RenderLiquidLayer createRenderObject(BuildContext context) {
+    final scene = _LiquidSceneData.maybeOf(context);
+    return _RenderLiquidLayer(
+      scene,
+      wallpaperOnly ? null : Scrollable.maybeOf(context)?.position,
+      _style(context, scene),
+      wallpaperOnly,
+    );
+  }
 
   @override
   void updateRenderObject(
     BuildContext context,
     _RenderLiquidLayer renderObject,
   ) {
+    final scene = _LiquidSceneData.maybeOf(context);
     renderObject.update(
-      scene: _LiquidSceneData.maybeOf(context),
+      scene: scene,
       viewport: wallpaperOnly ? null : Scrollable.maybeOf(context)?.position,
-      style: style,
+      style: _style(context, scene),
       wallpaperOnly: wallpaperOnly,
     );
   }
@@ -355,7 +356,7 @@ class _RenderLiquidLayer extends RenderProxyBox {
       ..setFloat(10, style.depth)
       ..setFloat(11, style.press)
       ..setFloat(12, style.opacity)
-      ..setFloat(13, scene.dark ? 1 : 0)
+      ..setFloat(13, style.dark ? 1 : 0)
       ..setImageSampler(0, texture);
     canvas.drawRect(bounds, Paint()..shader = shader);
   }
@@ -364,42 +365,118 @@ class _RenderLiquidLayer extends RenderProxyBox {
     final style = _style;
     final radius = min(style.radius, size.shortestSide * .5);
     final shape = RRect.fromRectAndRadius(bounds, Radius.circular(radius));
-    final dark = _scene?.dark ?? false;
-    final materialOpacity = style.opacity.clamp(0.0, 1.0);
-    Color material(Color color) => color.withValues(
-      alpha: color.a * materialOpacity,
-    );
-    final edgeColor = (dark ? const Color(0xFFF0BBFF) : style.accent)
-        .withValues(alpha: (.30 + .32 * style.press) * materialOpacity);
+    final opacity = style.opacity.clamp(0.0, 1.0);
+    final depth = style.depth * (1 + .36 * style.press);
+    final scene = _scene;
+    final reflection = scene?.reflection;
+    if (reflection != null && scene != null) {
+      final origin = scene.originOf(this);
+      final center = bounds.center;
+      final lift = min(size.shortestSide * .12, 8.0) * depth;
+      canvas.save();
+      canvas.clipRRect(shape);
+      canvas.translate(center.dx + 1.4 * depth, center.dy - lift * .42);
+      canvas.scale(1 + 2 * lift / size.width, 1 + 2 * lift / size.height);
+      canvas.translate(-origin.dx - center.dx, -origin.dy - center.dy);
+      canvas.drawPicture(reflection);
+      canvas.restore();
+    }
+
+    Color tint(Color color, double amount, double alpha) => Color.lerp(
+      color,
+      style.accent,
+      amount,
+    )!.withValues(alpha: alpha * opacity);
+    final tintStrength = .10 + .14 * style.press;
     canvas.drawRRect(
       shape,
       Paint()
         ..shader = LinearGradient(
           colors: [
-            if (dark) ...[
-              material(const Color(0xFF57147E)),
-              material(const Color(0xFF190024)),
-            ] else ...[
-              material(
-                Color.lerp(
-                  AppPalette.surfaceRaised,
-                  style.accent,
-                  .12 + .10 * style.press,
-                )!,
-              ),
-              material(AppPalette.background),
-            ],
+            tint(
+              style.dark ? const Color(0xFF45165D) : const Color(0xFFF1FAFF),
+              tintStrength,
+              style.dark ? .66 : .56,
+            ),
+            tint(
+              style.dark ? const Color(0xFF1D062C) : AppPalette.background,
+              tintStrength * .48,
+              style.dark ? .50 : .59,
+            ),
+            tint(
+              style.dark ? const Color(0xFF341045) : AppPalette.surfaceRaised,
+              tintStrength,
+              style.dark ? .60 : .64,
+            ),
           ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+          stops: const [0, .58, 1],
+          begin: const Alignment(-.85, -1),
+          end: const Alignment(.9, 1),
         ).createShader(bounds),
     );
+
+    final light = style.dark ? const Color(0xFFF4CFFF) : Colors.white;
+    final edge = style.dark ? const Color(0xFFDF94F7) : const Color(0xFF79BAE8);
+    final shine = (opacity * (.66 + .22 * style.press)).clamp(0.0, 1.0);
+    final sheen = min(.32, (9.0 + depth * 4) / size.height);
     canvas.drawRRect(
-      shape.deflate(.6),
+      shape,
       Paint()
-        ..color = edgeColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2,
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            light.withValues(alpha: shine * .29),
+            light.withValues(alpha: 0),
+            edge.withValues(alpha: 0),
+            edge.withValues(alpha: shine * .21),
+          ],
+          stops: [0, sheen, 1 - sheen, 1],
+        ).createShader(bounds),
+    );
+    final highlightRadius = min(
+      size.longestSide * .46,
+      max(radius * 2.6, 24.0),
+    );
+    final upperGlint = Offset(radius * (.70 + .36 * style.press), 0);
+    canvas.drawRRect(
+      shape,
+      Paint()
+        ..shader = ui.Gradient.radial(
+          upperGlint,
+          highlightRadius,
+          [
+            light.withValues(alpha: shine * .62),
+            light.withValues(alpha: shine * .15),
+            light.withValues(alpha: 0),
+          ],
+          const [0, .36, 1],
+        ),
+    );
+    canvas.drawRRect(
+      shape,
+      Paint()
+        ..shader = ui.Gradient.radial(
+          Offset(size.width - radius * .68, size.height),
+          highlightRadius,
+          [light.withValues(alpha: shine * .43), edge.withValues(alpha: 0)],
+        ),
+    );
+    canvas.drawDRRect(
+      shape,
+      shape.deflate(min(.9, size.shortestSide * .20)),
+      Paint()
+        ..shader = LinearGradient(
+          begin: const Alignment(-.9, -1),
+          end: const Alignment(.72, 1),
+          colors: [
+            light.withValues(alpha: shine * .95),
+            edge.withValues(alpha: shine * .35),
+            edge.withValues(alpha: shine * .30),
+            light.withValues(alpha: shine * .76),
+          ],
+          stops: const [0, .32, .68, 1],
+        ).createShader(bounds),
     );
   }
 }
@@ -409,11 +486,12 @@ Widget _primaryLiquidButton(
   Set<WidgetState> states,
   Widget? child,
 ) => _liquidButton(
+  context,
   states,
   child,
   accent: AppPalette.primary,
   radius: 16,
-  depth: 1.32,
+  depth: 1.52,
 );
 
 Widget _secondaryLiquidButton(
@@ -421,11 +499,12 @@ Widget _secondaryLiquidButton(
   Set<WidgetState> states,
   Widget? child,
 ) => _liquidButton(
+  context,
   states,
   child,
   accent: AppPalette.secondary,
   radius: 16,
-  depth: 1.1,
+  depth: 1.29,
 );
 
 Widget _iconLiquidButton(
@@ -433,11 +512,12 @@ Widget _iconLiquidButton(
   Set<WidgetState> states,
   Widget? child,
 ) => _liquidButton(
+  context,
   states,
   child,
   accent: AppPalette.primary,
   radius: 50,
-  depth: 1.29,
+  depth: 1.48,
 );
 
 Widget _criticalLiquidButton(
@@ -445,6 +525,7 @@ Widget _criticalLiquidButton(
   Set<WidgetState> states,
   Widget? child,
 ) => _liquidButton(
+  context,
   states,
   child,
   accent: AppPalette.coral,
@@ -457,31 +538,37 @@ final _criticalActionStyle = FilledButton.styleFrom(
 ).copyWith(backgroundBuilder: _criticalLiquidButton);
 
 Widget _liquidButton(
+  BuildContext context,
   Set<WidgetState> states,
   Widget? child, {
   required Color accent,
   required double radius,
   required double depth,
+  Widget Function(double pressure, Widget? child)? surfaceBuilder,
 }) {
   final enabled = !states.contains(WidgetState.disabled);
   final pressure = states.contains(WidgetState.pressed)
       ? 1.0
+      : states.contains(WidgetState.selected)
+      ? .50
       : states.contains(WidgetState.hovered) ||
             states.contains(WidgetState.focused)
       ? .35
       : 0.0;
   return TweenAnimationBuilder<double>(
     tween: Tween(end: pressure),
-    duration: const Duration(milliseconds: 170),
+    duration: MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : const Duration(milliseconds: 170),
     curve: Curves.easeOutCubic,
     child: child,
     builder: (_, value, child) => _LiquidLayer(
       radius: radius,
       depth: enabled ? depth : .38,
       press: enabled ? value : 0,
-      opacity: enabled ? .97 : .48,
+      opacity: enabled ? .90 + .08 * value : .42,
       accent: enabled ? accent : AppPalette.muted,
-      child: child,
+      child: surfaceBuilder?.call(value, child) ?? child,
     ),
   );
 }
@@ -518,7 +605,10 @@ class _LiquidTapTargetState extends State<_LiquidTapTarget>
   );
 
   bool _pressed = false;
+  bool _hovered = false;
   double get _restingPressure => widget.selected ? .61 : 0;
+  double get _idlePressure =>
+      _hovered ? (widget.selected ? .76 : .30) : _restingPressure;
   late final _pressure = AnimationController.unbounded(
     vsync: this,
     value: _restingPressure,
@@ -528,7 +618,7 @@ class _LiquidTapTargetState extends State<_LiquidTapTarget>
   void didUpdateWidget(covariant _LiquidTapTarget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.selected != widget.selected && !_pressed) {
-      _settleAt(_restingPressure);
+      _settleAt(_idlePressure);
     }
   }
 
@@ -551,7 +641,13 @@ class _LiquidTapTargetState extends State<_LiquidTapTarget>
   void _onHighlightChanged(bool pressed) {
     if (!mounted || pressed == _pressed) return;
     _pressed = pressed;
-    _settleAt(pressed ? 1.0 : _restingPressure);
+    _settleAt(pressed ? 1.0 : _idlePressure);
+  }
+
+  void _onHoverChanged(bool hovered) {
+    if (!mounted || _hovered == hovered) return;
+    _hovered = hovered;
+    if (!_pressed) _settleAt(_idlePressure);
   }
 
   @override
@@ -567,6 +663,7 @@ class _LiquidTapTargetState extends State<_LiquidTapTarget>
       color: Colors.transparent,
       child: InkWell(
         onTap: widget.onTap,
+        onHover: _onHoverChanged,
         onHighlightChanged: _onHighlightChanged,
         borderRadius: BorderRadius.circular(widget.radius),
         splashFactory: NoSplash.splashFactory,
@@ -587,7 +684,7 @@ class _LiquidTapTargetState extends State<_LiquidTapTarget>
         transformHitTests: false,
         child: _LiquidLayer(
           radius: widget.radius,
-          depth: widget.selected ? 1.36 : 1.16,
+          depth: widget.selected ? 1.58 : 1.31,
           press: pressure,
           accent: widget.accent,
           opacity: widget.selected

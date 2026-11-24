@@ -104,7 +104,7 @@ ThemeData atelierTheme({String? fontFamily}) {
       style: FilledButton.styleFrom(
         backgroundColor: Colors.transparent,
         disabledBackgroundColor: Colors.transparent,
-        foregroundColor: AppPalette.primary,
+        foregroundColor: AppPalette.primaryDark,
         minimumSize: const Size(0, 48),
         elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -115,7 +115,7 @@ ThemeData atelierTheme({String? fontFamily}) {
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
-        foregroundColor: AppPalette.primary,
+        foregroundColor: AppPalette.primaryDark,
         minimumSize: const Size(0, 44),
         side: BorderSide.none,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -128,7 +128,10 @@ ThemeData atelierTheme({String? fontFamily}) {
       ).copyWith(backgroundBuilder: _secondaryLiquidButton),
     ),
     iconButtonTheme: IconButtonThemeData(
-      style: IconButton.styleFrom(backgroundColor: Colors.transparent)
+      style: IconButton.styleFrom(
+        foregroundColor: AppPalette.primaryDark,
+        backgroundColor: Colors.transparent,
+      )
           .copyWith(backgroundBuilder: _iconLiquidButton),
     ),
   );
@@ -264,7 +267,10 @@ ThemeData atelierDarkTheme({String? fontFamily}) {
       ).copyWith(backgroundBuilder: _secondaryLiquidButton),
     ),
     textButtonTheme: TextButtonThemeData(
-      style: TextButton.styleFrom(foregroundColor: violet),
+      style: TextButton.styleFrom(
+        foregroundColor: violet,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ).copyWith(backgroundBuilder: _secondaryLiquidButton),
     ),
     iconButtonTheme: IconButtonThemeData(
       style: IconButton.styleFrom(
@@ -323,6 +329,7 @@ class _LiquidSelectField<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final selected = items.where((item) => item.value == field.value).firstOrNull;
     final enabled = onChanged != null;
+    final scheme = Theme.of(context).colorScheme;
     return Opacity(
       opacity: enabled ? 1 : .56,
       child: InkWell(
@@ -342,27 +349,34 @@ class _LiquidSelectField<T> extends StatelessWidget {
                 field.didChange(selectedItem.value);
                 onChanged!(selectedItem.value);
               },
-        child: InputDecorator(
-          // Keep the label above the value.  With an empty decorator both
-          // pieces of text would be painted on top of each other.
-          isEmpty: false,
-          decoration: decoration.copyWith(
-            errorText: field.errorText,
-            enabled: enabled,
-            prefixIcon: decoration.prefixIcon ??
-                const Icon(Icons.sell_outlined, color: AppPalette.primary),
-            suffixIcon: const Icon(
-              Icons.keyboard_arrow_down_rounded,
-              color: AppPalette.primaryDark,
-            ),
-          ),
-          child: selected == null
-              ? const Text('Sélectionner…')
-              : DefaultTextStyle.merge(
-                  maxLines: isExpanded ? 2 : 1,
-                  overflow: TextOverflow.ellipsis,
-                  child: selected.child,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxWidth < 145;
+            return InputDecorator(
+              isEmpty: false,
+              decoration: decoration.copyWith(
+                errorText: field.errorText,
+                enabled: enabled,
+                isDense: compact ? true : decoration.isDense,
+                prefixIcon: decoration.prefixIcon ??
+                    (compact ? null : Icon(Icons.sell_outlined, color: scheme.primary)),
+                suffixIcon: Icon(
+                  Icons.keyboard_arrow_down_rounded,
+                  color: scheme.primary,
                 ),
+                suffixIconConstraints: compact
+                    ? const BoxConstraints(minWidth: 30)
+                    : null,
+              ),
+              child: selected == null
+                  ? const Text('Sélectionner…')
+                  : DefaultTextStyle.merge(
+                      maxLines: isExpanded ? 2 : 1,
+                      overflow: TextOverflow.ellipsis,
+                      child: selected.child,
+                    ),
+            );
+          },
         ),
       ),
     );
@@ -374,6 +388,7 @@ Future<DropdownMenuItem<T>?> _showLiquidSelectMenu<T>(
   required List<DropdownMenuItem<T>> items,
   required T? selected,
 }) {
+  final scheme = Theme.of(context).colorScheme;
   final fieldBox = context.findRenderObject() as RenderBox;
   final overlay = Navigator.of(context).overlay!;
   final overlayBox = overlay.context.findRenderObject() as RenderBox;
@@ -383,7 +398,8 @@ Future<DropdownMenuItem<T>?> _showLiquidSelectMenu<T>(
 
   return showMenu<DropdownMenuItem<T>>(
     context: context,
-    color: AppPalette.surface,
+    color: scheme.surface,
+    surfaceTintColor: Colors.transparent,
     elevation: 0,
     constraints: BoxConstraints(
       minWidth: fieldBox.size.width,
@@ -392,7 +408,7 @@ Future<DropdownMenuItem<T>?> _showLiquidSelectMenu<T>(
     ),
     shape: RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(20),
-      side: BorderSide(color: AppPalette.line.withValues(alpha: .90)),
+      side: BorderSide(color: scheme.outline.withValues(alpha: .90)),
     ),
     position: RelativeRect.fromRect(
       Rect.fromLTWH(fieldRect.left, fieldRect.bottom + 6, fieldRect.width, 1),
@@ -414,12 +430,12 @@ Future<DropdownMenuItem<T>?> _showLiquidSelectMenu<T>(
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(14),
                   color: isSelected
-                      ? AppPalette.primary.withValues(alpha: .20)
-                      : AppPalette.surfaceRaised.withValues(alpha: .48),
+                      ? scheme.primary.withValues(alpha: .20)
+                      : scheme.surfaceContainerHigh.withValues(alpha: .48),
                   border: Border.all(
                     color: isSelected
-                        ? AppPalette.primary.withValues(alpha: .58)
-                        : AppPalette.line.withValues(alpha: .34),
+                        ? scheme.primary.withValues(alpha: .58)
+                        : scheme.outline.withValues(alpha: .34),
                   ),
                 ),
                 child: Row(
@@ -429,7 +445,7 @@ Future<DropdownMenuItem<T>?> _showLiquidSelectMenu<T>(
                           ? Icons.sell_rounded
                           : Icons.inventory_2_outlined,
                       size: 19,
-                      color: isSelected ? AppPalette.primary : AppPalette.muted,
+                      color: isSelected ? scheme.primary : scheme.onSurfaceVariant,
                     ),
                     const SizedBox(width: 10),
                     Expanded(
@@ -441,7 +457,7 @@ Future<DropdownMenuItem<T>?> _showLiquidSelectMenu<T>(
                       ),
                     ),
                     if (isSelected)
-                      const Icon(Icons.check_rounded, color: AppPalette.primary),
+                      Icon(Icons.check_rounded, color: scheme.primary),
                   ],
                 ),
               );
@@ -453,9 +469,14 @@ Future<DropdownMenuItem<T>?> _showLiquidSelectMenu<T>(
 }
 
 class _AtelierBackdrop extends CustomPainter {
-  const _AtelierBackdrop({this.dark = false});
+  const _AtelierBackdrop({this.dark = false, this.reflection = false});
 
   final bool dark;
+  final bool reflection;
+
+  List<Color> _colors(List<Color> colors) => reflection
+      ? colors.map((color) => color.withValues(alpha: color.a * .55)).toList()
+      : colors;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -467,9 +488,11 @@ class _AtelierBackdrop extends CustomPainter {
         ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: dark
-              ? const [Color(0xFF0B0011), Color(0xFF21002D), Color(0xFF08000D)]
-              : const [Color(0xFFEAF7FF), Color(0xFFC6E6FF), Color(0xFF8CCBFF)],
+          colors: _colors(
+            dark
+                ? const [Color(0xFF0B0011), Color(0xFF21002D), Color(0xFF08000D)]
+                : const [Color(0xFFEAF7FF), Color(0xFFC6E6FF), Color(0xFF8CCBFF)],
+          ),
           stops: [0, .53, 1],
         ).createShader(bounds),
     );
@@ -514,20 +537,21 @@ class _AtelierBackdrop extends CustomPainter {
       width: size.width,
       height: size.height,
     );
-    final glow = shape.inflate(.019);
-    canvas.drawOval(
-      glow,
-      Paint()
-        ..color = light.withValues(alpha: .20)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, .021),
-    );
+    if (!reflection) {
+      canvas.drawOval(
+        shape.inflate(.019),
+        Paint()
+          ..color = light.withValues(alpha: .20)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, .021),
+      );
+    }
     canvas.drawOval(
       shape,
       Paint()
         ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [
+          colors: _colors([
             light.withValues(alpha: .71),
             if (dark) ...[
               const Color(0xFF2B0843),
@@ -538,7 +562,7 @@ class _AtelierBackdrop extends CustomPainter {
               const Color(0xFFCFEAFF),
               const Color(0xFFF0FAFF),
             ],
-          ],
+          ]),
           stops: const [0, .20, .57, 1],
         ).createShader(shape),
     );
@@ -550,12 +574,12 @@ class _AtelierBackdrop extends CustomPainter {
         ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [
+          colors: _colors([
             light,
             dark ? const Color(0xDDF8D5FF) : const Color(0xCCFFFFFF),
             light.withValues(alpha: .11),
             Colors.transparent,
-          ],
+          ]),
           stops: const [0, .23, .59, 1],
         ).createShader(shape),
     );
@@ -564,7 +588,7 @@ class _AtelierBackdrop extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _AtelierBackdrop oldDelegate) =>
-      oldDelegate.dark != dark;
+      oldDelegate.dark != dark || oldDelegate.reflection != reflection;
 }
 
 class _AtelierIcon extends StatelessWidget {
@@ -580,12 +604,12 @@ class _AtelierIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dark = ForageAppearanceScope.of(context).isDark;
+    final dark = Theme.of(context).brightness == Brightness.dark;
     // The historic primary is blue.  In the night scene the same semantic
     // primary becomes violet, so icons never look as though they belong to
     // the light interface.
-    final accent = dark && color == AppPalette.primary
-        ? const Color(0xFFE36AFF)
+    final accent = dark && (color == AppPalette.primary || color == AppPalette.secondary)
+        ? Theme.of(context).colorScheme.primary
         : color;
     final base = dark ? const Color(0xFF260633) : AppPalette.surfaceRaised;
     final lower = dark ? const Color(0xFF190022) : AppPalette.surface;
@@ -625,16 +649,19 @@ class _AtelierBackButton extends StatelessWidget {
   final String tooltip;
 
   @override
-  Widget build(BuildContext context) => IconButton(
-    onPressed: () => Navigator.maybePop(context),
-    icon: const Icon(Icons.arrow_back_rounded),
-    tooltip: tooltip,
-    style: IconButton.styleFrom(
-      foregroundColor: AppPalette.primary,
-      backgroundColor: AppPalette.surfaceRaised,
-      side: const BorderSide(color: AppPalette.line),
-    ),
-  );
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return IconButton(
+      onPressed: () => Navigator.maybePop(context),
+      icon: const Icon(Icons.arrow_back_rounded),
+      tooltip: tooltip,
+      style: IconButton.styleFrom(
+        foregroundColor: scheme.primary,
+        backgroundColor: scheme.surfaceContainerHigh,
+        side: BorderSide(color: scheme.outline),
+      ),
+    );
+  }
 }
 
 class _DashboardHeaderButton extends StatelessWidget {
@@ -671,48 +698,66 @@ class _DashboardGlassIcon extends StatelessWidget {
   final double size;
 
   @override
-  Widget build(BuildContext context) => Container(
-    width: size,
-    height: size,
-    decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(size * .31),
-      boxShadow: [
-        BoxShadow(
-          color: color.withValues(alpha: .31),
-          blurRadius: 13,
-          offset: const Offset(0, 4),
-        ),
-      ],
-      border: Border.all(color: color.withValues(alpha: .45), width: .65),
-      gradient: LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [
-          Color.lerp(color, Colors.white, .43)!,
-          Color.lerp(color, AppPalette.soft, .43)!,
-          Color.lerp(color, AppPalette.background, .65)!,
-          color,
-        ],
-        stops: const [0, .30, .72, 1],
-      ),
-    ),
-    child: DecoratedBox(
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final dark = scheme.brightness == Brightness.dark;
+    final accent = dark && color == AppPalette.lilac ? scheme.primary : color;
+    final colors = dark
+        ? [
+            Color.lerp(accent, Colors.white, .20)!,
+            Color.lerp(accent, scheme.surfaceContainerHigh, .43)!,
+            Color.lerp(accent, scheme.surface, .65)!,
+            Color.alphaBlend(accent.withValues(alpha: .52), scheme.surface),
+          ]
+        : [
+            Color.lerp(accent, Colors.white, .43)!,
+            Color.lerp(accent, AppPalette.soft, .43)!,
+            Color.lerp(accent, AppPalette.background, .65)!,
+            accent,
+          ];
+    return Container(
+      width: size,
+      height: size,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(size * .29),
-        gradient: RadialGradient(
-          center: const Alignment(-.72, -.95),
-          radius: .75,
-          colors: [Colors.white.withValues(alpha: .34), Colors.transparent],
+        borderRadius: BorderRadius.circular(size * .31),
+        boxShadow: [
+          BoxShadow(
+            color: accent.withValues(alpha: .31),
+            blurRadius: 13,
+            offset: const Offset(0, 4),
+          ),
+        ],
+        border: Border.all(color: accent.withValues(alpha: .45), width: .65),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: colors,
+          stops: const [0, .30, .72, 1],
         ),
       ),
-      child: Icon(
-        icon,
-        size: size * .56,
-        color: AppPalette.text,
-        shadows: const [Shadow(color: Color(0x55316FA6), blurRadius: 4)],
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(size * .29),
+          gradient: RadialGradient(
+            center: const Alignment(-.72, -.95),
+            radius: .75,
+            colors: [Colors.white.withValues(alpha: .34), Colors.transparent],
+          ),
+        ),
+        child: Icon(
+          icon,
+          size: size * .56,
+          color: scheme.onSurface,
+          shadows: [
+            Shadow(
+              color: dark ? const Color(0x66170025) : const Color(0x55316FA6),
+              blurRadius: 4,
+            ),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _DesktopDashboardWelcome extends StatelessWidget {
@@ -737,10 +782,10 @@ class _DesktopDashboardWelcome extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text(
+            Text(
               'VUE D’ENSEMBLE',
               style: TextStyle(
-                color: AppPalette.primary,
+                color: Theme.of(context).colorScheme.primary,
                 fontSize: 11,
                 letterSpacing: 2.05,
                 fontWeight: FontWeight.w900,
@@ -768,10 +813,10 @@ class _DesktopDashboardWelcome extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 9),
-            const Text(
+            Text(
               'Voici un aperçu de votre atelier aujourd’hui.',
               style: TextStyle(
-                color: AppPalette.muted,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
               ),
@@ -914,15 +959,19 @@ class _DesktopWelcomeGear extends StatelessWidget {
           : const Duration(milliseconds: 1250),
       curve: Curves.easeOutCubic,
       builder: (_, light, _) => CustomPaint(
-        painter: _DesktopWelcomeGearPainter(light),
+        painter: _DesktopWelcomeGearPainter(
+          light,
+          dark: Theme.of(context).brightness == Brightness.dark,
+        ),
       ),
     ),
   );
 }
 
 class _DesktopWelcomeGearPainter extends CustomPainter {
-  const _DesktopWelcomeGearPainter(this.light);
+  const _DesktopWelcomeGearPainter(this.light, {required this.dark});
   final double light;
+  final bool dark;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -933,7 +982,7 @@ class _DesktopWelcomeGearPainter extends CustomPainter {
     canvas.drawOval(
       halo,
       Paint()
-        ..color = AppPalette.secondary.withValues(alpha: .22)
+        ..color = dark ? const Color(0x38D059F6) : const Color(0x384B91F2)
         ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * .21),
     );
     canvas.save();
@@ -943,22 +992,19 @@ class _DesktopWelcomeGearPainter extends CustomPainter {
     canvas.drawPath(
       gear.shift(const Offset(0, 7)),
       Paint()
-        ..color = const Color(0x3D2B70A9)
+        ..color = dark ? const Color(0x3D7721A3) : const Color(0x3D2B70A9)
         ..maskFilter = MaskFilter.blur(BlurStyle.normal, 10),
     );
     canvas.drawPath(
       gear,
       Paint()
-        ..shader = const RadialGradient(
-          center: Alignment(-.48, -.75),
+        ..shader = RadialGradient(
+          center: const Alignment(-.48, -.75),
           radius: 1.24,
-          colors: [
-            Color(0xFFE8F8FF),
-            Color(0xFF72BFFF),
-            Color(0xFF2675CE),
-            Color(0x8023619F),
-          ],
-          stops: [0, .22, .61, 1],
+          colors: dark
+              ? const [Color(0xFFFFE8FF), Color(0xFFCB80F5), Color(0xFF8636B1), Color(0x80511C75)]
+              : const [Color(0xFFE8F8FF), Color(0xFF72BFFF), Color(0xFF2675CE), Color(0x8023619F)],
+          stops: const [0, .22, .61, 1],
         ).createShader(Rect.fromCircle(center: Offset.zero, radius: radius)),
     );
     canvas.drawPath(
@@ -969,7 +1015,9 @@ class _DesktopWelcomeGearPainter extends CustomPainter {
         ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFFFFFFFF), Color(0x6685D7FF), Color(0xFF2D8EE5)],
+          colors: dark
+              ? const [Color(0xFFFFF1FF), Color(0x66E6A1FF), Color(0xFFAC52D8)]
+              : const [Color(0xFFFFFFFF), Color(0x6685D7FF), Color(0xFF2D8EE5)],
         ).createShader(Rect.fromCircle(center: Offset.zero, radius: radius)),
     );
     canvas.drawCircle(
@@ -978,7 +1026,9 @@ class _DesktopWelcomeGearPainter extends CustomPainter {
       Paint()
         ..shader = RadialGradient(
           center: Alignment.topLeft,
-          colors: [Color(0xEE4B94CF), Color(0x8851A6E8), Color(0x0051A6E8)],
+          colors: dark
+              ? const [Color(0xEEA75ACF), Color(0x888A3FB8), Color(0x008A3FB8)]
+              : const [Color(0xEE4B94CF), Color(0x8851A6E8), Color(0x0051A6E8)],
         ).createShader(Rect.fromCircle(center: Offset.zero, radius: radius)),
     );
     canvas.drawCircle(
@@ -987,7 +1037,7 @@ class _DesktopWelcomeGearPainter extends CustomPainter {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.7
-        ..color = const Color(0xFFD7F2FF),
+        ..color = dark ? const Color(0xFFF6D8FF) : const Color(0xFFD7F2FF),
     );
     canvas.restore();
   }
@@ -1011,7 +1061,7 @@ class _DesktopWelcomeGearPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DesktopWelcomeGearPainter oldDelegate) =>
-      oldDelegate.light != light;
+      oldDelegate.light != light || oldDelegate.dark != dark;
 }
 
 class _MachineArmEmblem extends StatelessWidget {
@@ -1019,12 +1069,18 @@ class _MachineArmEmblem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => RepaintBoundary(
-    child: CustomPaint(painter: const _MachineArmEmblemPainter()),
+    child: CustomPaint(
+      painter: _MachineArmEmblemPainter(
+        dark: Theme.of(context).brightness == Brightness.dark,
+      ),
+    ),
   );
 }
 
 class _MachineArmEmblemPainter extends CustomPainter {
-  const _MachineArmEmblemPainter();
+  const _MachineArmEmblemPainter({required this.dark});
+
+  final bool dark;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1042,7 +1098,7 @@ class _MachineArmEmblemPainter extends CustomPainter {
     canvas.drawOval(
       glow,
       Paint()
-        ..color = AppPalette.primary.withValues(alpha: .20)
+        ..color = dark ? const Color(0x33D059F6) : const Color(0x33167CE3)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 19),
     );
     _roundedPart(canvas, const Rect.fromLTWH(-62, -4, 116, 20), 8);
@@ -1055,7 +1111,7 @@ class _MachineArmEmblemPainter extends CustomPainter {
     _joint(canvas, const Offset(-37, -104), 12);
     _joint(canvas, const Offset(-3, -133), 9);
     final claw = Paint()
-      ..color = const Color(0xFFE6F8FF)
+      ..color = dark ? const Color(0xFFF8DAFF) : const Color(0xFFE6F8FF)
       ..strokeWidth = 5
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(const Offset(-3, -133), const Offset(21, -144), claw);
@@ -1069,7 +1125,7 @@ class _MachineArmEmblemPainter extends CustomPainter {
     canvas.drawRRect(
       shape.shift(const Offset(-2, 4)),
       Paint()
-        ..color = const Color(0x342B6FA5)
+        ..color = dark ? const Color(0x34721D99) : const Color(0x342B6FA5)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
     );
     canvas.drawRRect(
@@ -1078,7 +1134,9 @@ class _MachineArmEmblemPainter extends CustomPainter {
         ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFFE8F8FF), Color(0xFF58AAEE), Color(0xFF1D63B6)],
+          colors: dark
+              ? const [Color(0xFFFFE6FF), Color(0xFFC876EF), Color(0xFF702593)]
+              : const [Color(0xFFE8F8FF), Color(0xFF58AAEE), Color(0xFF1D63B6)],
         ).createShader(rect),
     );
     canvas.drawRRect(
@@ -1086,7 +1144,7 @@ class _MachineArmEmblemPainter extends CustomPainter {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.1
-        ..color = const Color(0xFFE5F7FF),
+        ..color = dark ? const Color(0xFFF8DFFF) : const Color(0xFFE5F7FF),
     );
   }
 
@@ -1112,7 +1170,9 @@ class _MachineArmEmblemPainter extends CustomPainter {
       Paint()
         ..shader = RadialGradient(
           center: const Alignment(-.5, -.6),
-          colors: const [Color(0xFFF0FBFF), Color(0xFF59B5F5), Color(0xFF1C67BB)],
+          colors: dark
+              ? const [Color(0xFFFFEFFF), Color(0xFFCB81EF), Color(0xFF74259B)]
+              : const [Color(0xFFF0FBFF), Color(0xFF59B5F5), Color(0xFF1C67BB)],
         ).createShader(Rect.fromCircle(center: center, radius: radius)),
     );
     canvas.drawCircle(
@@ -1121,12 +1181,13 @@ class _MachineArmEmblemPainter extends CustomPainter {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.2
-        ..color = const Color(0xFFE7F9FF),
+        ..color = dark ? const Color(0xFFF9E2FF) : const Color(0xFFE7F9FF),
     );
   }
 
   @override
-  bool shouldRepaint(covariant _MachineArmEmblemPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _MachineArmEmblemPainter oldDelegate) =>
+      oldDelegate.dark != dark;
 }
 
 class _WorkshopEmblem extends StatelessWidget {
@@ -1192,12 +1253,12 @@ class _WorkshopEmblemPainter extends CustomPainter {
     canvas.drawOval(
       halo.deflate(span * .076).shift(Offset(-span * .05, span * .06)),
       Paint()
-        ..shader = const RadialGradient(
+        ..shader = RadialGradient(
           center: Alignment.bottomRight,
           radius: 1.1,
           colors: dark
-              ? const [Color(0x91ED9CFF), Color(0x415F1684), Colors.transparent]
-              : const [
+              ? [Color(0x91ED9CFF), Color(0x415F1684), Colors.transparent]
+              : [
                   Color(0x9166C6F5),
                   Color(0x4168B9EF),
                   Colors.transparent,
@@ -1231,7 +1292,7 @@ class _WorkshopEmblemPainter extends CustomPainter {
     canvas.drawRRect(
       shape.shift(Offset(-span * .035, span * .093)),
       Paint()
-        ..color = const Color(0x3C215F9B)
+        ..color = dark ? const Color(0x3C691990) : const Color(0x3C215F9B)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
     );
     canvas.drawRRect(
@@ -1450,7 +1511,7 @@ class _DashboardAction extends StatelessWidget {
                     shape: BoxShape.circle,
                     border: Border.all(color: surfaceAccent.withValues(alpha: .35)),
                   ),
-                  child: const Icon(
+                  child: Icon(
                     Icons.arrow_forward_rounded,
                     color: foreground,
                     size: 15,
@@ -1484,112 +1545,570 @@ class _DashboardAction extends StatelessWidget {
   }
 }
 
-class _LoginIdentity extends StatelessWidget {
-  const _LoginIdentity({required this.wide});
+class _LoginScene extends StatelessWidget {
+  const _LoginScene({required this.wide, required this.signIn});
+
   final bool wide;
+  final Widget signIn;
 
   @override
   Widget build(BuildContext context) {
-    final dark = ForageAppearanceScope.of(context).isDark;
-    final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
-    final mark = Glass(
-      accent: accent,
-      radius: wide ? 23 : 19,
-      padding: EdgeInsets.all(wide ? 12 : 8),
-      child: dark
-          ? ColorFiltered(
-              colorFilter: const ColorFilter.mode(
-                Color(0xFFE46AFF),
-                BlendMode.srcIn,
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final reducedMotion = MediaQuery.disableAnimationsOf(context);
+    return Aura(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final padding = EdgeInsets.symmetric(
+            horizontal: wide ? min(76, constraints.maxWidth * .047) : 16,
+            vertical: wide ? 30 : 16,
+          );
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              RepaintBoundary(
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0, end: 1),
+                  duration: reducedMotion
+                      ? Duration.zero
+                      : const Duration(milliseconds: 1300),
+                  curve: Curves.easeOutCubic,
+                  builder: (_, progress, _) => CustomPaint(
+                    painter: _LoginAmbientLight(dark: dark, progress: progress),
+                  ),
+                ),
               ),
-              child: Image.asset(
-                'assets/app_logo.png',
-                width: wide ? 57 : 39,
-                height: wide ? 57 : 39,
-                excludeFromSemantics: true,
+              if (wide)
+                Positioned(
+                  top: 0,
+                  bottom: 0,
+                  left: 0,
+                  width: constraints.maxWidth * .49,
+                  child: const RepaintBoundary(
+                    child: _LoginArtwork(wide: true),
+                  ),
+                ),
+              SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, safeConstraints) => SingleChildScrollView(
+                    padding: padding,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: max(
+                          0,
+                          safeConstraints.maxHeight - padding.vertical,
+                        ),
+                      ),
+                      child: Center(
+                        child: wide
+                            ? Row(
+                                children: [
+                                  Expanded(
+                                    flex: 10,
+                                    child: Padding(
+                                      padding: EdgeInsets.only(
+                                        bottom: min(
+                                          236,
+                                          constraints.maxHeight * .26,
+                                        ),
+                                      ),
+                                      child: Center(
+                                        child: ConstrainedBox(
+                                          constraints: const BoxConstraints(
+                                            maxWidth: 460,
+                                          ),
+                                          child: const SizedBox(
+                                            width: double.infinity,
+                                            child: _LoginIdentity(wide: true),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  SizedBox(width: constraints.maxWidth * .032),
+                                  Expanded(
+                                    flex: 11,
+                                    child: Center(
+                                      child: ConstrainedBox(
+                                        constraints: const BoxConstraints(
+                                          maxWidth: 600,
+                                        ),
+                                        child: signIn,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : ConstrainedBox(
+                                constraints: const BoxConstraints(maxWidth: 464),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                                  children: [
+                                    const _LoginIdentity(wide: false),
+                                    const SizedBox(height: 14),
+                                    signIn,
+                                  ],
+                                ),
+                              ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            )
-          : Image.asset(
-              'assets/app_logo.png',
-              width: wide ? 57 : 39,
-              height: wide ? 57 : 39,
-              excludeFromSemantics: true,
-            ),
-    );
-    if (!wide) {
-      return Row(
-        children: [
-          mark,
-          const SizedBox(width: 13),
-          const Expanded(child: _LoginBrandName()),
-        ],
-      );
-    }
-    return Glass(
-      radius: 30,
-      accent: accent,
-      frosted: true,
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: _WorkshopEmblemPainter(dark ? .72 : 1, dark: dark),
-              ),
-            ),
-          ),
-          ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 350),
-            child: Padding(
-              padding: const EdgeInsets.all(28),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  mark,
-                  const SizedBox(height: 23),
-                  const _LoginBrandName(large: true),
-                ],
-              ),
-            ),
-          ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
 }
 
-class _LoginBrandName extends StatelessWidget {
-  const _LoginBrandName({this.large = false});
-  final bool large;
+class _LoginArtwork extends StatelessWidget {
+  const _LoginArtwork({required this.wide});
+
+  final bool wide;
 
   @override
   Widget build(BuildContext context) {
-    final dark = ForageAppearanceScope.of(context).isDark;
-    return Column(
-    mainAxisSize: MainAxisSize.min,
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(
-        'FORAGE ZOUHOUR',
-        style: TextStyle(
-          fontSize: large ? 32 : 20,
-          fontWeight: FontWeight.w900,
-          height: 1.04,
-          letterSpacing: large ? -1 : .15,
-          color: dark ? const Color(0xFFFFF4FF) : null,
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final photo = Stack(
+      fit: StackFit.expand,
+      children: [
+        const ColoredBox(color: Color(0xFF171323)),
+        Image.asset(
+          'assets/forage-login-drill.jpg',
+          fit: BoxFit.cover,
+          alignment: wide ? const Alignment(.58, 0) : const Alignment(0, .27),
+          excludeFromSemantics: true,
+        ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: wide ? Alignment.bottomCenter : Alignment.centerRight,
+              colors: [
+                wide
+                    ? (dark ? const Color(0xB31E052A) : const Color(0x90142748))
+                    : const Color(0xE410071D),
+                wide ? Colors.transparent : const Color(0x8E10071D),
+                wide ? const Color(0x2E140525) : Colors.transparent,
+              ],
+              stops: const [0, .54, 1],
+            ),
+          ),
+        ),
+      ],
+    );
+    if (!wide) return photo;
+    return CustomPaint(
+      foregroundPainter: _LoginArtworkEdge(dark: dark),
+      child: ClipPath(clipper: const _LoginArtworkClipper(), child: photo),
+    );
+  }
+}
+
+// The same contour clips the photo and carries the glass rim.
+class _LoginArtworkClipper extends CustomClipper<Path> {
+  const _LoginArtworkClipper();
+
+  static Path edge(Size size) {
+    final w = size.width;
+    final h = size.height;
+    return Path()
+      ..moveTo(w * .72, 0)
+      ..cubicTo(w * .90, h * .10, w * 1.035, h * .29, w * .974, h * .49)
+      ..cubicTo(w * .935, h * .73, w * .79, h * .91, w * .60, h);
+  }
+
+  @override
+  Path getClip(Size size) => edge(size)
+    ..lineTo(0, size.height)
+    ..lineTo(0, 0)
+    ..close();
+
+  @override
+  bool shouldReclip(_LoginArtworkClipper oldClipper) => false;
+}
+
+class _LoginArtworkEdge extends CustomPainter {
+  const _LoginArtworkEdge({required this.dark});
+
+  final bool dark;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final edge = _LoginArtworkClipper.edge(size);
+    final light = dark ? const Color(0xFFE694FF) : const Color(0xFFE5FCFF);
+    final shader = LinearGradient(
+      begin: Alignment.topCenter,
+      end: Alignment.bottomCenter,
+      colors: [
+        light.withValues(alpha: .40),
+        light.withValues(alpha: .18),
+        light,
+        light.withValues(alpha: .28),
+        light.withValues(alpha: .78),
+      ],
+      stops: const [0, .28, .48, .68, 1],
+    ).createShader(Offset.zero & size);
+    canvas.drawPath(
+      edge,
+      Paint()
+        ..color = light.withValues(alpha: .32)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 8
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+    );
+    canvas.drawPath(
+      edge,
+      Paint()
+        ..shader = shader
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.8,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_LoginArtworkEdge oldDelegate) => oldDelegate.dark != dark;
+}
+
+class _LoginAmbientLight extends CustomPainter {
+  const _LoginAmbientLight({required this.dark, required this.progress});
+
+  final bool dark;
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final light = dark ? const Color(0xFFF5B2FF) : const Color(0xFFF5FDFF);
+    final halo = dark ? const Color(0xFFCB2AFB) : const Color(0xFF57B7FC);
+    final bounds = Offset.zero & size;
+
+    void glow(Offset center, double radius, Color color, double alpha) {
+      canvas.drawCircle(
+        center,
+        radius,
+        Paint()
+          ..shader = ui.Gradient.radial(
+            center,
+            radius,
+            [color.withValues(alpha: alpha), color.withValues(alpha: 0)],
+          ),
+      );
+    }
+
+    glow(Offset(w * .80, h * .14), w * .53, halo, dark ? .29 : .38);
+    glow(Offset(w * .79, h * .79), w * .48, halo, dark ? .20 : .24);
+    final arc = Path()
+      ..moveTo(w * .11, h * 1.07)
+      ..cubicTo(w * .59, h * .70, w * .82, h * 1.06, w * 1.04, h * .52);
+    final upperArc = Path()
+      ..moveTo(w * .23, h * .32)
+      ..cubicTo(w * .56, h * .16, w * .77, h * .31, w * .96, -h * .07);
+    final rim = LinearGradient(
+      colors: [
+        Colors.transparent,
+        light.withValues(alpha: .19),
+        light.withValues(alpha: .82),
+        halo.withValues(alpha: .43),
+      ],
+      stops: const [.18, .42, .79, 1],
+    ).createShader(bounds);
+    for (final curve in [upperArc, arc]) {
+      canvas.drawPath(
+        curve,
+        Paint()
+          ..color = halo.withValues(alpha: dark ? .43 : .30)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 7
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9),
+      );
+      canvas.drawPath(
+        curve,
+        Paint()
+          ..shader = rim
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = dark ? 2 : 1.4,
+      );
+    }
+
+    final metric = arc.computeMetrics().first;
+    final edge = metric.getTangentForOffset(metric.length * (.48 + .35 * progress));
+    if (edge != null) {
+      glow(edge.position, min(w * .15, 134), halo, dark ? .47 : .41);
+      glow(edge.position, 24, light, .54);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_LoginAmbientLight oldDelegate) =>
+      oldDelegate.dark != dark || oldDelegate.progress != progress;
+}
+
+class _LoginGlassPanel extends StatelessWidget {
+  const _LoginGlassPanel({
+    required this.radius,
+    required this.accent,
+    required this.padding,
+    required this.child,
+  });
+
+  final double radius;
+  final Color accent;
+  final EdgeInsets padding;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final corners = BorderRadius.circular(radius);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: corners,
+        boxShadow: [
+          BoxShadow(
+            color: accent.withValues(alpha: dark ? .20 : .23),
+            blurRadius: 26,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Glass(
+        radius: radius,
+        accent: accent,
+        frosted: true,
+        depth: 1.92,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: corners,
+            border: Border.all(color: Colors.white.withValues(alpha: dark ? .21 : .52)),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                accent.withValues(alpha: dark ? .24 : .08),
+                Colors.transparent,
+                accent.withValues(alpha: dark ? .13 : .14),
+              ],
+              stops: const [0, .37, 1],
+            ),
+          ),
+          child: Padding(padding: padding, child: child),
         ),
       ),
-      const SizedBox(height: 6),
-      Text(
-        'Gestion d’atelier',
-        style: TextStyle(
-          color: dark ? const Color(0xFFE67BFF) : AppPalette.primary,
-          fontWeight: FontWeight.w600,
-          fontSize: 13,
-        ),
-      ),
-    ],
+    );
+  }
+}
+
+class _LoginFeatureMark extends StatelessWidget {
+  const _LoginFeatureMark(this.icon, {required this.accent, required this.size});
+
+  final IconData icon;
+  final Color accent;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => _LoginGlassPanel(
+    radius: size * .30,
+    accent: accent,
+    padding: EdgeInsets.zero,
+    child: SizedBox.square(
+      dimension: size,
+      child: Icon(icon, size: size * .55),
+    ),
   );
+}
+
+Widget _loginButtonSurface(
+  BuildContext context,
+  Set<WidgetState> states,
+  Widget? child,
+) {
+  final dark = Theme.of(context).brightness == Brightness.dark;
+  final accent = dark ? const Color(0xFFE76AFF) : AppPalette.primary;
+  final enabled = !states.contains(WidgetState.disabled);
+  return _liquidButton(
+    context,
+    states,
+    child,
+    accent: accent,
+    radius: 28,
+    depth: 2.35,
+    surfaceBuilder: enabled
+        ? (pressure, child) => CustomPaint(
+            painter: _LoginButtonReflection(
+              dark: dark,
+              accent: accent,
+              pressure: pressure,
+            ),
+            child: child,
+          )
+        : null,
+  );
+}
+
+class _LoginButtonReflection extends CustomPainter {
+  const _LoginButtonReflection({
+    required this.dark,
+    required this.accent,
+    required this.pressure,
+  });
+
+  final bool dark;
+  final Color accent;
+  final double pressure;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bounds = Offset.zero & size;
+    final capsule = RRect.fromRectAndRadius(bounds, const Radius.circular(28));
+    final highlight = dark ? const Color(0xFFF5CBFF) : const Color(0xFFF4FCFF);
+    final rim = dark ? const Color(0xFFE79AFF) : const Color(0xFF548FC8);
+
+    // Keep the middle clear so the backdrop remains visible through the lens.
+    canvas.drawRRect(
+      capsule,
+      Paint()..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          highlight.withValues(alpha: .30 + .12 * pressure),
+          accent.withValues(alpha: dark ? .18 : .10),
+          Colors.transparent,
+          rim.withValues(alpha: dark ? .36 : .25),
+        ],
+        stops: const [0, .23, .61, 1],
+      ).createShader(bounds),
+    );
+    final glint = Alignment(.82 - .44 * pressure, .98);
+    canvas.drawRRect(
+      capsule,
+      Paint()..shader = RadialGradient(
+        center: glint,
+        radius: .23,
+        colors: [
+          highlight.withValues(alpha: .48 + .17 * pressure),
+          accent.withValues(alpha: .16),
+          Colors.transparent,
+        ],
+        stops: const [0, .42, 1],
+      ).createShader(bounds),
+    );
+    canvas.drawRRect(
+      capsule.deflate(.8),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..shader = LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            highlight.withValues(alpha: .92),
+            rim.withValues(alpha: .44),
+            rim.withValues(alpha: .32),
+            highlight,
+          ],
+          stops: const [0, .31, .67, 1],
+        ).createShader(bounds),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_LoginButtonReflection oldDelegate) =>
+      oldDelegate.dark != dark ||
+      oldDelegate.accent != accent ||
+      oldDelegate.pressure != pressure;
+}
+
+class _LoginIdentity extends StatelessWidget {
+  const _LoginIdentity({required this.wide});
+
+  final bool wide;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
+    final logo = Image.asset(
+      'assets/app_logo.png',
+      width: wide ? 54 : 36,
+      height: wide ? 54 : 36,
+      excludeFromSemantics: true,
+      color: dark ? const Color(0xFFF4CEFF) : null,
+      colorBlendMode: BlendMode.srcIn,
+    );
+    final mark = _LoginGlassPanel(
+      radius: wide ? 24 : 15,
+      accent: accent,
+      padding: EdgeInsets.all(wide ? 12 : 6),
+      child: logo,
+    );
+    final name = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: wide ? CrossAxisAlignment.center : CrossAxisAlignment.start,
+      children: [
+        Text(
+          'FORAGE ZOUHOUR',
+          textAlign: wide ? TextAlign.center : TextAlign.start,
+          style: TextStyle(
+            fontSize: wide ? 36 : 18,
+            fontWeight: FontWeight.w900,
+            height: 1.07,
+            letterSpacing: wide ? -.85 : .15,
+            color: wide && !dark ? AppPalette.text : const Color(0xFFFCF9FF),
+          ),
+        ),
+        const SizedBox(height: 7),
+        Text(
+          'Gestion d’atelier',
+          style: TextStyle(
+            color: wide && !dark ? AppPalette.muted : const Color(0xFFF0DBFA),
+            fontWeight: FontWeight.w700,
+            letterSpacing: wide ? 1.1 : 0,
+            fontSize: wide ? 15 : 13,
+          ),
+        ),
+      ],
+    );
+    if (wide) {
+      return _LoginGlassPanel(
+        radius: 32,
+        accent: accent,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 23),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [mark, const SizedBox(height: 18), name],
+        ),
+      );
+    }
+    return Glass(
+      radius: 25,
+      accent: accent,
+      frosted: true,
+      padding: const EdgeInsets.all(4),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(21),
+        child: Stack(
+          children: [
+            const Positioned.fill(child: _LoginArtwork(wide: false)),
+            Container(
+              constraints: const BoxConstraints(minHeight: 128),
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                children: [
+                  mark,
+                  const SizedBox(width: 11),
+                  Expanded(child: name),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

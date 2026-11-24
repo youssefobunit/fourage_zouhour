@@ -169,7 +169,7 @@ void main() {
 
     Future<void> choose(String field, String option) async {
       await tester.tap(
-        find.widgetWithText(DropdownButtonFormField<String>, field),
+        find.widgetWithText(forage.LiquidSelectFormField<String>, field),
       );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));

@@ -709,14 +709,20 @@ class _AppearanceCanvas extends StatelessWidget {
 /// deriving them here stops the dark workspace from inheriting navy text from
 /// the original light palette.
 Color _atelierForeground(BuildContext context) =>
-    ForageAppearanceScope.of(context).isDark
-        ? const Color(0xFFFFF3FF)
-        : AppPalette.text;
+    Theme.of(context).colorScheme.onSurface;
 
 Color _atelierMuted(BuildContext context) =>
-    ForageAppearanceScope.of(context).isDark
-        ? const Color(0xFFE3C5ED)
-        : AppPalette.muted;
+    Theme.of(context).colorScheme.onSurfaceVariant;
+
+Color _atelierSuccess(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xFF9BE8CE)
+    : const Color(0xFF166B58);
+
+Color _atelierWarning(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xFFFFCC98)
+    : const Color(0xFF92400E);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -4585,9 +4591,9 @@ class _UpdateBanner extends StatelessWidget {
       margin: const EdgeInsets.all(12),
       padding: const EdgeInsets.fromLTRB(16, 10, 10, 10),
       decoration: BoxDecoration(
-        color: AppPalette.surfaceRaised,
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppPalette.primary),
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -4603,9 +4609,9 @@ class _UpdateBanner extends StatelessWidget {
           );
           final heading = Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.system_update_rounded,
-                color: AppPalette.primary,
+                color: Theme.of(context).colorScheme.primary,
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -4721,10 +4727,10 @@ class _InitialAdminSetupState extends State<InitialAdminSetup> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Icon(
+                      Icon(
                         Icons.admin_panel_settings_outlined,
                         size: 48,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       const SizedBox(height: 12),
                       const Text(
@@ -4736,10 +4742,10 @@ class _InitialAdminSetupState extends State<InitialAdminSetup> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      const Text(
+                      Text(
                         'Cette étape n’apparaît qu’au premier lancement. Conservez ce mot de passe dans un gestionnaire sécurisé.',
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: AppPalette.muted),
+                        style: TextStyle(color: _atelierMuted(context)),
                       ),
                       const SizedBox(height: 20),
                       TextFormField(
@@ -4903,28 +4909,34 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => Scaffold(
+    body: LayoutBuilder(
+      builder: (context, constraints) =>
+          _buildScene(context, wide: constraints.maxWidth >= 880),
+    ),
+  );
+
+  Widget _buildScene(BuildContext context, {required bool wide}) {
     final dark = ForageAppearanceScope.of(context).isDark;
     final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
     final foreground = dark ? const Color(0xFFFFF4FF) : AppPalette.text;
     final muted = dark ? const Color(0xFFDFC3E9) : AppPalette.muted;
-    final signIn = Glass(
-      radius: 32,
+    final signIn = _LoginGlassPanel(
+      radius: wide ? 40 : 30,
       accent: accent,
-      frosted: true,
-      padding: const EdgeInsets.fromLTRB(22, 24, 22, 22),
+      padding: wide ? const EdgeInsets.all(34) : const EdgeInsets.all(20),
       child: AutofillGroup(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
               children: [
-                _AtelierIcon(
+                _LoginFeatureMark(
                   Icons.shield_outlined,
-                  color: accent,
-                  size: 46,
+                  accent: accent,
+                  size: wide ? 64 : 48,
                 ),
-                SizedBox(width: 13),
+                SizedBox(width: wide ? 18 : 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -4932,7 +4944,7 @@ class _LoginPageState extends State<LoginPage> {
                       Text(
                         'Connexion sécurisée',
                         style: TextStyle(
-                          fontSize: 24,
+                          fontSize: wide ? 30 : 23,
                           letterSpacing: -.55,
                           fontWeight: FontWeight.w800,
                           color: foreground,
@@ -4943,7 +4955,7 @@ class _LoginPageState extends State<LoginPage> {
                         'Accédez à votre espace atelier',
                         style: TextStyle(
                           color: muted,
-                          fontSize: 13,
+                          fontSize: wide ? 15 : 13,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -4952,15 +4964,7 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 22),
-            Text(
-              'Identifiants de connexion',
-              style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: accent,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 10),
+            SizedBox(height: wide ? 30 : 20),
             TextField(
               controller: email,
               enabled: !authenticating && !awaitingApproval,
@@ -5026,7 +5030,7 @@ class _LoginPageState extends State<LoginPage> {
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     color: awaitingApproval
-                            ? accent.withValues(alpha: .13)
+                        ? accent.withValues(alpha: .13)
                         : AppPalette.coral.withValues(alpha: .13),
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(
@@ -5070,15 +5074,25 @@ class _LoginPageState extends State<LoginPage> {
                 textAlign: TextAlign.center,
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 16),
             SizedBox(
               width: double.infinity,
               child: FilledButton(
                 onPressed: authenticating || awaitingApproval ? null : login,
                 style: FilledButton.styleFrom(
-                  backgroundColor: dark ? const Color(0xFF7A28A3) : null,
+                  backgroundColor: Colors.transparent,
                   foregroundColor: dark ? Colors.white : null,
-                  minimumSize: const Size.fromHeight(54),
+                  minimumSize: Size.fromHeight(wide ? 58 : 52),
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    fontSize: wide ? 19 : 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(28),
+                  ),
+                ).copyWith(
+                  backgroundBuilder: _loginButtonSurface,
                 ),
                 child: authenticating
                     ? SizedBox(
@@ -5089,10 +5103,16 @@ class _LoginPageState extends State<LoginPage> {
                           color: accent,
                         ),
                       )
-                    : Text(
-                        awaitingApproval
-                            ? 'En attente d’autorisation'
-                            : 'Connexion',
+                    : awaitingApproval
+                    ? const Text('En attente d’autorisation')
+                    : const Row(
+                        children: [
+                          SizedBox(width: 23),
+                          Expanded(
+                            child: Text('Connexion', textAlign: TextAlign.center),
+                          ),
+                          Icon(Icons.arrow_forward_rounded, size: 23),
+                        ],
                       ),
               ),
             ),
@@ -5131,55 +5151,9 @@ class _LoginPageState extends State<LoginPage> {
             ),
           )
         : baseTheme;
-    return Scaffold(
-      body: Theme(
-        data: pageTheme,
-        child: Aura(
-        child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth >= 780;
-              return SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 18,
-                  vertical: 20,
-                ),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: wide ? 960 : 454,
-                      minHeight: max(0.0, constraints.maxHeight - 40),
-                    ),
-                    child: Align(
-                      alignment: Alignment.center,
-                      child: wide
-                          ? Row(
-                              children: [
-                                const Expanded(
-                                  child: _LoginIdentity(wide: true),
-                                ),
-                                const SizedBox(width: 20),
-                                Expanded(child: signIn),
-                              ],
-                            )
-                          : Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                const _LoginIdentity(wide: false),
-                                const SizedBox(height: 16),
-                                signIn,
-                              ],
-                            ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ),
-      ),
+    return Theme(
+      data: pageTheme,
+      child: _LoginScene(wide: wide, signIn: signIn),
     );
   }
 }
@@ -7306,10 +7280,10 @@ class _PageAccessDenied extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(
+          Icon(
             Icons.lock_outline_rounded,
             size: 42,
-            color: AppPalette.primary,
+            color: Theme.of(context).colorScheme.primary,
           ),
           const SizedBox(height: 12),
           Text(
@@ -7317,10 +7291,10 @@ class _PageAccessDenied extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 6),
-          const Text(
+          Text(
             'Demandez au responsable de modifier vos droits.',
             textAlign: TextAlign.center,
-            style: TextStyle(color: AppPalette.muted),
+            style: TextStyle(color: _atelierMuted(context)),
           ),
         ],
       ),
@@ -7970,19 +7944,20 @@ class Glass extends StatelessWidget {
     final panel = _LiquidLayer(
       radius: radius,
       accent: accent,
-      depth: depth ?? (frosted ? 1.34 : .93),
-      opacity: opacity ?? (frosted ? .98 : .96),
+      depth: depth ?? (frosted ? 1.58 : 1.23),
+      opacity: opacity ?? (frosted ? .93 : .87),
       child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
     );
     if (!frosted) return panel;
+    final dark = Theme.of(context).brightness == Brightness.dark;
     return DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: rounded,
-        boxShadow: const [
+        boxShadow: [
           BoxShadow(
-            color: Color(0x520B000F),
-            blurRadius: 22,
-            offset: Offset(0, 9),
+            color: dark ? const Color(0x440B000F) : const Color(0x244170A3),
+            blurRadius: 20,
+            offset: const Offset(0, 7),
           ),
         ],
       ),
@@ -8061,6 +8036,9 @@ class AppHeader extends StatelessWidget {
       data: IconThemeData(color: foreground),
       child: Glass(
       radius: 28,
+      frosted: true,
+      depth: 1.72,
+      opacity: .80,
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
       child: Row(
         children: [
@@ -8471,7 +8449,7 @@ class _BackupPageState extends State<BackupPage> {
       title: 'Restaurer la sauvegarde ?',
       detail: 'Les données actuelles de l’atelier seront remplacées par celles du fichier choisi.',
       action: 'Importer',
-      color: AppPalette.primary,
+      color: Theme.of(context).colorScheme.primary,
     );
     if (!confirmed || !mounted) return;
     setState(() => busy = true);
@@ -8546,7 +8524,7 @@ class _BackupPageState extends State<BackupPage> {
                             lastBackup == null
                                 ? 'Aucune sauvegarde n’a encore été téléchargée.'
                                 : 'Dernier téléchargement : ${dateText(lastBackup!)}',
-                            style: const TextStyle(color: AppPalette.muted),
+                            style: TextStyle(color: _atelierMuted(context)),
                           ),
                         ],
                       ),
@@ -8555,18 +8533,18 @@ class _BackupPageState extends State<BackupPage> {
                 ),
               ),
               const SizedBox(height: 18),
-              const Glass(
-                padding: EdgeInsets.all(14),
+              Glass(
+                padding: const EdgeInsets.all(14),
                 child: Row(
                   children: [
-                    Icon(Icons.lock_outline_rounded, color: AppPalette.primary),
-                    SizedBox(width: 10),
+                    Icon(Icons.lock_outline_rounded, color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         'Les sauvegardes automatiques sont volontairement désactivées : '
                         'chaque sauvegarde est chiffrée avec un mot de passe que '
                         'l’application ne conserve pas.',
-                        style: TextStyle(fontSize: 12, color: AppPalette.muted),
+                        style: TextStyle(fontSize: 12, color: _atelierMuted(context)),
                       ),
                     ),
                   ],
@@ -8578,9 +8556,9 @@ class _BackupPageState extends State<BackupPage> {
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 'Enregistre un fichier JSON complet que vous pourrez conserver et réimporter plus tard.',
-                style: TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
               const SizedBox(height: 10),
               SizedBox(
@@ -8597,9 +8575,9 @@ class _BackupPageState extends State<BackupPage> {
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 'Importez un fichier de sauvegarde FORAGE ZOUHOUR pour remplacer les données actuelles.',
-                style: TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
               const SizedBox(height: 10),
               SizedBox(
@@ -8611,12 +8589,12 @@ class _BackupPageState extends State<BackupPage> {
                 ),
               ),
               const SizedBox(height: 22),
-              const Text(
+              Text(
                 'Zone sensible',
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w900,
-                  color: Color(0xFF991B1B),
+                  color: Theme.of(context).colorScheme.error,
                 ),
               ),
               const SizedBox(height: 6),
@@ -8624,7 +8602,7 @@ class _BackupPageState extends State<BackupPage> {
                 hasRecentBackup
                     ? 'Une sauvegarde récente a été téléchargée : vous pouvez supprimer les informations de l’atelier.'
                     : 'La suppression reste bloquée tant qu’une nouvelle sauvegarde n’a pas été téléchargée.',
-                style: const TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
               const SizedBox(height: 10),
               SizedBox(
@@ -8836,6 +8814,7 @@ class DashboardPage extends StatelessWidget {
 /// Purpose-built midnight presentation.  This is not a colour-filtered copy
 /// of the light dashboard: the panels, typography and reflections are drawn
 /// for the dark material itself.
+// ignore: unused_element
 class _DarkDashboardPage extends StatelessWidget {
   const _DarkDashboardPage({
     required this.user,
@@ -9414,8 +9393,8 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
         frosted: true,
         // A lighter lens makes the wallpaper visibly refract under the
         // desktop header instead of reading as a plain white panel.
-        depth: 1.72,
-        opacity: .70,
+        depth: 1.87,
+        opacity: .80,
         padding: const EdgeInsets.fromLTRB(18, 8, 10, 8),
         child: Row(
           children: [
@@ -9462,7 +9441,7 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
                         filled: true,
                         fillColor: dark
                             ? const Color(0x55340B50)
-                            : AppPalette.surface.withValues(alpha: .80),
+                            : AppPalette.surface.withValues(alpha: .48),
                         hintText: 'Rechercher un produit, une machine, …',
                         hintStyle: TextStyle(
                           color: muted,
@@ -9590,16 +9569,6 @@ class _WindowsNavigationRail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = ForageAppearanceScope.of(context).isDark;
-    final panelLine = dark
-        ? const Color(0xFFB959E5).withValues(alpha: .48)
-        : AppPalette.line.withValues(alpha: .72);
-    final panelGradient = dark
-        ? const [Color(0xE51D062C), Color(0xD82E0A46), Color(0xE30F001B)]
-        : [
-            AppPalette.surface.withValues(alpha: .78),
-            const Color(0xFFB9E0FA).withValues(alpha: .62),
-            AppPalette.surfaceRaised.withValues(alpha: .70),
-          ];
     final muted = dark ? const Color(0xFFDEC0E9) : AppPalette.muted;
     return AnimatedContainer(
     duration: MediaQuery.disableAnimationsOf(context)
@@ -9608,32 +9577,18 @@ class _WindowsNavigationRail extends StatelessWidget {
     curve: Curves.easeOutCubic,
     width: compact ? 76 : 246,
     margin: const EdgeInsets.fromLTRB(14, 12, 0, 18),
-    child: DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: panelLine),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: panelGradient,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: (dark ? const Color(0xFFCE54FF) : AppPalette.primary)
-                .withValues(alpha: .20),
-            blurRadius: 24,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(
+    child: Glass(
+      radius: 28,
+      depth: 1.75,
+      opacity: .82,
+      frosted: true,
+      padding: EdgeInsets.fromLTRB(
           compact ? 8 : 12,
           12,
           compact ? 8 : 12,
           12,
         ),
-        child: Column(
+      child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _DesktopBrand(compact: compact, onToggle: onToggle),
@@ -9668,16 +9623,11 @@ class _WindowsNavigationRail extends StatelessWidget {
                   ),
                 ),
             const Spacer(),
-            Container(
+            Glass(
+              radius: 18,
+              depth: 1.32,
+              opacity: .72,
               padding: EdgeInsets.all(compact ? 7 : 12),
-              decoration: BoxDecoration(
-                color: (dark ? const Color(0xFF29083D) : AppPalette.surface)
-                    .withValues(alpha: .70),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: panelLine,
-                ),
-              ),
               child: compact
                   ? Column(
                       mainAxisSize: MainAxisSize.min,
@@ -9759,7 +9709,6 @@ class _WindowsNavigationRail extends StatelessWidget {
             ),
           ],
         ),
-      ),
     ),
     );
   }
@@ -9771,26 +9720,19 @@ class _DesktopBrand extends StatelessWidget {
   final VoidCallback onToggle;
 
   Widget _mark(BuildContext context) {
-    final dark = ForageAppearanceScope.of(context).isDark;
-    final accent = dark ? const Color(0xFFC44BEB) : AppPalette.desktopAccent;
-    return Container(
-    width: 40,
-    height: 40,
-    decoration: BoxDecoration(
-      color: accent,
-      borderRadius: BorderRadius.circular(13),
-      boxShadow: [
-        BoxShadow(
-          color: accent.withValues(alpha: .34),
-          blurRadius: 18,
+    final scheme = Theme.of(context).colorScheme;
+    return Glass(
+      radius: 13,
+      accent: scheme.primary,
+      depth: 1.44,
+      child: SizedBox.square(
+        dimension: 40,
+        child: Icon(
+          Icons.precision_manufacturing_rounded,
+          color: scheme.onSurface,
         ),
-      ],
-    ),
-    child: Icon(
-      Icons.precision_manufacturing_rounded,
-      color: dark ? const Color(0xFFFFF4FF) : AppPalette.background,
-    ),
-  );
+      ),
+    );
   }
 
   @override
@@ -9807,24 +9749,19 @@ class _DesktopBrand extends StatelessWidget {
     opacity: .72,
     padding: const EdgeInsets.all(6),
     child: compact
-        ? SizedBox(
-            height: 84,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: IconButton(
-                    tooltip: 'Agrandir le menu',
-                    onPressed: onToggle,
-                    icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
-                    iconSize: 16,
-                    color: muted,
-                  ),
-                ),
-                _mark(context),
-              ],
-            ),
+        ? Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'Agrandir le menu',
+                onPressed: onToggle,
+                icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
+                iconSize: 16,
+                color: muted,
+              ),
+              const SizedBox(height: 4),
+              _mark(context),
+            ],
           )
         : Row(
             children: [
@@ -9900,8 +9837,8 @@ class _DesktopNavigationButton extends StatelessWidget {
         accent: selected
             ? accent
             : (dark ? const Color(0xFF9868AA) : AppPalette.secondary),
-        idleOpacity: .16,
-        selectedOpacity: .72,
+        idleOpacity: .49,
+        selectedOpacity: .86,
         onTap: onTap,
         child: Padding(
           padding: compact
@@ -10483,7 +10420,7 @@ class ProductCard extends StatelessWidget {
             const SizedBox(height: 3),
             Text(
               productSpecification(product),
-              style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+              style: TextStyle(color: _atelierMuted(context), fontSize: 12),
             ),
           ],
         ),
@@ -10504,19 +10441,20 @@ class ProductImage extends StatelessWidget {
   final bool circular;
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final image = SizedBox(
       height: height,
       width: circular ? height : double.infinity,
       child: product.image == null
           ? DecoratedBox(
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [AppPalette.desktopAccentSoft, AppPalette.surface],
+                  colors: [scheme.primaryContainer, scheme.surface],
                 ),
               ),
-              child: const Icon(
+              child: Icon(
                 Icons.layers_rounded,
-                color: AppPalette.primary,
+                color: scheme.primary,
                 size: 44,
               ),
             )
@@ -10540,14 +10478,7 @@ class CategoryImage extends StatelessWidget {
       width: size,
       height: size,
       child: category.image.isEmpty
-          ? const DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [AppPalette.surfaceRaised, AppPalette.background],
-                ),
-              ),
-              child: Icon(Icons.category_rounded, color: AppPalette.secondary),
-            )
+          ? _AtelierIcon(Icons.category_rounded, size: size)
           : Image.memory(category.image, fit: BoxFit.cover),
     ),
   );
@@ -10673,7 +10604,7 @@ class ProductDetailsPage extends StatelessWidget {
                             const SizedBox(height: 4),
                             Text(
                               product.kind.label,
-                              style: const TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                             if (product.reference.isNotEmpty) ...[
                               const SizedBox(height: 10),
@@ -10817,10 +10748,10 @@ class ProductDetailsPage extends StatelessWidget {
                                 ),
                               ),
                               const SizedBox(height: 6),
-                              const Text(
+                              Text(
                                 'Ces dimensions ne figurent pas dans la liste générale. Leur stock est inclus dans le total ci-dessus.',
                                 style: TextStyle(
-                                  color: AppPalette.muted,
+                                  color: _atelierMuted(context),
                                   fontSize: 12,
                                 ),
                               ),
@@ -10889,9 +10820,9 @@ class _DerivedProductTile extends StatelessWidget {
       child: Ink(
         padding: const EdgeInsets.all(9),
         decoration: BoxDecoration(
-          color: AppPalette.surfaceRaised,
+          color: Theme.of(context).colorScheme.surfaceContainerHigh,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppPalette.line),
+          border: Border.all(color: Theme.of(context).colorScheme.outline),
         ),
         child: Row(
           children: [
@@ -10920,7 +10851,7 @@ class _DerivedProductTile extends StatelessWidget {
                 fontWeight: FontWeight.w900,
               ),
             ),
-            const Icon(Icons.chevron_right_rounded, color: AppPalette.muted),
+            Icon(Icons.chevron_right_rounded, color: _atelierMuted(context)),
           ],
         ),
       ),
@@ -11037,11 +10968,11 @@ class AnalyticsPage extends StatelessWidget {
                   children: [
                     const _AtelierBackButton(),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Text(
                         'Analyses',
                         style: TextStyle(
-                          color: AppPalette.text,
+                          color: _atelierForeground(context),
                           fontSize: 23,
                           fontWeight: FontWeight.w900,
                         ),
@@ -11065,25 +10996,25 @@ class AnalyticsPage extends StatelessWidget {
                           children: [
                             Row(
                               children: [
-                                const _AtelierIcon(
+                                _AtelierIcon(
                                   Icons.insights_rounded,
-                                  color: AppPalette.secondary,
+                                  color: Theme.of(context).colorScheme.secondary,
                                 ),
                                 const Spacer(),
                                 Text(
                                   '$available produits disponibles',
-                                  style: const TextStyle(
-                                    color: AppPalette.secondary,
+                                  style: TextStyle(
+                                    color: Theme.of(context).colorScheme.secondary,
                                     fontWeight: FontWeight.w800,
                                   ),
                                 ),
                               ],
                             ),
                             const SizedBox(height: 18),
-                            const Text(
+                            Text(
                               'Vue d’ensemble de l’atelier',
                               style: TextStyle(
-                                color: AppPalette.text,
+                                color: _atelierForeground(context),
                                 fontSize: 23,
                                 fontWeight: FontWeight.w900,
                               ),
@@ -11091,7 +11022,7 @@ class AnalyticsPage extends StatelessWidget {
                             const SizedBox(height: 5),
                             Text(
                               '$totalPieces unités actuellement suivies dans le stock.',
-                              style: const TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                           ],
                         ),
@@ -11111,7 +11042,7 @@ class AnalyticsPage extends StatelessWidget {
                                 icon: Icons.inventory_2_rounded,
                                 value: '$totalPieces',
                                 label: 'Unités en stock',
-                                color: AppPalette.primary,
+                                color: Theme.of(context).colorScheme.primary,
                               ),
                               _AnalyticsMetric(
                                 width: metricWidth,
@@ -11132,7 +11063,7 @@ class AnalyticsPage extends StatelessWidget {
                                 icon: Icons.play_circle_outline_rounded,
                                 value: '$activeOperations',
                                 label: 'Opérations en cours',
-                                color: AppPalette.secondary,
+                                color: Theme.of(context).colorScheme.secondary,
                               ),
                             ],
                           );
@@ -11185,17 +11116,18 @@ class AnalyticsPage extends StatelessWidget {
                                     vertical: 7,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: quantity > 0
-                                        ? const Color(0xFFE8F8F4)
-                                        : const Color(0xFFFFEDF0),
+                                    color: (quantity > 0
+                                            ? AppPalette.mint
+                                            : AppPalette.coral)
+                                        .withValues(alpha: .16),
                                     borderRadius: BorderRadius.circular(14),
                                   ),
                                   child: Text(
                                     productQuantityLabel(product, quantity),
                                     style: TextStyle(
                                       color: quantity > 0
-                                          ? const Color(0xFF2A9B83)
-                                          : const Color(0xFFD85B74),
+                                          ? _atelierSuccess(context)
+                                          : Theme.of(context).colorScheme.error,
                                       fontWeight: FontWeight.w900,
                                     ),
                                   ),
@@ -11240,6 +11172,7 @@ class _PurchaseSaleChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final today = DateTime.now();
+    final scheme = Theme.of(context).colorScheme;
     final months = List.generate(
       6,
       (index) => DateTime(today.year, today.month - 5 + index),
@@ -11284,9 +11217,9 @@ class _PurchaseSaleChart extends StatelessWidget {
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 3),
-          const Text(
+          Text(
             'Comparaison mensuelle des unités validées — 6 derniers mois.',
-            style: TextStyle(color: AppPalette.muted, fontSize: 12),
+            style: TextStyle(color: _atelierMuted(context), fontSize: 12),
           ),
           const SizedBox(height: 12),
           Wrap(
@@ -11304,19 +11237,37 @@ class _PurchaseSaleChart extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          SizedBox(
-            height: 210,
-            width: double.infinity,
-            child: CustomPaint(
-              painter: _PurchaseSalePainter(
-                purchaseValues: purchaseValues,
-                saleValues: saleValues,
-                labels: months
-                    .map((month) => _monthLabels[month.month - 1])
-                    .toList(),
+          if (purchasesTotal == 0 && salesTotal == 0)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(
+                child: Text(
+                  'Aucun achat ou vente validé sur cette période',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: scheme.onSurfaceVariant),
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              height: 210,
+              width: double.infinity,
+              child: CustomPaint(
+                painter: _PurchaseSalePainter(
+                  purchaseValues: purchaseValues,
+                  saleValues: saleValues,
+                  labelStyle: DefaultTextStyle.of(context).style.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  gridColor: scheme.outline.withValues(alpha: .32),
+                  labels: months
+                      .map((month) => _monthLabels[month.month - 1])
+                      .toList(),
+                ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -11351,11 +11302,15 @@ class _PurchaseSalePainter extends CustomPainter {
     required this.purchaseValues,
     required this.saleValues,
     required this.labels,
+    required this.labelStyle,
+    required this.gridColor,
   });
 
   final List<int> purchaseValues;
   final List<int> saleValues;
   final List<String> labels;
+  final TextStyle labelStyle;
+  final Color gridColor;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -11374,7 +11329,7 @@ class _PurchaseSalePainter extends CustomPainter {
     final scale = highest == 0 ? 1.0 : highest.toDouble();
 
     final gridPaint = Paint()
-      ..color = const Color(0xFFDBD8EC)
+      ..color = gridColor
       ..strokeWidth = 1;
     for (var step = 0; step <= 4; step++) {
       final y = top + chartHeight * step / 4;
@@ -11384,22 +11339,7 @@ class _PurchaseSalePainter extends CustomPainter {
         gridPaint,
       );
     }
-    if (highest == 0) {
-      final text = TextPainter(
-        text: const TextSpan(
-          text: 'Aucun achat ou vente validé sur cette période',
-          style: TextStyle(color: AppPalette.muted, fontSize: 12),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout(maxWidth: size.width - 20);
-      text.paint(
-        canvas,
-        Offset(
-          (size.width - text.width) / 2,
-          top + chartHeight / 2 - text.height / 2,
-        ),
-      );
-    } else {
+    if (highest > 0) {
       _drawSeries(
         canvas: canvas,
         values: purchaseValues,
@@ -11428,15 +11368,15 @@ class _PurchaseSalePainter extends CustomPainter {
       final text = TextPainter(
         text: TextSpan(
           text: labels[index],
-          style: const TextStyle(
-            color: AppPalette.muted,
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-          ),
+          style: labelStyle,
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      text.paint(canvas, Offset(x - text.width / 2, baseline + 9));
+      final textX = (x - text.width / 2)
+          .clamp(0.0, max(0.0, size.width - text.width))
+          .toDouble();
+      text.paint(canvas, Offset(textX, baseline + 9));
+      text.dispose();
     }
   }
 
@@ -11504,7 +11444,9 @@ class _PurchaseSalePainter extends CustomPainter {
   bool shouldRepaint(covariant _PurchaseSalePainter oldDelegate) =>
       oldDelegate.purchaseValues != purchaseValues ||
       oldDelegate.saleValues != saleValues ||
-      oldDelegate.labels != labels;
+      oldDelegate.labels != labels ||
+      oldDelegate.labelStyle != labelStyle ||
+      oldDelegate.gridColor != gridColor;
 }
 
 class _AnalyticsMetric extends StatelessWidget {
@@ -11546,7 +11488,7 @@ class _AnalyticsMetric extends StatelessWidget {
           const SizedBox(height: 2),
           Text(
             label,
-            style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+            style: TextStyle(color: _atelierMuted(context), fontSize: 12),
           ),
         ],
       ),
@@ -11693,7 +11635,7 @@ class StockPage extends StatelessWidget {
                 child: _StockSecondaryAction(
                   icon: Icons.receipt_long_rounded,
                   label: 'Registres',
-                  color: AppPalette.secondary,
+                  color: Theme.of(context).colorScheme.secondary,
                   onTap: onOpenRecords,
                 ),
               ),
@@ -11703,7 +11645,7 @@ class StockPage extends StatelessWidget {
           _StockSecondaryAction(
             icon: Icons.account_balance_wallet_rounded,
             label: 'Paiements',
-            color: AppPalette.primary,
+            color: Theme.of(context).colorScheme.primary,
             onTap: onOpenPayments,
           ),
           if (draftCount > 0) ...[
@@ -11718,9 +11660,9 @@ class StockPage extends StatelessWidget {
                       color: Color(0xFF3A3215),
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(
+                    child: Icon(
                       Icons.edit_note_rounded,
-                      color: AppPalette.primary,
+                      color: Theme.of(context).colorScheme.primary,
                     ),
                   ),
                   const SizedBox(width: 11),
@@ -11973,9 +11915,9 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (selectedSource == null) ...[
-            const Text(
+            Text(
               'Montants enregistrés par source de paiement.',
-              style: TextStyle(color: AppPalette.muted),
+              style: TextStyle(color: _atelierMuted(context)),
             ),
             const SizedBox(height: 16),
             ...PaymentSource.values.map(
@@ -11999,9 +11941,9 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.account_balance_wallet_rounded,
-                    color: AppPalette.primary,
+                    color: Theme.of(context).colorScheme.primary,
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -12063,7 +12005,7 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                               sale != null
                                   ? Icons.point_of_sale_rounded
                                   : Icons.add_shopping_cart_rounded,
-                              color: AppPalette.primary,
+                              color: Theme.of(context).colorScheme.primary,
                             ),
                             const SizedBox(width: 12),
                             Expanded(
@@ -12083,15 +12025,15 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                                   const SizedBox(height: 3),
                                   Text(
                                     '$partner · ${dateText(payment.createdAt)}',
-                                    style: const TextStyle(
-                                      color: AppPalette.muted,
+                                    style: TextStyle(
+                                      color: _atelierMuted(context),
                                       fontSize: 12,
                                     ),
                                   ),
                                   Text(
                                     payment.mode,
-                                    style: const TextStyle(
-                                      color: AppPalette.muted,
+                                    style: TextStyle(
+                                      color: _atelierMuted(context),
                                       fontSize: 12,
                                     ),
                                   ),
@@ -12100,9 +12042,9 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                             ),
                             Text(
                               '${formatNumber(payment.amount)} DH',
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontWeight: FontWeight.w900,
-                                color: AppPalette.primary,
+                                color: Theme.of(context).colorScheme.primary,
                               ),
                             ),
                           ],
@@ -12142,12 +12084,12 @@ class _PaymentSourceCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: AppPalette.primary.withValues(alpha: .14),
+                color: Theme.of(context).colorScheme.primary.withValues(alpha: .14),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(
+              child: Icon(
                 Icons.payments_rounded,
-                color: AppPalette.primary,
+                color: Theme.of(context).colorScheme.primary,
               ),
             ),
             const SizedBox(width: 12),
@@ -12159,13 +12101,13 @@ class _PaymentSourceCard extends StatelessWidget {
             ),
             Text(
               '${formatNumber(total)} DH',
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.w900,
-                color: AppPalette.primary,
+                color: Theme.of(context).colorScheme.primary,
               ),
             ),
             const SizedBox(width: 4),
-            const Icon(Icons.chevron_right_rounded, color: AppPalette.muted),
+            Icon(Icons.chevron_right_rounded, color: _atelierMuted(context)),
           ],
         ),
       ),
@@ -12186,7 +12128,7 @@ class _PaymentDetail extends StatelessWidget {
       children: [
         Text(
           label,
-          style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+          style: TextStyle(color: _atelierMuted(context), fontSize: 12),
         ),
         Text(value, style: const TextStyle(fontWeight: FontWeight.w800)),
       ],
@@ -12286,37 +12228,47 @@ class _StockSecondaryAction extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => _LiquidTapTarget(
-    radius: 20,
-    accent: color,
-    onTap: onTap,
-    child: SizedBox(
-      height: 66,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 13),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: .16),
-                shape: BoxShape.circle,
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final accent = scheme.brightness == Brightness.dark &&
+            (color == AppPalette.primary || color == AppPalette.secondary)
+        ? scheme.primary
+        : color;
+    return _LiquidTapTarget(
+      radius: 20,
+      accent: accent,
+      onTap: onTap,
+      child: SizedBox(
+        height: 66,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 13),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: .16),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, color: accent, size: 20),
               ),
-              child: Icon(icon, color: color, size: 20),
-            ),
-            const SizedBox(width: 9),
-            Expanded(
-              child: Text(
-                label,
-                style: const TextStyle(fontWeight: FontWeight.w900),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
               ),
-            ),
-            const Icon(Icons.chevron_right_rounded, color: AppPalette.muted),
-          ],
+              Icon(
+                Icons.chevron_right_rounded,
+                color: scheme.onSurfaceVariant,
+              ),
+            ],
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _StockProductTile extends StatelessWidget {
@@ -12361,7 +12313,7 @@ class _StockProductTile extends StatelessWidget {
                   subtitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+                  style: TextStyle(color: _atelierMuted(context), fontSize: 12),
                 ),
               ],
             ),
@@ -12583,7 +12535,7 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                     children: [
                       const _AtelierBackButton(),
                       const SizedBox(width: 12),
-                      const Expanded(
+                      Expanded(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -12593,13 +12545,13 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                               style: TextStyle(
                                 fontSize: 21,
                                 fontWeight: FontWeight.w900,
-                                color: AppPalette.text,
+                                color: _atelierForeground(context),
                               ),
                             ),
-                            SizedBox(height: 3),
+                            const SizedBox(height: 3),
                             Text(
                               'Achats, ventes et transferts entre dépôts.',
-                              style: TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                           ],
                         ),
@@ -12968,8 +12920,8 @@ class DepotsPage extends StatelessWidget {
                                 const SizedBox(height: 4),
                                 Text(
                                   '$pieces pièce(s)',
-                                  style: const TextStyle(
-                                    color: AppPalette.muted,
+                                  style: TextStyle(
+                                    color: _atelierMuted(context),
                                   ),
                                 ),
                               ],
@@ -12978,13 +12930,13 @@ class DepotsPage extends StatelessWidget {
                           Container(
                             width: 32,
                             height: 32,
-                            decoration: const BoxDecoration(
-                              color: AppPalette.soft,
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.surfaceContainerHigh,
                               shape: BoxShape.circle,
                             ),
-                            child: const Icon(
+                            child: Icon(
                               Icons.chevron_right_rounded,
-                              color: AppPalette.primary,
+                              color: Theme.of(context).colorScheme.primary,
                             ),
                           ),
                         ],
@@ -13262,13 +13214,17 @@ class MachinesPage extends StatelessWidget {
                                 width: double.infinity,
                                 alignment: Alignment.center,
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFFFFF7ED),
+                                  color: m.temporary
+                                      ? Theme.of(context).colorScheme.tertiaryContainer
+                                      : Theme.of(context).colorScheme.surfaceContainerHigh,
                                   borderRadius: BorderRadius.circular(17),
                                 ),
-                                child: const Icon(
-                                  Icons.local_shipping_outlined,
+                                child: Icon(
+                                  m.temporary ? Icons.local_shipping_outlined : Icons.precision_manufacturing_outlined,
                                   size: 48,
-                                  color: Color(0xFFB45309),
+                                  color: m.temporary
+                                      ? Theme.of(context).colorScheme.onTertiaryContainer
+                                      : Theme.of(context).colorScheme.onSurfaceVariant,
                                 ),
                               ),
                             const SizedBox(height: 10),
@@ -13285,16 +13241,16 @@ class MachinesPage extends StatelessWidget {
                               m.temporary
                                   ? 'Fin prévue : ${m.deadline == null ? 'non définie' : dateText(m.deadline!)} · ${m.type == MachineType.roulage ? 'Roulage' : 'Standard'}'
                                   : 'Exemplaire ${unit.usable ? 'disponible' : 'indisponible'} · ${m.type == MachineType.roulage ? 'Roulage' : 'Standard'}',
-                              style: const TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                             Text(
                               'Catégorie : ${categoryName(m.categoryId)}',
-                              style: const TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                             Text(
                               'Produit fabriqué : ${productName(m.outputId)}',
-                              style: const TextStyle(
-                                color: Color(0xFF15803D),
+                              style: TextStyle(
+                                color: _atelierSuccess(context),
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
@@ -13340,10 +13296,10 @@ class MachinesPage extends StatelessWidget {
                                 ),
                               )
                             else
-                              const Text(
+                              Text(
                                 'Accès réservé à l’opérateur assigné',
                                 style: TextStyle(
-                                  color: AppPalette.muted,
+                                  color: _atelierMuted(context),
                                   fontSize: 12,
                                 ),
                               ),
@@ -13766,16 +13722,16 @@ class _ReviewsPageState extends State<ReviewsPage> {
           if (pendingOperations.isEmpty)
             Glass(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
-              child: const Center(
+              child: Center(
                 child: Column(
                   children: [
-                    Icon(
+                    const Icon(
                       Icons.task_alt_rounded,
                       color: Color(0xFF16A34A),
                       size: 48,
                     ),
-                    SizedBox(height: 12),
-                    Text(
+                    const SizedBox(height: 12),
+                    const Text(
                       'Aucun contrôle en attente',
                       style: TextStyle(
                         fontSize: 17,
@@ -13786,7 +13742,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
                     Text(
                       'Les opérations à contrôler apparaîtront ici.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: AppPalette.muted),
+                      style: TextStyle(color: _atelierMuted(context)),
                     ),
                   ],
                 ),
@@ -13870,11 +13826,11 @@ class _ReviewsPageState extends State<ReviewsPage> {
                           ),
                         ),
                       ] else
-                        const Padding(
-                          padding: EdgeInsets.only(top: 12),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12),
                           child: Text(
                             'En attente de l’approbation du responsable.',
-                            style: TextStyle(color: AppPalette.muted),
+                            style: TextStyle(color: _atelierMuted(context)),
                           ),
                         ),
                     ],
@@ -14227,7 +14183,7 @@ class ValidationPage extends StatelessWidget {
     );
   }
 
-  Widget _draftCard({
+  Widget _draftCard(BuildContext context, {
     required IconData icon,
     required String title,
     required String detail,
@@ -14252,7 +14208,7 @@ class ValidationPage extends StatelessWidget {
                     title,
                     style: const TextStyle(fontWeight: FontWeight.w900),
                   ),
-                  Text(detail, style: const TextStyle(color: AppPalette.muted)),
+                  Text(detail, style: TextStyle(color: _atelierMuted(context))),
                 ],
               ),
             ),
@@ -14320,9 +14276,9 @@ class ValidationPage extends StatelessWidget {
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             'Chaque brouillon peut être corrigé, validé ou annulé. Une annulation ne modifie pas le stock.',
-            style: TextStyle(color: AppPalette.muted),
+            style: TextStyle(color: _atelierMuted(context)),
           ),
           const SizedBox(height: 16),
           if (total == 0)
@@ -14336,6 +14292,7 @@ class ValidationPage extends StatelessWidget {
               (item) => Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _draftCard(
+                  context,
                   icon: item.returnOfPurchaseId == null
                       ? Icons.shopping_cart_checkout_rounded
                       : Icons.assignment_return_outlined,
@@ -14353,6 +14310,7 @@ class ValidationPage extends StatelessWidget {
               (item) => Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _draftCard(
+                  context,
                   icon: Icons.point_of_sale_rounded,
                   title:
                       'Vente · ${_product(item.productId)?.displayReference ?? 'Produit'}',
@@ -14371,6 +14329,7 @@ class ValidationPage extends StatelessWidget {
               return Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _draftCard(
+                  context,
                   icon: Icons.assignment_return_rounded,
                   title:
                       'Retour client · ${product?.displayReference ?? 'Produit'}',
@@ -14386,6 +14345,7 @@ class ValidationPage extends StatelessWidget {
               (item) => Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _draftCard(
+                  context,
                   icon: item.externalProduction
                       ? Icons.local_shipping_outlined
                       : Icons.precision_manufacturing_rounded,
@@ -14405,6 +14365,7 @@ class ValidationPage extends StatelessWidget {
               (item) => Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _draftCard(
+                  context,
                   icon: Icons.swap_horiz_rounded,
                   title:
                       'Transfert · ${_product(item.productId)?.displayReference ?? 'Produit'}',
@@ -14542,9 +14503,9 @@ class _PayrollPageState extends State<PayrollPage> {
             ),
           ),
           const SizedBox(height: 14),
-          const Text(
+          Text(
             'Le paiement est facultatif : un montant supérieur crée une avance, un montant inférieur laisse un reste à payer.',
-            style: TextStyle(color: AppPalette.muted),
+            style: TextStyle(color: _atelierMuted(context)),
           ),
           const SizedBox(height: 16),
           if (operators.isEmpty)
@@ -14589,8 +14550,8 @@ class _PayrollPageState extends State<PayrollPage> {
                       Row(
                         children: [
                           CircleAvatar(
-                            backgroundColor: AppPalette.soft,
-                            foregroundColor: AppPalette.primary,
+                            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                            foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
                             child: Text(
                               operator.fullName.substring(0, 1).toUpperCase(),
                             ),
@@ -14626,24 +14587,24 @@ class _PayrollPageState extends State<PayrollPage> {
                       if (balance > 0)
                         Text(
                           'Reste à payer : ${formatNumber(balance)} DH',
-                          style: const TextStyle(
-                            color: Color(0xFFB45309),
+                          style: TextStyle(
+                            color: _atelierWarning(context),
                             fontWeight: FontWeight.w900,
                           ),
                         )
                       else if (balance < 0)
                         Text(
                           'Avance : ${formatNumber(-balance)} DH · équivaut à ${formatNumber((-balance) / meterRate)} m',
-                          style: const TextStyle(
-                            color: Color(0xFF15803D),
+                          style: TextStyle(
+                            color: _atelierSuccess(context),
                             fontWeight: FontWeight.w900,
                           ),
                         )
                       else
-                        const Text(
+                        Text(
                           'Solde réglé',
                           style: TextStyle(
-                            color: Color(0xFF15803D),
+                            color: _atelierSuccess(context),
                             fontWeight: FontWeight.w900,
                           ),
                         ),
@@ -15305,14 +15266,14 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
             children: [
               IconButton(
                 onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.arrow_back, color: AppPalette.primary),
+                icon: Icon(Icons.arrow_back, color: Theme.of(context).colorScheme.primary),
               ),
-              const Text(
+              Text(
                 'Mode développeur',
                 style: TextStyle(
                   fontSize: 26,
                   fontWeight: FontWeight.w900,
-                  color: AppPalette.text,
+                  color: _atelierForeground(context),
                 ),
               ),
               const SizedBox(height: 6),
@@ -15337,9 +15298,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier un produit'),
                       onTap: _editProduct,
@@ -15355,9 +15316,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_location_alt_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier un dépôt'),
                       onTap: _editDepot,
@@ -15373,9 +15334,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier une catégorie'),
                       onTap: _editCategory,
@@ -15400,9 +15361,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier un achat'),
                       onTap: _editPurchase,
@@ -15418,9 +15379,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier une vente'),
                       onTap: _editSale,
@@ -15436,9 +15397,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier une machine'),
                       onTap: _editMachine,
@@ -15454,9 +15415,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier une opération'),
                       onTap: _editOperation,
@@ -15472,9 +15433,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier un transfert'),
                       onTap: _editTransfer,
@@ -15490,9 +15451,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier un retour client'),
                       onTap: _editReturn,
@@ -15509,9 +15470,16 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
 }
 
 class DeviceRequestsPage extends StatefulWidget {
-  const DeviceRequestsPage({super.key, required this.userName});
+  const DeviceRequestsPage({
+    super.key,
+    required this.userName,
+    this.loadRequests = SupabaseAccounts.pendingDeviceRequests,
+    this.loadDevices = SupabaseAccounts.trustedDevices,
+  });
 
   final String Function(String userId) userName;
+  final Future<List<DeviceAccessRequest>> Function() loadRequests;
+  final Future<List<TrustedDevice>> Function() loadDevices;
 
   @override
   State<DeviceRequestsPage> createState() => _DeviceRequestsPageState();
@@ -15524,13 +15492,13 @@ class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
   @override
   void initState() {
     super.initState();
-    requests = SupabaseAccounts.pendingDeviceRequests();
-    devices = SupabaseAccounts.trustedDevices();
+    requests = widget.loadRequests();
+    devices = widget.loadDevices();
   }
 
   void reload() => setState(() {
-    requests = SupabaseAccounts.pendingDeviceRequests();
-    devices = SupabaseAccounts.trustedDevices();
+    requests = widget.loadRequests();
+    devices = widget.loadDevices();
   });
 
   Future<void> changeStatus(TrustedDevice device, String status) async {
@@ -15578,7 +15546,10 @@ class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
         IconButton(onPressed: reload, icon: const Icon(Icons.refresh_rounded)),
       ],
     ),
-    body: FutureBuilder<List<DeviceAccessRequest>>(
+    body: Aura(child: _buildBody()),
+  );
+
+  Widget _buildBody() => FutureBuilder<List<DeviceAccessRequest>>(
       future: requests,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
@@ -15707,7 +15678,6 @@ class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
           },
         );
       },
-    ),
   );
 }
 
@@ -15775,6 +15745,7 @@ class _UsersPageState extends State<UsersPage> {
     final visibleUsers = widget.users
         .where((user) => !user.isPrivateOwner)
         .toList();
+    final scheme = Theme.of(context).colorScheme;
     return Page(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -15832,10 +15803,12 @@ class _UsersPageState extends State<UsersPage> {
                     (u) => ListTile(
                       onTap: () => open(u),
                       leading: CircleAvatar(
-                        backgroundColor: AppPalette.primary.withValues(
+                        backgroundColor: scheme.primary.withValues(
                           alpha: .16,
                         ),
-                        foregroundColor: AppPalette.primaryDark,
+                        foregroundColor: scheme.brightness == Brightness.dark
+                            ? scheme.onPrimaryContainer
+                            : AppPalette.primaryDark,
                         child: Text(u.fullName.substring(0, 1).toUpperCase()),
                       ),
                       title: Text(
@@ -16098,7 +16071,7 @@ class ProductKindPage extends StatelessWidget {
                         ProductKind.manufactured =>
                           Icons.precision_manufacturing_outlined,
                         ProductKind.diameter => Icons.architecture_outlined,
-                      }, color: AppPalette.primary),
+                      }, color: Theme.of(context).colorScheme.primary),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
@@ -16113,8 +16086,8 @@ class ProductKindPage extends StatelessWidget {
                             const SizedBox(height: 4),
                             Text(
                               kind.description,
-                              style: const TextStyle(
-                                color: AppPalette.muted,
+                              style: TextStyle(
+                                color: _atelierMuted(context),
                                 fontSize: 12,
                               ),
                             ),
@@ -17182,8 +17155,8 @@ class _SaleFormState extends State<SaleForm> {
                   : selectedProduct?.isHose == true
                   ? 'Sortie de stock : $pieces pièce(s) = ${formatNumber(pieces * selectedProduct!.lengthMeters)} m'
                   : 'Sortie de stock : $pieces pièce(s)',
-              style: const TextStyle(
-                color: AppPalette.muted,
+              style: TextStyle(
+                color: _atelierMuted(context),
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -17502,14 +17475,14 @@ class _StockFormState extends State<StockForm> {
                     width: double.infinity,
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFE9D5FF),
+                      color: Theme.of(context).colorScheme.primary.withValues(alpha: .14),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
                       'Le stock est conservé en pièces : ${formatQuantity(enteredQuantity, unit)} est converti en $addedPieces pièce(s) pour ce produit.',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
-                        color: Color(0xFF45116C),
+                        color: _atelierForeground(context),
                       ),
                     ),
                   ),
@@ -17521,7 +17494,7 @@ class _StockFormState extends State<StockForm> {
                 const SizedBox(height: 4),
                 Text(
                   '${productQuantityLabel(selectedProduct!, widget.stock(selectedProduct!.id) + addedPieces)} au total',
-                  style: const TextStyle(fontSize: 12, color: AppPalette.muted),
+                  style: TextStyle(fontSize: 12, color: _atelierMuted(context)),
                 ),
               ],
             ),
@@ -18081,9 +18054,9 @@ class _MachineFormState extends State<MachineForm> {
             ),
             const SizedBox(height: 12),
             if (!temporary) ...[
-              const Text(
+              Text(
                 'Chaque exemplaire a sa propre photo et sa propre carte.',
-                style: TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -18111,9 +18084,9 @@ class _MachineFormState extends State<MachineForm> {
                 ),
               ),
             ] else ...[
-              const Text(
+              Text(
                 'À utiliser quand des pièces sont envoyées chez un voisin. Une photo est requise ; le stock ne sera crédité qu’après validation.',
-                style: TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
               const SizedBox(height: 12),
               ImageInput(
@@ -18193,7 +18166,7 @@ class _MachineFormState extends State<MachineForm> {
               temporary
                   ? 'Choisissez ensuite la matière envoyée : elle sera déduite du stock à la validation.'
                   : 'Le travailleur choisira le produit de cette catégorie au démarrage.',
-              style: const TextStyle(fontSize: 12, color: AppPalette.muted),
+              style: TextStyle(fontSize: 12, color: _atelierMuted(context)),
             ),
             if (temporary && categoryId != null) ...[
               const SizedBox(height: 16),
@@ -18348,6 +18321,7 @@ class ProductPicker extends StatelessWidget {
     runSpacing: 10,
     children: products.map((product) {
       final isSelected = selected.contains(product.id);
+      final scheme = Theme.of(context).colorScheme;
       return SizedBox(
         width: 145,
         child: InkWell(
@@ -18359,11 +18333,11 @@ class ProductPicker extends StatelessWidget {
             padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
               color: isSelected
-                  ? AppPalette.desktopAccentSoft
-                  : AppPalette.surfaceRaised.withValues(alpha: .56),
+                  ? scheme.primaryContainer
+                  : scheme.surfaceContainerHigh.withValues(alpha: .56),
               borderRadius: BorderRadius.circular(18),
               border: Border.all(
-                color: isSelected ? AppPalette.primary : AppPalette.line,
+                color: isSelected ? scheme.primary : scheme.outline,
                 width: isSelected ? 2 : 1,
               ),
             ),
@@ -18566,8 +18540,8 @@ class _CatalogGroupCard extends StatelessWidget {
                       label,
                       textAlign: TextAlign.center,
                       maxLines: 1,
-                      style: const TextStyle(
-                        color: AppPalette.muted,
+                      style: TextStyle(
+                        color: _atelierMuted(context),
                         fontSize: 12,
                       ),
                       overflow: TextOverflow.ellipsis,
@@ -18800,7 +18774,7 @@ class _StartOperationState extends State<StartOperation> {
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 'Stock disponible dans ce dépôt : ${widget.available(productId!, depotId!)} pièce(s)',
-                style: const TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
             ),
         ],
@@ -18845,8 +18819,8 @@ class _StartOperationState extends State<StartOperation> {
               child: Text(
                 'Longueur calculée du cadous : ${formatNumber((int.parse(hopper.text)) * Operation.hopperSheetLengthMeters)} m '
                 '(${hopper.text} tôle(s) × ${formatNumber(Operation.hopperSheetLengthMeters)} m)',
-                style: const TextStyle(
-                  color: AppPalette.muted,
+                style: TextStyle(
+                  color: _atelierMuted(context),
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -18865,9 +18839,9 @@ class _StartOperationState extends State<StartOperation> {
             ),
         ],
         const SizedBox(height: 14),
-        const Text(
+        Text(
           'Le stock sera réservé immédiatement et l’opération sera affichée comme « en cours ».',
-          style: TextStyle(fontSize: 12, color: AppPalette.muted),
+          style: TextStyle(fontSize: 12, color: _atelierMuted(context)),
         ),
         const SizedBox(height: 20),
         SizedBox(
@@ -19053,11 +19027,11 @@ class _FinishOperationState extends State<FinishOperation> {
               onTap: () => pick((value) => image = value),
             ),
           ] else
-            const Padding(
-              padding: EdgeInsets.only(top: 12),
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
               child: Text(
                 'Indiquez une quantité fabriquée supérieure à zéro pour choisir son dépôt et sa photo.',
-                style: TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
             ),
         ],
@@ -19225,11 +19199,11 @@ class Receipt extends StatelessWidget {
   final AppUser operator;
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Row(
+    title: Row(
       children: [
-        Icon(Icons.receipt_long_rounded, color: AppPalette.primary),
-        SizedBox(width: 8),
-        Text('Bon de production'),
+        Icon(Icons.receipt_long_rounded, color: Theme.of(context).colorScheme.primary),
+        const SizedBox(width: 8),
+        const Text('Bon de production'),
       ],
     ),
     content: SingleChildScrollView(
@@ -19264,15 +19238,28 @@ class Receipt extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: const Color(0xFFFFEDD5),
+                color: _atelierWarning(context).withValues(alpha: .16),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Text(
-                '⚠ ${operation.pieces - (operation.outputPieces ?? 0)} pièce(s) restante(s) photographiée(s) et envoyée(s) au contrôle.',
-                style: const TextStyle(
-                  color: Color(0xFF92400E),
-                  fontWeight: FontWeight.w800,
-                ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    size: 18,
+                    color: _atelierWarning(context),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${operation.pieces - (operation.outputPieces ?? 0)} pièce(s) restante(s) photographiée(s) et envoyée(s) au contrôle.',
+                      style: TextStyle(
+                        color: _atelierWarning(context),
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -19545,7 +19532,10 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('Fiche utilisateur')),
-    body: SafeArea(
+    body: Aura(child: _buildBody(context)),
+  );
+
+  Widget _buildBody(BuildContext context) => SafeArea(
       child: ListView(
         padding: const EdgeInsets.all(20),
         children: [
@@ -19567,9 +19557,9 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               child: ListTile(
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(
+                leading: Icon(
                   Icons.lock_reset_rounded,
-                  color: AppPalette.primary,
+                  color: Theme.of(context).colorScheme.primary,
                 ),
                 title: const Text('Mot de passe'),
                 subtitle: Text(
@@ -19610,9 +19600,9 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
             'Pages et droit d’ajout',
             style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
           ),
-          const Text(
+          Text(
             'L’icône œil signifie lecture seule ; le crayon autorise aussi les ajouts et modifications.',
-            style: TextStyle(color: AppPalette.muted, fontSize: 12),
+            style: TextStyle(color: _atelierMuted(context), fontSize: 12),
           ),
           const SizedBox(height: 6),
           ...AppPage.values.map(accessCheck),
@@ -19634,9 +19624,9 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
               'Plage quotidienne de connexion',
               style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
             ),
-            const Text(
+            Text(
               'En dehors de cette plage, le compte ne peut pas accéder à l’application.',
-              style: TextStyle(color: AppPalette.muted, fontSize: 12),
+              style: TextStyle(color: _atelierMuted(context), fontSize: 12),
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -19755,7 +19745,6 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
           ],
         ],
       ),
-    ),
   );
 }
 
@@ -19830,6 +19819,7 @@ class _UserFormState extends State<UserForm> {
           ),
           const SizedBox(height: 8),
           SegmentedButton<UserRole>(
+            showSelectedIcon: MediaQuery.sizeOf(context).width >= 440,
             segments: const [
               ButtonSegment(value: UserRole.operator, label: Text('Opérateur')),
               ButtonSegment(value: UserRole.visitor, label: Text('Visiteur')),
@@ -19987,82 +19977,87 @@ class ImageInput extends StatelessWidget {
   final Uint8List? bytes;
   final String label;
   final VoidCallback onTap;
+
   @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: onTap,
-    borderRadius: BorderRadius.circular(16),
-    child: AnimatedContainer(
-      duration: const Duration(milliseconds: 220),
-      height: bytes == null ? 118 : 174,
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: AppPalette.soft,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFDCD9F8)),
-      ),
-      child: bytes == null
-          ? Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.add_a_photo_outlined,
-                    color: AppPalette.primary,
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Flexible(
-                  child: Column(
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final image = bytes;
+    return Semantics(
+      button: true,
+      label: image == null ? null : label,
+      child: _LiquidTapTarget(
+        onTap: onTap,
+        radius: 18,
+        accent: scheme.primary,
+        child: AnimatedSize(
+          duration: MediaQuery.disableAnimationsOf(context)
+              ? Duration.zero
+              : const Duration(milliseconds: 220),
+          child: image == null
+              ? Container(
+                  constraints: const BoxConstraints(minHeight: 118),
+                  alignment: Alignment.center,
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        label,
-                        style: const TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                      const SizedBox(height: 4),
-                      const Text(
-                        'Touchez pour choisir une image',
-                        style: TextStyle(color: AppPalette.muted, fontSize: 12),
+                      const _AtelierIcon(Icons.add_a_photo_outlined, size: 46),
+                      const SizedBox(width: 14),
+                      Flexible(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              label,
+                              style: TextStyle(
+                                color: scheme.onSurface,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Touchez pour choisir une image',
+                              style: TextStyle(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
-                ),
-              ],
-            )
-          : ClipRRect(
-              borderRadius: BorderRadius.circular(15),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Image.memory(bytes!, fit: BoxFit.cover),
-                  Positioned(
-                    right: 10,
-                    bottom: 10,
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.edit_rounded,
-                        size: 18,
-                        color: AppPalette.primary,
+                )
+              : Padding(
+                  padding: const EdgeInsets.all(3),
+                  child: SizedBox(
+                    height: 168,
+                    width: double.infinity,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(15),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Image.memory(
+                            image,
+                            fit: BoxFit.cover,
+                            excludeFromSemantics: true,
+                          ),
+                          const Positioned(
+                            right: 10,
+                            bottom: 10,
+                            child: _AtelierIcon(Icons.edit_rounded, size: 36),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-                ],
-              ),
-            ),
-    ),
-  );
+                ),
+        ),
+      ),
+    );
+  }
 }
 
 class MultiImageInput extends StatelessWidget {
@@ -20157,6 +20152,8 @@ class FormShell extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
               child: Glass(
                 radius: 22,
+                depth: 1.65,
+                opacity: .81,
                 padding: const EdgeInsets.fromLTRB(6, 6, 12, 6),
                 child: Row(
                   children: [
@@ -20177,7 +20174,7 @@ class FormShell extends StatelessWidget {
                             const SizedBox(height: 3),
                             Text(
                               description,
-                              style: const TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                           ],
                         ],

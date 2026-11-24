@@ -79,6 +79,9 @@ flutter:
 
   assets:
     - assets/app_logo.png
+    - assets/forage-login-drill.jpg
+    - assets/atelier-wallpaper-light.png
+    - assets/atelier-wallpaper-dark.png
 
   shaders:
     - shaders/atelier_liquid.frag
