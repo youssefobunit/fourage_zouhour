@@ -4764,18 +4764,16 @@ class _InitialAdminSetupState extends State<InitialAdminSetup> {
                         validator: usernameValidator,
                       ),
                       const SizedBox(height: 12),
-                      TextFormField(
+                      _GlassPasswordField(
                         controller: password,
-                        obscureText: true,
                         decoration: const InputDecoration(
                           labelText: 'Mot de passe *',
                         ),
                         validator: securePasswordValidator,
                       ),
                       const SizedBox(height: 12),
-                      TextFormField(
+                      _GlassPasswordField(
                         controller: confirmation,
-                        obscureText: true,
                         decoration: const InputDecoration(
                           labelText: 'Confirmer le mot de passe *',
                         ),
@@ -4921,30 +4919,36 @@ class _LoginPageState extends State<LoginPage> {
     final accent = dark ? const Color(0xFFE46AFF) : const Color(0xFF427CAA);
     final foreground = dark ? const Color(0xFFFFF4FF) : AppPalette.text;
     final muted = dark ? const Color(0xFFDFC3E9) : AppPalette.muted;
+    final spaciousDaylight = wide && !dark;
     final signIn = _LoginGlassPanel(
-      radius: wide ? 40 : 30,
+      radius: spaciousDaylight ? 54 : wide ? 40 : 30,
       accent: accent,
-      padding: wide ? const EdgeInsets.all(34) : const EdgeInsets.all(20),
+      padding: EdgeInsets.all(spaciousDaylight ? 42 : wide ? 34 : 20),
       child: AutofillGroup(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
               children: [
-                _LoginFeatureMark(
-                  Icons.shield_outlined,
-                  accent: accent,
-                  size: wide ? 64 : 48,
-                ),
-                SizedBox(width: wide ? 18 : 12),
+                if (dark) ...[
+                  _LoginFeatureMark(
+                    Icons.shield_outlined,
+                    accent: accent,
+                    size: wide ? 64 : 48,
+                  ),
+                  SizedBox(width: wide ? 18 : 12),
+                ],
                 Expanded(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment: dark
+                        ? CrossAxisAlignment.start
+                        : CrossAxisAlignment.center,
                     children: [
                       Text(
                         'Connexion sécurisée',
+                        textAlign: dark ? TextAlign.start : TextAlign.center,
                         style: TextStyle(
-                          fontSize: wide ? 30 : 23,
+                          fontSize: spaciousDaylight ? 38 : wide ? 30 : 23,
                           letterSpacing: -.55,
                           fontWeight: FontWeight.w800,
                           color: foreground,
@@ -4953,9 +4957,10 @@ class _LoginPageState extends State<LoginPage> {
                       SizedBox(height: 3),
                       Text(
                         'Accédez à votre espace atelier',
+                        textAlign: dark ? TextAlign.start : TextAlign.center,
                         style: TextStyle(
                           color: muted,
-                          fontSize: wide ? 15 : 13,
+                          fontSize: spaciousDaylight ? 18 : wide ? 15 : 13,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -4964,7 +4969,7 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ],
             ),
-            SizedBox(height: wide ? 30 : 20),
+            SizedBox(height: spaciousDaylight ? 35 : wide ? 30 : 20),
             TextField(
               controller: email,
               enabled: !authenticating && !awaitingApproval,
@@ -4976,15 +4981,19 @@ class _LoginPageState extends State<LoginPage> {
                 prefixIcon: Icon(Icons.email_outlined),
               ),
             ),
-            const SizedBox(height: 12),
+            SizedBox(height: spaciousDaylight ? 16 : 12),
             Glass(
               accent: accent,
               child: SegmentedButton<bool>(
                 style: dark
                     ? null
                     : SegmentedButton.styleFrom(
-                        backgroundColor: const Color(0xDBF6FBFF),
-                        selectedBackgroundColor: const Color(0xEBD7E8F5),
+                        backgroundColor: const Color(0xAEEBF8FF),
+                        selectedBackgroundColor: const Color(0xEB1261C4),
+                        selectedForegroundColor: Colors.white,
+                        side: const BorderSide(color: Color(0xA5FFFFFF)),
+                        shape: const StadiumBorder(),
+                        minimumSize: Size(0, spaciousDaylight ? 52 : 44),
                       ),
                 segments: const [
                   ButtonSegment(
@@ -5004,7 +5013,7 @@ class _LoginPageState extends State<LoginPage> {
                     : (value) => setState(() => usesPattern = value.first),
               ),
             ),
-            const SizedBox(height: 12),
+            SizedBox(height: spaciousDaylight ? 16 : 12),
             if (usesPattern)
               PatternPad(
                 pattern: pattern,
@@ -5017,10 +5026,9 @@ class _LoginPageState extends State<LoginPage> {
                       }),
               )
             else
-              TextField(
+              _GlassPasswordField(
                 controller: password,
                 enabled: !authenticating && !awaitingApproval,
-                obscureText: true,
                 autofillHints: const [AutofillHints.password],
                 onSubmitted: authenticating ? null : (_) => login(),
                 decoration: const InputDecoration(
@@ -5073,10 +5081,10 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ),
             Padding(
-              padding: EdgeInsets.symmetric(vertical: 4),
+              padding: EdgeInsets.symmetric(vertical: spaciousDaylight ? 18 : 5),
               child: Text(
                 'Contactez un administrateur pour toute récupération d’accès.',
-                style: TextStyle(fontSize: 12, color: muted),
+                style: TextStyle(fontSize: spaciousDaylight ? 14 : 12, color: muted),
                 textAlign: TextAlign.center,
               ),
             ),
@@ -5087,8 +5095,8 @@ class _LoginPageState extends State<LoginPage> {
                 onPressed: authenticating || awaitingApproval ? null : login,
                 style: FilledButton.styleFrom(
                   backgroundColor: Colors.transparent,
-                  foregroundColor: dark ? Colors.white : null,
-                  minimumSize: Size.fromHeight(wide ? 58 : 52),
+                  foregroundColor: Colors.white,
+                  minimumSize: Size.fromHeight(spaciousDaylight ? 68 : wide ? 58 : 52),
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
                     fontSize: wide ? 19 : 16,
@@ -5128,8 +5136,8 @@ class _LoginPageState extends State<LoginPage> {
     );
     final baseTheme = Theme.of(context);
     final daylightBorder = OutlineInputBorder(
-      borderRadius: BorderRadius.circular(16),
-      borderSide: const BorderSide(color: Color(0xFFB5CEE0)),
+      borderRadius: BorderRadius.circular(28),
+      borderSide: const BorderSide(color: Color(0xD9FFFFFF), width: 1.4),
     );
     final pageTheme = dark
         ? baseTheme.copyWith(
@@ -5162,7 +5170,8 @@ class _LoginPageState extends State<LoginPage> {
           )
         : baseTheme.copyWith(
             inputDecorationTheme: baseTheme.inputDecorationTheme.copyWith(
-              fillColor: const Color(0xEBF7FBFF),
+              fillColor: const Color(0xAEEBF7FF),
+              constraints: BoxConstraints(minHeight: spaciousDaylight ? 65 : 53),
               prefixIconColor: accent,
               enabledBorder: daylightBorder,
               focusedBorder: daylightBorder.copyWith(
@@ -5476,16 +5485,14 @@ class _ForageHomeState extends State<ForageHome> {
                 'la sauvegarde ne peut pas être récupérée sans lui.',
               ),
               const SizedBox(height: 12),
-              TextField(
+              _GlassPasswordField(
                 controller: password,
-                obscureText: true,
                 decoration: const InputDecoration(labelText: 'Mot de passe *'),
               ),
               if (confirm) ...[
                 const SizedBox(height: 10),
-                TextField(
+                _GlassPasswordField(
                   controller: confirmation,
-                  obscureText: true,
                   decoration: const InputDecoration(
                     labelText: 'Confirmer le mot de passe *',
                   ),
@@ -5802,6 +5809,7 @@ class _ForageHomeState extends State<ForageHome> {
           // Purchase documents are selected from the device gallery for every
           // user; they are not evidence that must be taken live.
           allowGallery: true,
+          canPreviewAttachments: widget.user.isAdmin,
           initialProductId: initialProductId,
         ),
       ),
@@ -5906,6 +5914,7 @@ class _ForageHomeState extends State<ForageHome> {
           available: depotStock,
           onAddClient: addClient,
           allowGallery: widget.user.isAdmin,
+          canPreviewAttachments: widget.user.isAdmin,
         ),
       ),
     );
@@ -6051,6 +6060,7 @@ class _ForageHomeState extends State<ForageHome> {
           onReturn: returnSale,
           canReturnPurchase: widget.user.canWritePage(AppPage.stock),
           onReturnPurchase: returnPurchase,
+          onOpenAttachments: widget.user.isAdmin ? _openTransactionPhotos : null,
         ),
       ),
     );
@@ -6069,9 +6079,24 @@ class _ForageHomeState extends State<ForageHome> {
           suppliers: suppliers,
           competitors: competitors,
           depotName: (id) => depot(id)?.name ?? 'Stock général',
+          onOpenAttachments: widget.user.isAdmin ? _openTransactionPhotos : null,
         ),
       ),
     );
+  }
+
+  void _openTransactionPhotos(
+    BuildContext context,
+    bool sale,
+    String? id,
+    List<Uint8List> images,
+  ) {
+    if (!widget.user.isAdmin) return;
+    final sync = widget.database.cloudSync;
+    final photos = images.isEmpty && id != null && sync is SupabaseCloudSyncClient
+        ? sync.loadTransactionPhotos(sale: sale, id: id)
+        : Future.value(images);
+    _showTransactionPhotos(context, photos);
   }
 
   Future<void> openExcelExport() async {
@@ -11738,7 +11763,9 @@ class TransactionPaymentsPage extends StatefulWidget {
     required this.suppliers,
     required this.competitors,
     required this.depotName,
+    this.onOpenAttachments,
   });
+  final OpenTransactionPhotos? onOpenAttachments;
   final List<TransactionPayment> payments;
   final List<Sale> sales;
   final List<StockAddition> purchases;
@@ -11820,7 +11847,6 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
     final DateTime date;
     final bool draft;
     final String? receiptNumber;
-    final int photoCount;
     if (sale != null) {
       isSale = true;
       productId = sale.productId;
@@ -11832,7 +11858,6 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
       date = sale.createdAt;
       draft = sale.draft;
       receiptNumber = null;
-      photoCount = sale.images.length;
     } else if (purchase != null) {
       isSale = false;
       productId = purchase.productId;
@@ -11844,7 +11869,6 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
       date = purchase.addedAt;
       draft = purchase.draft;
       receiptNumber = purchase.receiptNumber;
-      photoCount = purchase.images.length;
     } else {
       return;
     }
@@ -11887,7 +11911,17 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                       ? 'Non renseigné'
                       : receiptNumber,
                 ),
-              _PaymentDetail(label: 'Photos jointes', value: '$photoCount'),
+              if (widget.onOpenAttachments case final open?)
+                OutlinedButton.icon(
+                  onPressed: () => open(
+                    context,
+                    isSale,
+                    sale?.id ?? purchase?.id?.toString(),
+                    sale?.images ?? purchase?.images ?? const [],
+                  ),
+                  icon: const Icon(Icons.photo_library_outlined),
+                  label: const Text('Photos jointes'),
+                ),
               _PaymentDetail(
                 label: 'Source de paiement',
                 value: payment.source.label,
@@ -12365,6 +12399,66 @@ class _StockProductTile extends StatelessWidget {
   }
 }
 
+typedef OpenTransactionPhotos = void Function(
+  BuildContext context,
+  bool sale,
+  String? id,
+  List<Uint8List> images,
+);
+
+void _showTransactionPhotos(BuildContext context, Future<List<Uint8List>> photos) {
+  showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Photos jointes'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 600, maxHeight: 440),
+        child: FutureBuilder<List<Uint8List>>(
+          future: photos,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const SizedBox(
+                width: 180,
+                height: 100,
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.hasError) return const Text('Photos indisponibles.');
+            final images = snapshot.data ?? const <Uint8List>[];
+            if (images.isEmpty) return const Text('Aucune photo jointe.');
+            return SizedBox(
+              width: 600,
+              height: min(420, MediaQuery.sizeOf(context).height * .52),
+              child: ListView.separated(
+                itemCount: images.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 12),
+                itemBuilder: (context, index) => AspectRatio(
+                  aspectRatio: 4 / 3,
+                  child: InteractiveViewer(
+                    child: Image.memory(
+                      images[index],
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, _, _) => const Center(
+                        child: Text('Photo illisible.'),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Fermer'),
+        ),
+      ],
+    ),
+  );
+}
+
 class StockRecordsPage extends StatefulWidget {
   const StockRecordsPage({
     super.key,
@@ -12381,9 +12475,11 @@ class StockRecordsPage extends StatefulWidget {
     required this.onReturn,
     required this.canReturnPurchase,
     required this.onReturnPurchase,
+    this.onOpenAttachments,
   });
 
   final List<Product> products;
+  final OpenTransactionPhotos? onOpenAttachments;
   final List<StockAddition> additions;
   final List<Sale> sales;
   final List<StockTransfer> transfers;
@@ -12413,6 +12509,27 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
   String? secondDepot;
   late List<SaleReturn> saleReturns;
   late List<StockAddition> additions;
+
+  Widget? _recordActions({
+    required bool sale,
+    required String? id,
+    required List<Uint8List> images,
+    Widget? returnAction,
+  }) {
+    final open = widget.onOpenAttachments;
+    if (open == null) return returnAction;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          tooltip: 'Voir les photos jointes',
+          onPressed: () => open(context, sale, id, images),
+          icon: const Icon(Icons.photo_library_outlined),
+        ),
+        ?returnAction,
+      ],
+    );
+  }
 
   Widget recordFilters() => switch (section) {
     _StockRecordSection.purchases => SearchChoiceField(
@@ -12716,7 +12833,11 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
         '${product(addition.productId)?.displayReference ?? 'Produit'} · ${widget.depotName(addition.depotId)}\n${supplierName(addition.supplierId)} · ${addition.receiptNumber.isEmpty ? 'Sans n° de bon' : 'Bon n° ${addition.receiptNumber}'} · ${addition.draft ? 'Brouillon à valider' : 'Validé'} · ${addition.addedAt.millisecondsSinceEpoch == 0 ? 'Ajout antérieur' : dateText(addition.addedAt)}',
       ),
       isThreeLine: true,
-      trailing: widget.canReturnPurchase && returnable
+      trailing: _recordActions(
+        sale: false,
+        id: addition.id?.toString(),
+        images: addition.images,
+        returnAction: widget.canReturnPurchase && returnable
           ? IconButton(
               tooltip: 'Retourner au fournisseur',
               onPressed: () => _returnPurchase(addition),
@@ -12725,7 +12846,8 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                 color: Color(0xFFB45309),
               ),
             )
-          : null,
+            : null,
+      ),
     );
   }
 
@@ -12819,7 +12941,11 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
         '${product(sale.productId)?.displayReference ?? 'Produit'} · ${widget.depotName(sale.depotId)}\n${clientName(sale.clientId)} · ${dateText(sale.createdAt)}${approved > 0 ? '\nRetour validé : ${product(sale.productId) == null ? approved : productQuantityLabel(product(sale.productId)!, approved)}' : ''}${pending > 0 ? '\nRetour en attente : ${product(sale.productId) == null ? pending : productQuantityLabel(product(sale.productId)!, pending)}' : ''}',
       ),
       isThreeLine: approved > 0 || pending > 0,
-      trailing: canReturnSale
+      trailing: _recordActions(
+        sale: true,
+        id: sale.id,
+        images: sale.images,
+        returnAction: canReturnSale
           ? IconButton(
               tooltip: 'Retourner au stock',
               onPressed: () => _returnSale(sale),
@@ -12828,7 +12954,8 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                 color: Color(0xFF15803D),
               ),
             )
-          : null,
+            : null,
+      ),
     );
   }
 }
@@ -16634,6 +16761,7 @@ class StockForm extends StatefulWidget {
     required this.suppliers,
     required this.onAddSupplier,
     required this.allowGallery,
+    this.canPreviewAttachments = false,
     this.initialProductId,
   });
   final List<Product> products;
@@ -16644,6 +16772,7 @@ class StockForm extends StatefulWidget {
   final List<Supplier> suppliers;
   final Future<Supplier?> Function() onAddSupplier;
   final bool allowGallery;
+  final bool canPreviewAttachments;
   final String? initialProductId;
 
   @override
@@ -16875,6 +17004,7 @@ class SaleForm extends StatefulWidget {
     required this.available,
     required this.onAddClient,
     required this.allowGallery,
+    this.canPreviewAttachments = false,
   });
   final List<Product> products;
   final List<ProductCategory> categories;
@@ -16884,6 +17014,7 @@ class SaleForm extends StatefulWidget {
   final int Function(String, String) available;
   final Future<Client?> Function() onAddClient;
   final bool allowGallery;
+  final bool canPreviewAttachments;
 
   @override
   State<SaleForm> createState() => _SaleFormState();
@@ -17198,6 +17329,10 @@ class _SaleFormState extends State<SaleForm> {
           label: widget.allowGallery
               ? 'Photos des pièces / accessoires * (${images.length}/10)'
               : 'Prendre une photo * (${images.length}/10)',
+          showPreviews: widget.canPreviewAttachments,
+          onPreview: widget.canPreviewAttachments
+              ? () => _showTransactionPhotos(context, Future.value(List.of(images)))
+              : null,
           onTap: pickImages,
           onRemove: (index) => setState(() => images.removeAt(index)),
         ),
@@ -17465,6 +17600,10 @@ class _StockFormState extends State<StockForm> {
           label: widget.allowGallery
               ? 'Photos des pièces / accessoires * (${images.length}/10)'
               : 'Prendre une photo * (${images.length}/10)',
+          showPreviews: widget.canPreviewAttachments,
+          onPreview: widget.canPreviewAttachments
+              ? () => _showTransactionPhotos(context, Future.value(List.of(images)))
+              : null,
           onTap: pickImages,
           onRemove: (index) => setState(() => images.removeAt(index)),
         ),
@@ -19433,18 +19572,16 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
                 'Définissez un nouveau mot de passe pour ${widget.user.fullName}.',
               ),
               const SizedBox(height: 12),
-              TextField(
+              _GlassPasswordField(
                 controller: password,
-                obscureText: true,
                 autofocus: true,
                 decoration: const InputDecoration(
                   labelText: 'Nouveau mot de passe',
                 ),
               ),
               const SizedBox(height: 10),
-              TextField(
+              _GlassPasswordField(
                 controller: confirmation,
-                obscureText: true,
                 decoration: const InputDecoration(
                   labelText: 'Confirmer le mot de passe',
                 ),
@@ -19822,9 +19959,8 @@ class _UserFormState extends State<UserForm> {
             validator: emailValidator,
           ),
           const SizedBox(height: 12),
-          TextFormField(
+          _GlassPasswordField(
             controller: password,
-            obscureText: true,
             decoration: const InputDecoration(labelText: 'Mot de passe *'),
             validator: securePasswordValidator,
           ),
@@ -20086,11 +20222,15 @@ class MultiImageInput extends StatelessWidget {
     required this.label,
     required this.onTap,
     required this.onRemove,
+    this.showPreviews = true,
+    this.onPreview,
   });
   final List<Uint8List> images;
   final String label;
   final VoidCallback onTap;
   final ValueChanged<int> onRemove;
+  final bool showPreviews;
+  final VoidCallback? onPreview;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -20101,7 +20241,22 @@ class MultiImageInput extends StatelessWidget {
         icon: const Icon(Icons.add_photo_alternate_outlined),
         label: Text(label),
       ),
-      if (images.isNotEmpty) ...[
+      if (images.isNotEmpty && !showPreviews)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: List.generate(
+              images.length,
+              (index) => InputChip(
+                label: Text('Photo ${index + 1}'),
+                onDeleted: () => onRemove(index),
+              ),
+            ),
+          ),
+        ),
+      if (images.isNotEmpty && showPreviews) ...[
         const SizedBox(height: 8),
         SizedBox(
           height: 92,
@@ -20113,11 +20268,14 @@ class MultiImageInput extends StatelessWidget {
               children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: Image.memory(
-                    images[index],
-                    width: 92,
-                    height: 92,
-                    fit: BoxFit.cover,
+                  child: InkWell(
+                    onTap: onPreview,
+                    child: Image.memory(
+                      images[index],
+                      width: 92,
+                      height: 92,
+                      fit: BoxFit.cover,
+                    ),
                   ),
                 ),
                 Positioned(

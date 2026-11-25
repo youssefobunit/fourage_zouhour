@@ -6,6 +6,75 @@ import 'package:forage/main.dart' as forage;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
+  testWidgets('transaction attachment controls require the admin action', (
+    tester,
+  ) async {
+    final date = DateTime(2026, 11, 25);
+    final opened = <(bool, String?)>[];
+    Future<void> openRecords(forage.OpenTransactionPhotos? open) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: forage.StockRecordsPage(
+            key: ValueKey(open != null),
+            products: const [],
+            additions: [
+              forage.StockAddition(
+                id: 42,
+                productId: 'bit',
+                depotId: 'depot',
+                pieces: 3,
+                quantity: 3,
+                unit: forage.InventoryUnit.piece,
+                receiptNumber: 'A-42',
+                images: const [],
+                addedAt: date,
+              ),
+            ],
+            sales: [
+              forage.Sale(
+                id: 'sale-42',
+                productId: 'bit',
+                clientId: 'client',
+                depotId: 'depot',
+                pieces: 1,
+                quantity: 1,
+                unit: forage.InventoryUnit.piece,
+                images: const [],
+                createdAt: date,
+              ),
+            ],
+            transfers: const [],
+            depots: const [],
+            saleReturns: const [],
+            suppliers: const [],
+            clients: const [],
+            depotName: (id) => id,
+            canReturn: false,
+            onReturn: (_, _) async => null,
+            canReturnPurchase: false,
+            onReturnPurchase: (_, _) async => null,
+            onOpenAttachments: open,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    final attachment = find.byTooltip('Voir les photos jointes');
+    await openRecords(null);
+    expect(attachment, findsNothing);
+    await tester.tap(find.text('Ventes'));
+    await tester.pumpAndSettle();
+    expect(attachment, findsNothing);
+
+    await openRecords((_, sale, id, _) => opened.add((sale, id)));
+    await tester.tap(attachment);
+    await tester.tap(find.text('Ventes'));
+    await tester.pumpAndSettle();
+    await tester.tap(attachment);
+    expect(opened, [(false, '42'), (true, 'sale-42')]);
+  });
+
   final category = forage.ProductCategory(
     id: 'drilling',
     name: 'Forage',

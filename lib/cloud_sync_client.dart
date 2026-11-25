@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// A complete, transport-neutral representation of the workshop's local data.
@@ -15,6 +18,17 @@ class SupabaseCloudSyncClient implements CloudSyncClient {
   SupabaseCloudSyncClient(this._client);
 
   final SupabaseClient _client;
+
+  Future<List<Uint8List>> loadTransactionPhotos({
+    required bool sale,
+    required String id,
+  }) async {
+    final photos = await _client.rpc(
+      'get_forage_transaction_photos',
+      params: {'p_sale': sale, 'p_id': id},
+    );
+    return (photos as List).cast<String>().map(base64Decode).toList();
+  }
 
   @override
   Future<void> upload(SyncSnapshot snapshot) async {

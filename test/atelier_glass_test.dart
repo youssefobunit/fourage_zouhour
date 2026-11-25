@@ -108,6 +108,24 @@ void main() {
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField).first, 'test@example.com');
       await tester.enterText(find.byType(TextField).last, 'mock-password');
+      final reveal = find.byTooltip('Afficher le mot de passe');
+      expect(
+        tester.widget<TextField>(find.byType(TextField).last).obscureText,
+        isTrue,
+      );
+      await tester.ensureVisible(reveal);
+      await tester.tap(reveal);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField).last).obscureText,
+        isFalse,
+      );
+      await tester.tap(find.byTooltip('Masquer le mot de passe'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField).last).obscureText,
+        isTrue,
+      );
       final submit = find.widgetWithText(FilledButton, 'Connexion');
       await tester.ensureVisible(submit);
       await tester.tap(submit);
@@ -128,9 +146,8 @@ void main() {
         theme: atelierDarkTheme(),
         builder: testLiquidStage,
         home: LoginPage(
-          onLogin: (_, _) async => const LoginResult.failure(
-            LoginFailure.invalidCredentials,
-          ),
+          onLogin: (_, _) async =>
+              const LoginResult.failure(LoginFailure.invalidCredentials),
           onApprovedDeviceLogin: (_) async {},
         ),
       ),

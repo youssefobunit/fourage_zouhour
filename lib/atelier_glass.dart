@@ -1545,6 +1545,77 @@ class _DashboardAction extends StatelessWidget {
   }
 }
 
+class _GlassPasswordField extends StatefulWidget {
+  const _GlassPasswordField({
+    required this.controller,
+    required this.decoration,
+    this.validator,
+    this.enabled = true,
+    this.autofocus = false,
+    this.autofillHints,
+    this.onSubmitted,
+  });
+
+  final TextEditingController controller;
+  final InputDecoration decoration;
+  final FormFieldValidator<String>? validator;
+  final bool enabled;
+  final bool autofocus;
+  final Iterable<String>? autofillHints;
+  final ValueChanged<String>? onSubmitted;
+
+  @override
+  State<_GlassPasswordField> createState() => _GlassPasswordFieldState();
+}
+
+class _GlassPasswordFieldState extends State<_GlassPasswordField> {
+  bool _visible = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final decoration = widget.decoration.copyWith(
+      suffixIcon: Padding(
+        padding: const EdgeInsetsDirectional.only(end: 4),
+        child: IconButton(
+          tooltip: _visible ? 'Masquer le mot de passe' : 'Afficher le mot de passe',
+          onPressed: widget.enabled
+              ? () => setState(() => _visible = !_visible)
+              : null,
+          icon: Icon(
+            _visible ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+            size: 21,
+          ),
+        ),
+      ),
+    );
+    if (widget.validator != null) {
+      return TextFormField(
+        controller: widget.controller,
+        decoration: decoration,
+        obscureText: !_visible,
+        enableSuggestions: false,
+        autocorrect: false,
+        enabled: widget.enabled,
+        autofocus: widget.autofocus,
+        autofillHints: widget.autofillHints,
+        validator: widget.validator,
+        onFieldSubmitted: widget.onSubmitted,
+      );
+    }
+    return TextField(
+      controller: widget.controller,
+      decoration: decoration,
+      obscureText: !_visible,
+      enableSuggestions: false,
+      autocorrect: false,
+      enabled: widget.enabled,
+      autofocus: widget.autofocus,
+      autofillHints: widget.autofillHints,
+      onSubmitted: widget.onSubmitted,
+    );
+  }
+}
+
 class _LoginScene extends StatelessWidget {
   const _LoginScene({required this.wide, required this.signIn});
 
@@ -1585,6 +1656,14 @@ class _LoginScene extends StatelessWidget {
                 width: constraints.maxWidth * .49,
                 child: const RepaintBoundary(child: _LoginArtwork(wide: true)),
               ),
+            if (wide && !dark)
+              Positioned(
+                top: -constraints.maxHeight * .04,
+                bottom: -constraints.maxHeight * .09,
+                left: -constraints.maxWidth * .07,
+                width: constraints.maxWidth * .54,
+                child: const RepaintBoundary(child: _LoginDaylightHero()),
+              ),
             SafeArea(
               child: LayoutBuilder(
                 builder: (context, safeConstraints) => SingleChildScrollView(
@@ -1600,7 +1679,7 @@ class _LoginScene extends StatelessWidget {
                       child: wide
                           ? ConstrainedBox(
                               constraints: BoxConstraints(
-                                maxWidth: dark ? double.infinity : 1060,
+                                maxWidth: dark ? double.infinity : 1430,
                               ),
                               child: Row(
                                 children: [
@@ -1613,7 +1692,7 @@ class _LoginScene extends StatelessWidget {
                                                 236,
                                                 constraints.maxHeight * .26,
                                               )
-                                            : 0,
+                                            : min(420, constraints.maxHeight * .47),
                                       ),
                                       child: Center(
                                         child: ConstrainedBox(
@@ -1637,8 +1716,8 @@ class _LoginScene extends StatelessWidget {
                                     flex: 11,
                                     child: Center(
                                       child: ConstrainedBox(
-                                        constraints: const BoxConstraints(
-                                          maxWidth: 600,
+                                        constraints: BoxConstraints(
+                                          maxWidth: dark ? 600 : 670,
                                         ),
                                         child: signIn,
                                       ),
@@ -2058,7 +2137,7 @@ class _LoginButtonReflection extends CustomPainter {
     final bounds = Offset.zero & size;
     final capsule = RRect.fromRectAndRadius(bounds, const Radius.circular(28));
     final highlight = dark ? const Color(0xFFF5CBFF) : const Color(0xFFF4FCFF);
-    final rim = dark ? const Color(0xFFE79AFF) : const Color(0xFF548FC8);
+    final rim = dark ? const Color(0xFFE79AFF) : const Color(0xFF68CEFF);
 
     // Keep the middle clear so the backdrop remains visible through the lens.
     canvas.drawRRect(
@@ -2069,13 +2148,30 @@ class _LoginButtonReflection extends CustomPainter {
           end: Alignment.bottomCenter,
           colors: [
             highlight.withValues(alpha: .30 + .12 * pressure),
-            accent.withValues(alpha: dark ? .18 : .10),
-            Colors.transparent,
-            rim.withValues(alpha: dark ? .36 : .25),
+          dark ? accent.withValues(alpha: .18) : const Color(0xED1768CC),
+          dark ? Colors.transparent : const Color(0xF00B4EB1),
+          dark ? rim.withValues(alpha: .36) : const Color(0xDD188BDD),
           ],
           stops: const [0, .23, .61, 1],
         ).createShader(bounds),
     );
+    if (!dark) {
+      final crest = Path()
+        ..moveTo(0, size.height * .24)
+        ..cubicTo(size.width * .17, size.height * .12, size.width * .30,
+            size.height * .97, size.width * .51, size.height)
+        ..lineTo(0, size.height)
+        ..close();
+      canvas.save();
+      canvas.clipRRect(capsule);
+      canvas.drawPath(
+        crest,
+        Paint()..shader = const LinearGradient(
+          colors: [Color(0x7DD6FAFF), Color(0x0051AAFF)],
+        ).createShader(bounds),
+      );
+      canvas.restore();
+    }
     final glint = Alignment(.82 - .44 * pressure, .98);
     canvas.drawRRect(
       capsule,
@@ -2221,11 +2317,19 @@ class _LoginDaylightIdentity extends StatelessWidget {
       children: [
         Image.asset(
           'assets/app_logo.png',
-          width: wide ? 44 : 34,
-          height: wide ? 44 : 34,
+          width: wide ? 70 : 34,
+          height: wide ? 70 : 34,
           excludeFromSemantics: true,
         ),
-        SizedBox(width: wide ? 13 : 9),
+        if (wide) ...[
+          const SizedBox(width: 16),
+          const SizedBox(
+            height: 58,
+            child: VerticalDivider(width: 1, color: Color(0x805680A8)),
+          ),
+          const SizedBox(width: 17),
+        ] else
+          const SizedBox(width: 9),
         Expanded(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -2235,24 +2339,25 @@ class _LoginDaylightIdentity extends StatelessWidget {
                 'FORAGE ZOUHOUR',
                 style: TextStyle(
                   color: AppPalette.text,
-                  fontSize: wide ? 25 : 16,
+                  fontSize: wide ? 32 : 16,
                   fontWeight: FontWeight.w800,
                   height: 1.13,
                   letterSpacing: wide ? -.6 : 0,
                 ),
               ),
               const SizedBox(height: 4),
-              const Text(
+              Text(
                 'Gestion d’atelier',
-                style: TextStyle(color: AppPalette.muted, fontSize: 13),
+                style: TextStyle(color: AppPalette.muted, fontSize: wide ? 19 : 13),
               ),
             ],
           ),
         ),
       ],
     );
+    if (wide) return brand;
     final photo = ClipRRect(
-      borderRadius: BorderRadius.circular(wide ? 24 : 15),
+      borderRadius: BorderRadius.circular(15),
       child: Image.asset(
         'assets/forage-login-daylight.jpg',
         fit: BoxFit.cover,
@@ -2261,30 +2366,141 @@ class _LoginDaylightIdentity extends StatelessWidget {
       ),
     );
     return Glass(
-      radius: wide ? 32 : 23,
+      radius: 23,
       accent: const Color(0xFF6D9CBD),
       frosted: true,
       depth: 1.16,
-      padding: EdgeInsets.all(wide ? 10 : 12),
-      child: wide
-          ? Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Padding(padding: const EdgeInsets.all(12), child: brand),
-                const SizedBox(height: 4),
-                AspectRatio(aspectRatio: 1.38, child: photo),
-              ],
-            )
-          : Row(
-              children: [
-                Expanded(child: brand),
-                const SizedBox(width: 10),
-                SizedBox(width: 90, height: 70, child: photo),
-              ],
-            ),
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        children: [
+          Expanded(child: brand),
+          const SizedBox(width: 10),
+          SizedBox(width: 90, height: 70, child: photo),
+        ],
+      ),
     );
   }
+}
+
+class _LoginDaylightHero extends StatelessWidget {
+  const _LoginDaylightHero();
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, bounds) => CustomPaint(
+      foregroundPainter: const _DaylightHeroRim(),
+      child: ClipOval(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            const _LiquidLayer(
+              radius: 260,
+              accent: Color(0xFF81B9EE),
+              depth: 2.15,
+              opacity: .92,
+            ),
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Color(0x16F6FDFF), Color(0x7268A1DD)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.centerRight,
+                ),
+              ),
+            ),
+            Positioned(
+              top: bounds.maxHeight * .295,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: CustomPaint(
+                foregroundPainter: const _DaylightCrestLight(),
+                child: ClipPath(
+                  clipper: const _DaylightPhotoCrest(),
+                  child: Image.asset(
+                    'assets/forage-login-daylight.jpg',
+                    fit: BoxFit.cover,
+                    alignment: const Alignment(.32, .55),
+                    excludeFromSemantics: true,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _DaylightPhotoCrest extends CustomClipper<Path> {
+  const _DaylightPhotoCrest();
+
+  static Path crest(Size size) => Path()
+    ..moveTo(0, 0)
+    ..cubicTo(size.width * .38, size.height * .38,
+        size.width * .79, -size.height * .12, size.width, size.height * .17);
+
+  @override
+  Path getClip(Size size) => crest(size)
+    ..lineTo(size.width, size.height)
+    ..lineTo(0, size.height)
+    ..close();
+
+  @override
+  bool shouldReclip(_DaylightPhotoCrest oldClipper) => false;
+}
+
+class _DaylightCrestLight extends CustomPainter {
+  const _DaylightCrestLight();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final edge = _DaylightPhotoCrest.crest(size);
+    canvas.drawPath(
+      edge,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 9
+        ..color = const Color(0xAAAEEAFF)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+    );
+    canvas.drawPath(
+      edge,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2
+        ..shader = const LinearGradient(
+          colors: [Color(0x58D8F7FF), Color(0xFFF6FFFF), Color(0xD080C9FC)],
+        ).createShader(Offset.zero & size),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_DaylightCrestLight oldDelegate) => false;
+}
+
+class _DaylightHeroRim extends CustomPainter {
+  const _DaylightHeroRim();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bounds = Offset.zero & size;
+    canvas.drawOval(
+      bounds.deflate(2),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..shader = const LinearGradient(
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+          colors: [Color(0xFF50A7FF), Color(0xFFF7FFFF), Color(0x665B9CDF)],
+        ).createShader(bounds),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_DaylightHeroRim oldDelegate) => false;
 }
 
 class _AtelierNavCapsule extends StatelessWidget {
