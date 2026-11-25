@@ -918,6 +918,8 @@ Future<void>? _optics;
 Future<void> _warmOptics() => _optics ??= Future.wait<void>([
   ui.FragmentProgram.fromAsset('shaders/atelier_liquid.frag').then((_) {}),
   _warmImage(const AssetImage('assets/app_logo.png')),
+  _warmImage(const AssetImage('assets/atelier-login-daylight.png')),
+  _warmImage(const AssetImage('assets/forage-login-daylight.jpg')),
   _warmImage(const AssetImage('assets/forage-login-drill.jpg')),
   for (final mode in ['light', 'dark'])
     _warmImage(AssetImage('assets/atelier-wallpaper-$mode.png')),

@@ -4918,7 +4918,7 @@ class _LoginPageState extends State<LoginPage> {
 
   Widget _buildScene(BuildContext context, {required bool wide}) {
     final dark = ForageAppearanceScope.of(context).isDark;
-    final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
+    final accent = dark ? const Color(0xFFE46AFF) : const Color(0xFF427CAA);
     final foreground = dark ? const Color(0xFFFFF4FF) : AppPalette.text;
     final muted = dark ? const Color(0xFFDFC3E9) : AppPalette.muted;
     final signIn = _LoginGlassPanel(
@@ -4980,6 +4980,12 @@ class _LoginPageState extends State<LoginPage> {
             Glass(
               accent: accent,
               child: SegmentedButton<bool>(
+                style: dark
+                    ? null
+                    : SegmentedButton.styleFrom(
+                        backgroundColor: const Color(0xDBF6FBFF),
+                        selectedBackgroundColor: const Color(0xEBD7E8F5),
+                      ),
                 segments: const [
                   ButtonSegment(
                     value: false,
@@ -5121,6 +5127,10 @@ class _LoginPageState extends State<LoginPage> {
       ),
     );
     final baseTheme = Theme.of(context);
+    final daylightBorder = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(16),
+      borderSide: const BorderSide(color: Color(0xFFB5CEE0)),
+    );
     final pageTheme = dark
         ? baseTheme.copyWith(
             colorScheme: const ColorScheme.dark(
@@ -5150,7 +5160,16 @@ class _LoginPageState extends State<LoginPage> {
               ),
             ),
           )
-        : baseTheme;
+        : baseTheme.copyWith(
+            inputDecorationTheme: baseTheme.inputDecorationTheme.copyWith(
+              fillColor: const Color(0xEBF7FBFF),
+              prefixIconColor: accent,
+              enabledBorder: daylightBorder,
+              focusedBorder: daylightBorder.copyWith(
+                borderSide: BorderSide(color: accent, width: 1.5),
+              ),
+            ),
+          );
     return Theme(
       data: pageTheme,
       child: _LoginScene(wide: wide, signIn: signIn),

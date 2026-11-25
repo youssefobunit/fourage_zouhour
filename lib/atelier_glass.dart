@@ -1555,16 +1555,16 @@ class _LoginScene extends StatelessWidget {
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final reducedMotion = MediaQuery.disableAnimationsOf(context);
-    return Aura(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final padding = EdgeInsets.symmetric(
-            horizontal: wide ? min(76, constraints.maxWidth * .047) : 16,
-            vertical: wide ? 30 : 16,
-          );
-          return Stack(
-            fit: StackFit.expand,
-            children: [
+    final scene = LayoutBuilder(
+      builder: (context, constraints) {
+        final padding = EdgeInsets.symmetric(
+          horizontal: wide ? min(76, constraints.maxWidth * .047) : 16,
+          vertical: wide ? 30 : 16,
+        );
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            if (dark)
               RepaintBoundary(
                 child: TweenAnimationBuilder<double>(
                   tween: Tween(begin: 0, end: 1),
@@ -1577,39 +1577,43 @@ class _LoginScene extends StatelessWidget {
                   ),
                 ),
               ),
-              if (wide)
-                Positioned(
-                  top: 0,
-                  bottom: 0,
-                  left: 0,
-                  width: constraints.maxWidth * .49,
-                  child: const RepaintBoundary(
-                    child: _LoginArtwork(wide: true),
-                  ),
-                ),
-              SafeArea(
-                child: LayoutBuilder(
-                  builder: (context, safeConstraints) => SingleChildScrollView(
-                    padding: padding,
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        minHeight: max(
-                          0,
-                          safeConstraints.maxHeight - padding.vertical,
-                        ),
+            if (wide && dark)
+              Positioned(
+                top: 0,
+                bottom: 0,
+                left: 0,
+                width: constraints.maxWidth * .49,
+                child: const RepaintBoundary(child: _LoginArtwork(wide: true)),
+              ),
+            SafeArea(
+              child: LayoutBuilder(
+                builder: (context, safeConstraints) => SingleChildScrollView(
+                  padding: padding,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minHeight: max(
+                        0,
+                        safeConstraints.maxHeight - padding.vertical,
                       ),
-                      child: Center(
-                        child: wide
-                            ? Row(
+                    ),
+                    child: Center(
+                      child: wide
+                          ? ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxWidth: dark ? double.infinity : 1060,
+                              ),
+                              child: Row(
                                 children: [
                                   Expanded(
                                     flex: 10,
                                     child: Padding(
                                       padding: EdgeInsets.only(
-                                        bottom: min(
-                                          236,
-                                          constraints.maxHeight * .26,
-                                        ),
+                                        bottom: dark
+                                            ? min(
+                                                236,
+                                                constraints.maxHeight * .26,
+                                              )
+                                            : 0,
                                       ),
                                       child: Center(
                                         child: ConstrainedBox(
@@ -1624,7 +1628,11 @@ class _LoginScene extends StatelessWidget {
                                       ),
                                     ),
                                   ),
-                                  SizedBox(width: constraints.maxWidth * .032),
+                                  SizedBox(
+                                    width: dark
+                                        ? constraints.maxWidth * .032
+                                        : 28,
+                                  ),
                                   Expanded(
                                     flex: 11,
                                     child: Center(
@@ -1637,27 +1645,105 @@ class _LoginScene extends StatelessWidget {
                                     ),
                                   ),
                                 ],
-                              )
-                            : ConstrainedBox(
-                                constraints: const BoxConstraints(maxWidth: 464),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                                  children: [
-                                    const _LoginIdentity(wide: false),
-                                    const SizedBox(height: 14),
-                                    signIn,
-                                  ],
-                                ),
                               ),
-                      ),
+                            )
+                          : ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 464),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  const _LoginIdentity(wide: false),
+                                  const SizedBox(height: 14),
+                                  signIn,
+                                ],
+                              ),
+                            ),
                     ),
                   ),
                 ),
               ),
+            ),
+          ],
+        );
+      },
+    );
+    return dark ? Aura(child: scene) : _LoginDaylightGlass(child: scene);
+  }
+}
+
+class _LoginDaylightGlass extends StatefulWidget {
+  const _LoginDaylightGlass({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_LoginDaylightGlass> createState() => _LoginDaylightGlassState();
+}
+
+// Keep the daylight background and the login lenses on the same texture.
+class _LoginDaylightGlassState extends State<_LoginDaylightGlass> {
+  final _anchor = GlobalKey();
+  ImageStream? _stream;
+  ImageInfo? _wallpaper;
+
+  late final _listener = ImageStreamListener(
+    (image, synchronous) {
+      final previous = _wallpaper;
+      if (synchronous) {
+        _wallpaper = image;
+      } else {
+        setState(() => _wallpaper = image);
+      }
+      if (previous != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
+      }
+    },
+    onError: (error, _) => debugPrint('Daylight wallpaper unavailable: $error'),
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_stream != null) return;
+    final stream = const AssetImage('assets/atelier-login-daylight.png')
+        .resolve(createLocalImageConfiguration(context));
+    _stream = stream;
+    stream.addListener(_listener);
+  }
+
+  @override
+  void dispose() {
+    _stream?.removeListener(_listener);
+    _wallpaper?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final program = _LiquidSceneData.maybeOf(context)?.program;
+    final texture = _wallpaper?.image;
+    return LayoutBuilder(
+      builder: (_, constraints) => SizedBox.expand(
+        key: _anchor,
+        child: _LiquidSceneData(
+          anchor: _anchor,
+          program: program,
+          wallpaper: texture,
+          reflection: null,
+          size: constraints.biggest,
+          dark: false,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (texture == null)
+                const ColoredBox(color: Color(0xFFE7F1F8))
+              else
+                const RepaintBoundary(child: _LiquidWallpaper()),
+              widget.child,
             ],
-          );
-        },
+          ),
+        ),
       ),
     );
   }
@@ -1791,11 +1877,10 @@ class _LoginAmbientLight extends CustomPainter {
         center,
         radius,
         Paint()
-          ..shader = ui.Gradient.radial(
-            center,
-            radius,
-            [color.withValues(alpha: alpha), color.withValues(alpha: 0)],
-          ),
+          ..shader = ui.Gradient.radial(center, radius, [
+            color.withValues(alpha: alpha),
+            color.withValues(alpha: 0),
+          ]),
       );
     }
 
@@ -1835,7 +1920,9 @@ class _LoginAmbientLight extends CustomPainter {
     }
 
     final metric = arc.computeMetrics().first;
-    final edge = metric.getTangentForOffset(metric.length * (.48 + .35 * progress));
+    final edge = metric.getTangentForOffset(
+      metric.length * (.48 + .35 * progress),
+    );
     if (edge != null) {
       glow(edge.position, min(w * .15, 134), halo, dark ? .47 : .41);
       glow(edge.position, 24, light, .54);
@@ -1883,7 +1970,9 @@ class _LoginGlassPanel extends StatelessWidget {
         child: DecoratedBox(
           decoration: BoxDecoration(
             borderRadius: corners,
-            border: Border.all(color: Colors.white.withValues(alpha: dark ? .21 : .52)),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: dark ? .21 : .52),
+            ),
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
@@ -1903,7 +1992,11 @@ class _LoginGlassPanel extends StatelessWidget {
 }
 
 class _LoginFeatureMark extends StatelessWidget {
-  const _LoginFeatureMark(this.icon, {required this.accent, required this.size});
+  const _LoginFeatureMark(
+    this.icon, {
+    required this.accent,
+    required this.size,
+  });
 
   final IconData icon;
   final Color accent;
@@ -1970,31 +2063,33 @@ class _LoginButtonReflection extends CustomPainter {
     // Keep the middle clear so the backdrop remains visible through the lens.
     canvas.drawRRect(
       capsule,
-      Paint()..shader = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [
-          highlight.withValues(alpha: .30 + .12 * pressure),
-          accent.withValues(alpha: dark ? .18 : .10),
-          Colors.transparent,
-          rim.withValues(alpha: dark ? .36 : .25),
-        ],
-        stops: const [0, .23, .61, 1],
-      ).createShader(bounds),
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            highlight.withValues(alpha: .30 + .12 * pressure),
+            accent.withValues(alpha: dark ? .18 : .10),
+            Colors.transparent,
+            rim.withValues(alpha: dark ? .36 : .25),
+          ],
+          stops: const [0, .23, .61, 1],
+        ).createShader(bounds),
     );
     final glint = Alignment(.82 - .44 * pressure, .98);
     canvas.drawRRect(
       capsule,
-      Paint()..shader = RadialGradient(
-        center: glint,
-        radius: .23,
-        colors: [
-          highlight.withValues(alpha: .48 + .17 * pressure),
-          accent.withValues(alpha: .16),
-          Colors.transparent,
-        ],
-        stops: const [0, .42, 1],
-      ).createShader(bounds),
+      Paint()
+        ..shader = RadialGradient(
+          center: glint,
+          radius: .23,
+          colors: [
+            highlight.withValues(alpha: .48 + .17 * pressure),
+            accent.withValues(alpha: .16),
+            Colors.transparent,
+          ],
+          stops: const [0, .42, 1],
+        ).createShader(bounds),
     );
     canvas.drawRRect(
       capsule.deflate(.8),
@@ -2030,6 +2125,7 @@ class _LoginIdentity extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
+    if (!dark) return _LoginDaylightIdentity(wide: wide);
     final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
     final logo = Image.asset(
       'assets/app_logo.png',
@@ -2047,7 +2143,9 @@ class _LoginIdentity extends StatelessWidget {
     );
     final name = Column(
       mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: wide ? CrossAxisAlignment.center : CrossAxisAlignment.start,
+      crossAxisAlignment: wide
+          ? CrossAxisAlignment.center
+          : CrossAxisAlignment.start,
       children: [
         Text(
           'FORAGE ZOUHOUR',
@@ -2108,6 +2206,83 @@ class _LoginIdentity extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _LoginDaylightIdentity extends StatelessWidget {
+  const _LoginDaylightIdentity({required this.wide});
+
+  final bool wide;
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = Row(
+      children: [
+        Image.asset(
+          'assets/app_logo.png',
+          width: wide ? 44 : 34,
+          height: wide ? 44 : 34,
+          excludeFromSemantics: true,
+        ),
+        SizedBox(width: wide ? 13 : 9),
+        Expanded(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'FORAGE ZOUHOUR',
+                style: TextStyle(
+                  color: AppPalette.text,
+                  fontSize: wide ? 25 : 16,
+                  fontWeight: FontWeight.w800,
+                  height: 1.13,
+                  letterSpacing: wide ? -.6 : 0,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Gestion d’atelier',
+                style: TextStyle(color: AppPalette.muted, fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+    final photo = ClipRRect(
+      borderRadius: BorderRadius.circular(wide ? 24 : 15),
+      child: Image.asset(
+        'assets/forage-login-daylight.jpg',
+        fit: BoxFit.cover,
+        alignment: const Alignment(.25, .53),
+        excludeFromSemantics: true,
+      ),
+    );
+    return Glass(
+      radius: wide ? 32 : 23,
+      accent: const Color(0xFF6D9CBD),
+      frosted: true,
+      depth: 1.16,
+      padding: EdgeInsets.all(wide ? 10 : 12),
+      child: wide
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(padding: const EdgeInsets.all(12), child: brand),
+                const SizedBox(height: 4),
+                AspectRatio(aspectRatio: 1.38, child: photo),
+              ],
+            )
+          : Row(
+              children: [
+                Expanded(child: brand),
+                const SizedBox(width: 10),
+                SizedBox(width: 90, height: 70, child: photo),
+              ],
+            ),
     );
   }
 }

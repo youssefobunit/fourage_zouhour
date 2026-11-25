@@ -79,7 +79,9 @@ flutter:
 
   assets:
     - assets/app_logo.png
+    - assets/forage-login-daylight.jpg
     - assets/forage-login-drill.jpg
+    - assets/atelier-login-daylight.png
     - assets/atelier-wallpaper-light.png
     - assets/atelier-wallpaper-dark.png
 
