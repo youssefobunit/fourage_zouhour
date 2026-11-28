@@ -1,5 +1,5 @@
-// this relase is v1.1.0
-
+// this relase is v1.1.4
+// hello world
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -36,6 +36,8 @@ import 'security_activity_page.dart';
 part 'catalog_and_filters.dart';
 part 'atelier_glass.dart';
 part 'atelier_liquid.dart';
+part 'stock_partners.dart';
+part 'validation_editing.dart';
 
 late final DeviceIdentity appDevice;
 
@@ -61,7 +63,7 @@ const _localDatabaseName = String.fromEnvironment(
   // photo that Android cannot read. The cloud workspace is restored on launch.
   defaultValue: 'forage-v2.db',
 );
-const _appVersion = '1.0.16+16';
+const _appVersion = '1.1.0+18';
 const _githubLatestRelease =
     'https://api.github.com/repos/youssefobunit/fourage_zouhour/releases/latest';
 // This identity is also verified by Supabase in the owner migration.
@@ -407,7 +409,9 @@ abstract final class SupabaseAccounts {
       ..contentType = ContentType.json
       ..set('apikey', _supabasePublishableKey)
       ..set(HttpHeaders.authorizationHeader, 'Bearer $token');
-    request.add(utf8.encode(jsonEncode({'userId': userId, 'password': password})));
+    request.add(
+      utf8.encode(jsonEncode({'userId': userId, 'password': password})),
+    );
     final response = await request.close();
     final raw = await utf8.decoder.bind(response).join();
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -640,6 +644,87 @@ abstract final class AppPalette {
   static const desktopAccent = primary;
   static const desktopAccentSoft = Color(0xFFCDE7FF);
 }
+
+/// The workshop opens in light blue by default.  Dark mode is opt-in and is
+/// stored locally for the current device, so one person's choice doesn't
+/// change the appearance for everyone else in the workshop.
+enum ForageAppearance { light, dark }
+
+class ForageAppearanceScope extends InheritedWidget {
+  const ForageAppearanceScope({
+    super.key,
+    required this.appearance,
+    required this.onChanged,
+    required super.child,
+  });
+
+  final ForageAppearance appearance;
+  final ValueChanged<ForageAppearance> onChanged;
+
+  bool get isDark => appearance == ForageAppearance.dark;
+
+  static ForageAppearanceScope of(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<ForageAppearanceScope>();
+    assert(
+      scope != null,
+      'ForageAppearanceScope is missing from the widget tree.',
+    );
+    return scope!;
+  }
+
+  void setDark(bool enabled) =>
+      onChanged(enabled ? ForageAppearance.dark : ForageAppearance.light);
+
+  void toggle() => setDark(!isDark);
+
+  @override
+  bool updateShouldNotify(covariant ForageAppearanceScope oldWidget) =>
+      appearance != oldWidget.appearance || onChanged != oldWidget.onChanged;
+}
+
+/// The night presentation has its own scene and components.  It deliberately
+/// does not recolour the light interface: a global colour filter makes glass
+/// opaque and also damages product imagery.
+class _DarkLiquidAppearance extends StatelessWidget {
+  const _DarkLiquidAppearance({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => child;
+}
+
+class _AppearanceCanvas extends StatelessWidget {
+  const _AppearanceCanvas({required this.dark, required this.child});
+
+  final bool dark;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) =>
+      dark ? _DarkLiquidAppearance(child: child) : child;
+}
+
+/// Colours for shared components that are used outside Material controls.
+/// Several catalogue pages use small reusable labels with an explicit colour;
+/// deriving them here stops the dark workspace from inheriting navy text from
+/// the original light palette.
+Color _atelierForeground(BuildContext context) =>
+    Theme.of(context).colorScheme.onSurface;
+
+Color _atelierMuted(BuildContext context) =>
+    Theme.of(context).colorScheme.onSurfaceVariant;
+
+Color _atelierSuccess(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xFF9BE8CE)
+    : const Color(0xFF166B58);
+
+Color _atelierWarning(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xFFFFCC98)
+    : const Color(0xFF92400E);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1175,12 +1260,12 @@ class ProductCreation {
   const ProductCreation({
     required this.product,
     this.categoryId,
-    this.familyId,
+    this.modelId,
   });
 
   final Product product;
   final String? categoryId;
-  final String? familyId;
+  final String? modelId;
 }
 
 class Depot {
@@ -1261,12 +1346,16 @@ class Supplier {
     required this.company,
     required this.contact,
     required this.images,
+    this.fax = '',
+    this.ice = '',
   });
   final String id;
   final String name;
   final String company;
   final String contact;
   final List<Uint8List> images;
+  final String fax;
+  final String ice;
 }
 
 class Client {
@@ -1448,8 +1537,9 @@ extension MaterialTypeLabel on MaterialType {
       'largeur × longueur × épaisseur × ${density.toStringAsFixed(0)} kg/m³';
 }
 
-class ProductFamily {
-  const ProductFamily({
+/// A model groups products within one category.
+class ProductModel {
+  const ProductModel({
     required this.id,
     required this.name,
     this.productIds = const [],
@@ -1459,7 +1549,7 @@ class ProductFamily {
   final String name;
   final List<String> productIds;
 
-  factory ProductFamily.fromJson(Map<String, dynamic> json) => ProductFamily(
+  factory ProductModel.fromJson(Map<String, dynamic> json) => ProductModel(
     id: json['id'] as String,
     name: json['name'] as String,
     productIds: List<String>.from(json['product_ids'] as List),
@@ -1470,7 +1560,12 @@ class ProductFamily {
     'name': name,
     'product_ids': productIds,
   };
+
+  ProductModel withProducts(Iterable<String> ids) =>
+      ProductModel(id: id, name: name, productIds: ids.toList());
 }
+
+typedef ProductFamily = ProductModel;
 
 class ProductCategory {
   const ProductCategory({
@@ -1478,42 +1573,61 @@ class ProductCategory {
     required this.name,
     required this.productIds,
     required this.image,
-    this.families = const [],
-  });
+    List<ProductModel> models = const [],
+    List<ProductModel>? families,
+  }) : models = families ?? models;
   final String id;
   final String name;
   final List<String> productIds;
   final Uint8List image;
-  final List<ProductFamily> families;
+  final List<ProductModel> models;
+
+  List<ProductModel> get families => models;
 
   ProductCategory copyWith({
     String? name,
     List<String>? productIds,
-    List<ProductFamily>? families,
+    List<ProductModel>? models,
   }) => ProductCategory(
     id: id,
     name: name ?? this.name,
     productIds: productIds ?? this.productIds,
     image: image,
-    families: families ?? this.families,
+    models: models ?? this.models,
   );
 
-  ProductCategory withProductInFamily(String productId, String? familyId) =>
-      copyWith(
-        productIds: {...productIds, productId}.toList(),
-        families: [
-          for (final family in families)
-            ProductFamily(
-              id: family.id,
-              name: family.name,
-              productIds: [
-                for (final id in family.productIds)
-                  if (id != productId) id,
-                if (family.id == familyId) productId,
-              ],
-            ),
-        ],
+  ProductCategory withProductInModel(String productId, String? modelId) {
+    final destination = models.where((model) => model.id == modelId).firstOrNull;
+    final updated = copyWith(productIds: {...productIds, productId}.toList());
+    if (destination != null) {
+      return updated.withModel(
+        destination.withProducts({...destination.productIds, productId}),
       );
+    }
+    return updated.copyWith(
+      models: [
+        for (final model in models)
+          model.withProducts(model.productIds.where((id) => id != productId)),
+      ],
+    );
+  }
+
+  ProductCategory withModel(ProductModel model) {
+    final assigned = productIds.toSet().intersection(model.productIds.toSet());
+    final replacement = model.withProducts(assigned);
+    return copyWith(
+      models: [
+        for (final existing in models)
+          if (existing.id == model.id)
+            replacement
+          else
+            existing.withProducts(
+              existing.productIds.where((id) => !assigned.contains(id)),
+            ),
+        if (!models.any((existing) => existing.id == model.id)) replacement,
+      ],
+    );
+  }
 }
 
 abstract final class PdfReports {
@@ -2479,9 +2593,13 @@ class AppDatabase {
   Future<bool> synchronizeWithCloud({bool preferRemote = false}) async {
     final client = cloudSync;
     if (client == null) return false;
+    // Windows keeps a local mirror while the app is open. Full snapshots can
+    // include many photos and serializing them on the UI isolate is unsafe on
+    // this platform. Cloud sync still runs normally on iOS and Android.
+    if (Platform.isWindows) return false;
 
-    final remote = await client.download();
-    final dirtyRows = await (await _database).query(
+    final database = await _database;
+    final dirtyRows = await database.query(
       'app_settings',
       columns: ['value'],
       where: 'key = ?',
@@ -2489,8 +2607,16 @@ class AppDatabase {
       limit: 1,
     );
     final dirty = dirtyRows.isNotEmpty && dirtyRows.single['value'] == 'true';
+    final hasLocalWorkshop = await _hasLocalWorkshopRecords(database);
+    final remote = await client.download();
 
-    if (remote != null && (preferRemote || !dirty)) {
+    // A complete remote snapshot can contain product photographs. Replacing
+    // every local table on *every* login was expensive enough to freeze the
+    // Windows window. A mirror is restored only on a genuinely empty device;
+    // afterwards this device keeps its local copy and uploads its own edits.
+    if (remote != null &&
+        !hasLocalWorkshop &&
+        (!dirty || preferRemote)) {
       await replaceFromSyncSnapshot(remote);
     } else if (remote == null || dirty) {
       await client.upload(await exportSyncSnapshot());
@@ -2501,6 +2627,16 @@ class AppDatabase {
       'value': 'false',
     }, conflictAlgorithm: ConflictAlgorithm.replace);
     return true;
+  }
+
+  Future<bool> _hasLocalWorkshopRecords(Database database) async {
+    // The default depot exists even in a new installation, so it cannot be
+    // used to decide whether this device already holds a workshop mirror.
+    for (final table in _syncTables.where((table) => table != 'depots')) {
+      final row = await database.query(table, columns: const ['id'], limit: 1);
+      if (row.isNotEmpty) return true;
+    }
+    return false;
   }
 
   /// Rebuilds this device's local mirror from Supabase without ever uploading
@@ -2946,12 +3082,12 @@ class AppDatabase {
     for (final column in binaryColumns) {
       final value = result[column];
       if (value is String) {
-        result[column] = compactImageForStorage(base64Decode(value));
+        // Images were compacted before being uploaded. Re-compressing every
+        // photograph while restoring a mirror can block the UI for seconds.
+        result[column] = base64Decode(value);
       }
     }
-    if (result['images'] is String) {
-      result['images'] = compactImageListJson(result['images'] as String);
-    }
+    // `images` is already a compact Base64 JSON list in the snapshot.
 
     // These defaults preserve compatibility with snapshots produced before
     // photos were synchronized.
@@ -3221,7 +3357,7 @@ class AppDatabase {
   Future<ProductCategory?> insertCatalogProduct(
     Product product,
     String? categoryId,
-    String? familyId,
+    String? modelId,
   ) async {
     return (await _database).transaction((transaction) async {
       await transaction.insert('products', _productToRow(product));
@@ -3233,10 +3369,10 @@ class AppDatabase {
       );
       if (rows.isEmpty) throw StateError('Catégorie introuvable.');
       final category = _categoryFromRow(rows.single);
-      if (familyId != null && !category.families.any((f) => f.id == familyId)) {
-        throw StateError('Famille introuvable.');
+      if (modelId != null && !category.models.any((model) => model.id == modelId)) {
+        throw StateError('Modèle introuvable.');
       }
-      final updated = category.withProductInFamily(product.id, familyId);
+      final updated = category.withProductInModel(product.id, modelId);
       await transaction.update(
         'categories',
         _categoryToRow(updated),
@@ -3246,6 +3382,45 @@ class AppDatabase {
       return updated;
     });
   }
+
+  Future<ProductCategory> saveCatalogModel(
+    String categoryId,
+    ProductModel model,
+  ) async {
+    final name = model.name.trim();
+    if (name.isEmpty ||
+        name.runes.length > 120 ||
+        name.contains(RegExp(r'[<>\x00-\x1F\x7F]'))) {
+      throw StateError('Indiquez un nom de modèle valide.');
+    }
+    return (await _database).transaction((transaction) async {
+      final rows = await transaction.query(
+        'categories',
+        where: 'id = ?',
+        whereArgs: [categoryId],
+      );
+      if (rows.isEmpty) throw StateError('Catégorie introuvable.');
+      final category = _categoryFromRow(rows.single);
+      if (category.models.any((item) =>
+          item.id != model.id && _searchKey(item.name) == _searchKey(name))) {
+        throw StateError('Ce nom de modèle existe déjà dans la catégorie.');
+      }
+      if (!category.productIds.toSet().containsAll(model.productIds)) {
+        throw StateError('Un produit ne fait plus partie de cette catégorie.');
+      }
+      final updated = category.withModel(
+        ProductModel(id: model.id, name: name, productIds: model.productIds),
+      );
+      await transaction.update(
+        'categories',
+        {'families': jsonEncode(updated.models)},
+        where: 'id = ?',
+        whereArgs: [categoryId],
+      );
+      return updated;
+    });
+  }
+
   Future<void> updateProduct(Product product) async => (await _database).update(
     'products',
     _productToRow(product),
@@ -3320,6 +3495,7 @@ class AppDatabase {
       );
     });
   }
+
   Future<void> updateCategory(ProductCategory category) async =>
       (await _database).update(
         'categories',
@@ -3534,6 +3710,7 @@ class AppDatabase {
       await transaction.delete('categories', where: 'id = ?', whereArgs: [id]);
     });
   }
+
   Future<void> deleteProductAndHistory(String id) async {
     final database = await _database;
     final machines = await database.query(
@@ -3582,9 +3759,13 @@ class AppDatabase {
       for (final row in categories) {
         final category = _categoryFromRow(row);
         if (!category.productIds.contains(id)) continue;
-        final updated = category.withProductInFamily(id, null).copyWith(
-          productIds: category.productIds.where((item) => item != id).toList(),
-        );
+        final updated = category
+            .withProductInModel(id, null)
+            .copyWith(
+              productIds: category.productIds
+                  .where((item) => item != id)
+                  .toList(),
+            );
         await transaction.update(
           'categories',
           _categoryToRow(updated),
@@ -3761,7 +3942,8 @@ class AppDatabase {
     'id': category.id,
     'name': category.name,
     'product_ids': jsonEncode(category.productIds),
-    'families': jsonEncode(category.families),
+    // Keep the existing snapshot and backup key used by older clients.
+    'families': jsonEncode(category.models),
     'image': category.image,
   };
   ProductCategory _categoryFromRow(Map<String, Object?> row) => ProductCategory(
@@ -3771,9 +3953,9 @@ class AppDatabase {
       jsonDecode(row['product_ids'] as String) as List,
     ),
     image: row['image'] as Uint8List? ?? Uint8List(0),
-    families: [
+    models: [
       for (final item in jsonDecode(row['families'] as String? ?? '[]') as List)
-        ProductFamily.fromJson(item as Map<String, dynamic>),
+        ProductModel.fromJson(item as Map<String, dynamic>),
     ],
   );
 
@@ -3804,16 +3986,21 @@ class AppDatabase {
     'id': supplier.id,
     'name': supplier.name,
     'company': supplier.company,
-    'contact': supplier.contact,
+    'contact': _encodeSupplierContact(supplier),
     'images': _imagesToJson(supplier.images),
   };
-  Supplier _supplierFromRow(Map<String, Object?> row) => Supplier(
-    id: row['id'] as String,
-    name: row['name'] as String,
-    company: row['company'] as String? ?? '',
-    contact: row['contact'] as String? ?? '',
-    images: _imagesFromJson(row['images'] as String? ?? '[]'),
-  );
+  Supplier _supplierFromRow(Map<String, Object?> row) {
+    final details = _decodeSupplierContact(row['contact'] as String? ?? '');
+    return Supplier(
+      id: row['id'] as String,
+      name: row['name'] as String,
+      company: row['company'] as String? ?? '',
+      contact: details.contact,
+      fax: details.fax,
+      ice: details.ice,
+      images: _imagesFromJson(row['images'] as String? ?? '[]'),
+    );
+  }
 
   Map<String, Object?> _clientToRow(Client client) => {
     'id': client.id,
@@ -4158,6 +4345,7 @@ class _ForageAppState extends State<ForageApp> {
   var loading = true;
   String? startupError;
   AppUpdate? update;
+  var appearance = ForageAppearance.light;
 
   @override
   void initState() {
@@ -4169,6 +4357,24 @@ class _ForageAppState extends State<ForageApp> {
         );
     loadUsers();
     _checkForUpdate();
+    _loadAppearance();
+  }
+
+  Future<void> _loadAppearance() async {
+    final saved = await SecureAppPreferences.darkAppearance();
+    if (!mounted || saved == null) return;
+    setState(() {
+      appearance = saved ? ForageAppearance.dark : ForageAppearance.light;
+    });
+  }
+
+  void _setAppearance(ForageAppearance next) {
+    if (appearance == next) return;
+    setState(() => appearance = next);
+    // Persisting the preference must never delay the visible mode change.
+    unawaited(
+      SecureAppPreferences.saveDarkAppearance(next == ForageAppearance.dark),
+    );
   }
 
   Future<void> _checkForUpdate() async {
@@ -4301,31 +4507,50 @@ class _ForageAppState extends State<ForageApp> {
     debugShowCheckedModeBanner: false,
     title: 'FORAGE ZOUHOUR',
     theme: atelierTheme(),
-    themeMode: ThemeMode.light,
-    builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.dark,
-        statusBarBrightness: Brightness.light,
-        systemNavigationBarColor: AppPalette.background,
-        systemNavigationBarIconBrightness: Brightness.dark,
-      ),
-      child: AtelierLiquidStage(
-        child: Stack(
-          children: [
-            child ?? const SizedBox.shrink(),
-            if (update != null)
-              SafeArea(
-                child: Align(
-                  alignment: Alignment.topCenter,
-                  child: _UpdateBanner(
-                    update: update!,
-                    onDismiss: () => setState(() => update = null),
-                    onStartUpdate: _startUpdate,
+    darkTheme: atelierDarkTheme(),
+    themeMode: appearance == ForageAppearance.dark
+        ? ThemeMode.dark
+        : ThemeMode.light,
+    builder: (context, child) => ForageAppearanceScope(
+      appearance: appearance,
+      onChanged: _setAppearance,
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: appearance == ForageAppearance.dark
+              ? Brightness.light
+              : Brightness.dark,
+          statusBarBrightness: appearance == ForageAppearance.dark
+              ? Brightness.dark
+              : Brightness.light,
+          systemNavigationBarColor: appearance == ForageAppearance.dark
+              ? const Color(0xFF11001C)
+              : AppPalette.background,
+          systemNavigationBarIconBrightness: appearance == ForageAppearance.dark
+              ? Brightness.light
+              : Brightness.dark,
+        ),
+        child: AtelierLiquidStage(
+          dark: appearance == ForageAppearance.dark,
+          child: _AppearanceCanvas(
+            dark: appearance == ForageAppearance.dark,
+            child: Stack(
+              children: [
+                child ?? const SizedBox.shrink(),
+                if (update != null)
+                  SafeArea(
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: _UpdateBanner(
+                        update: update!,
+                        onDismiss: () => setState(() => update = null),
+                        onStartUpdate: _startUpdate,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-          ],
+              ],
+            ),
+          ),
         ),
       ),
     ),
@@ -4441,9 +4666,9 @@ class _UpdateBanner extends StatelessWidget {
       margin: const EdgeInsets.all(12),
       padding: const EdgeInsets.fromLTRB(16, 10, 10, 10),
       decoration: BoxDecoration(
-        color: AppPalette.surfaceRaised,
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppPalette.primary),
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -4459,9 +4684,9 @@ class _UpdateBanner extends StatelessWidget {
           );
           final heading = Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.system_update_rounded,
-                color: AppPalette.primary,
+                color: Theme.of(context).colorScheme.primary,
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -4577,10 +4802,10 @@ class _InitialAdminSetupState extends State<InitialAdminSetup> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Icon(
+                      Icon(
                         Icons.admin_panel_settings_outlined,
                         size: 48,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       const SizedBox(height: 12),
                       const Text(
@@ -4592,10 +4817,10 @@ class _InitialAdminSetupState extends State<InitialAdminSetup> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      const Text(
+                      Text(
                         'Cette étape n’apparaît qu’au premier lancement. Conservez ce mot de passe dans un gestionnaire sécurisé.',
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: AppPalette.muted),
+                        style: TextStyle(color: _atelierMuted(context)),
                       ),
                       const SizedBox(height: 20),
                       TextFormField(
@@ -4614,18 +4839,16 @@ class _InitialAdminSetupState extends State<InitialAdminSetup> {
                         validator: usernameValidator,
                       ),
                       const SizedBox(height: 12),
-                      TextFormField(
+                      _GlassPasswordField(
                         controller: password,
-                        obscureText: true,
                         decoration: const InputDecoration(
                           labelText: 'Mot de passe *',
                         ),
                         validator: securePasswordValidator,
                       ),
                       const SizedBox(height: 12),
-                      TextFormField(
+                      _GlassPasswordField(
                         controller: confirmation,
-                        obscureText: true,
                         decoration: const InputDecoration(
                           labelText: 'Confirmer le mot de passe *',
                         ),
@@ -4759,42 +4982,60 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final signIn = Glass(
-      radius: 32,
-      accent: AppPalette.primary,
-      frosted: true,
-      padding: const EdgeInsets.fromLTRB(22, 24, 22, 22),
+  Widget build(BuildContext context) => Scaffold(
+    body: LayoutBuilder(
+      builder: (context, constraints) =>
+          _buildScene(context, wide: constraints.maxWidth >= 880),
+    ),
+  );
+
+  Widget _buildScene(BuildContext context, {required bool wide}) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final accent = dark ? const Color(0xFFE46AFF) : const Color(0xFF427CAA);
+    final foreground = dark ? const Color(0xFFFFF4FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFDFC3E9) : AppPalette.muted;
+    final spaciousDaylight = wide && !dark;
+    final signIn = _LoginGlassPanel(
+      radius: spaciousDaylight ? 54 : wide ? 40 : 30,
+      accent: accent,
+      padding: EdgeInsets.all(spaciousDaylight ? 42 : wide ? 34 : 20),
       child: AutofillGroup(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Row(
+            Row(
               children: [
-                _AtelierIcon(
-                  Icons.shield_outlined,
-                  color: AppPalette.primary,
-                  size: 46,
-                ),
-                SizedBox(width: 13),
+                if (dark) ...[
+                  _LoginFeatureMark(
+                    Icons.shield_outlined,
+                    accent: accent,
+                    size: wide ? 64 : 48,
+                  ),
+                  SizedBox(width: wide ? 18 : 12),
+                ],
                 Expanded(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment: dark
+                        ? CrossAxisAlignment.start
+                        : CrossAxisAlignment.center,
                     children: [
                       Text(
                         'Connexion sécurisée',
+                        textAlign: dark ? TextAlign.start : TextAlign.center,
                         style: TextStyle(
-                          fontSize: 24,
+                          fontSize: spaciousDaylight ? 38 : wide ? 30 : 23,
                           letterSpacing: -.55,
                           fontWeight: FontWeight.w800,
+                          color: foreground,
                         ),
                       ),
                       SizedBox(height: 3),
                       Text(
                         'Accédez à votre espace atelier',
+                        textAlign: dark ? TextAlign.start : TextAlign.center,
                         style: TextStyle(
-                          color: AppPalette.muted,
-                          fontSize: 13,
+                          color: muted,
+                          fontSize: spaciousDaylight ? 18 : wide ? 15 : 13,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -4803,15 +5044,7 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 22),
-            Text(
-              'Identifiants de connexion',
-              style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: AppPalette.primaryDark,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 10),
+            SizedBox(height: spaciousDaylight ? 35 : wide ? 30 : 20),
             TextField(
               controller: email,
               enabled: !authenticating && !awaitingApproval,
@@ -4823,10 +5056,20 @@ class _LoginPageState extends State<LoginPage> {
                 prefixIcon: Icon(Icons.email_outlined),
               ),
             ),
-            const SizedBox(height: 12),
+            SizedBox(height: spaciousDaylight ? 16 : 12),
             Glass(
-              accent: AppPalette.primary,
+              accent: accent,
               child: SegmentedButton<bool>(
+                style: dark
+                    ? null
+                    : SegmentedButton.styleFrom(
+                        backgroundColor: const Color(0xAEEBF8FF),
+                        selectedBackgroundColor: const Color(0xEB1261C4),
+                        selectedForegroundColor: Colors.white,
+                        side: const BorderSide(color: Color(0xA5FFFFFF)),
+                        shape: const StadiumBorder(),
+                        minimumSize: Size(0, spaciousDaylight ? 52 : 44),
+                      ),
                 segments: const [
                   ButtonSegment(
                     value: false,
@@ -4845,7 +5088,7 @@ class _LoginPageState extends State<LoginPage> {
                     : (value) => setState(() => usesPattern = value.first),
               ),
             ),
-            const SizedBox(height: 12),
+            SizedBox(height: spaciousDaylight ? 16 : 12),
             if (usesPattern)
               PatternPad(
                 pattern: pattern,
@@ -4858,10 +5101,9 @@ class _LoginPageState extends State<LoginPage> {
                       }),
               )
             else
-              TextField(
+              _GlassPasswordField(
                 controller: password,
                 enabled: !authenticating && !awaitingApproval,
-                obscureText: true,
                 autofillHints: const [AutofillHints.password],
                 onSubmitted: authenticating ? null : (_) => login(),
                 decoration: const InputDecoration(
@@ -4877,12 +5119,12 @@ class _LoginPageState extends State<LoginPage> {
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     color: awaitingApproval
-                        ? AppPalette.primary.withValues(alpha: .13)
+                        ? accent.withValues(alpha: .13)
                         : AppPalette.coral.withValues(alpha: .13),
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(
                       color: awaitingApproval
-                          ? AppPalette.primary.withValues(alpha: .42)
+                          ? accent.withValues(alpha: .42)
                           : AppPalette.coral.withValues(alpha: .42),
                     ),
                   ),
@@ -4894,7 +5136,7 @@ class _LoginPageState extends State<LoginPage> {
                             ? Icons.hourglass_top_rounded
                             : Icons.error_outline_rounded,
                         color: awaitingApproval
-                            ? AppPalette.primary
+                            ? accent
                             : AppPalette.coral,
                       ),
                       const SizedBox(width: 9),
@@ -4903,7 +5145,7 @@ class _LoginPageState extends State<LoginPage> {
                           error!,
                           style: TextStyle(
                             color: awaitingApproval
-                                ? AppPalette.text
+                                ? foreground
                                 : AppPalette.coral,
                             fontWeight: FontWeight.w700,
                           ),
@@ -4913,35 +5155,53 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ),
               ),
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 4),
+            Padding(
+              padding: EdgeInsets.symmetric(vertical: spaciousDaylight ? 18 : 5),
               child: Text(
                 'Contactez un administrateur pour toute récupération d’accès.',
-                style: TextStyle(fontSize: 12, color: AppPalette.muted),
+                style: TextStyle(fontSize: spaciousDaylight ? 14 : 12, color: muted),
                 textAlign: TextAlign.center,
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 16),
             SizedBox(
               width: double.infinity,
               child: FilledButton(
                 onPressed: authenticating || awaitingApproval ? null : login,
                 style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(54),
+                  backgroundColor: Colors.transparent,
+                  foregroundColor: Colors.white,
+                  minimumSize: Size.fromHeight(spaciousDaylight ? 68 : wide ? 58 : 52),
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    fontSize: wide ? 19 : 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(28),
+                  ),
+                ).copyWith(
+                  backgroundBuilder: _loginButtonSurface,
                 ),
                 child: authenticating
-                    ? const SizedBox(
+                    ? SizedBox(
                         height: 22,
                         width: 22,
                         child: CircularProgressIndicator(
                           strokeWidth: 2.5,
-                          color: AppPalette.primary,
+                          color: accent,
                         ),
                       )
-                    : Text(
-                        awaitingApproval
-                            ? 'En attente d’autorisation'
-                            : 'Connexion',
+                    : awaitingApproval
+                    ? const Text('En attente d’autorisation')
+                    : const Row(
+                        children: [
+                          SizedBox(width: 23),
+                          Expanded(
+                            child: Text('Connexion', textAlign: TextAlign.center),
+                          ),
+                          Icon(Icons.arrow_forward_rounded, size: 23),
+                        ],
                       ),
               ),
             ),
@@ -4949,52 +5209,54 @@ class _LoginPageState extends State<LoginPage> {
         ),
       ),
     );
-    return Scaffold(
-      body: Aura(
-        child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth >= 780;
-              return SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 18,
-                  vertical: 20,
-                ),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: wide ? 960 : 454,
-                      minHeight: max(0.0, constraints.maxHeight - 40),
-                    ),
-                    child: Align(
-                      alignment: Alignment.center,
-                      child: wide
-                          ? Row(
-                              children: [
-                                const Expanded(
-                                  child: _LoginIdentity(wide: true),
-                                ),
-                                const SizedBox(width: 20),
-                                Expanded(child: signIn),
-                              ],
-                            )
-                          : Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                const _LoginIdentity(wide: false),
-                                const SizedBox(height: 16),
-                                signIn,
-                              ],
-                            ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ),
+    final baseTheme = Theme.of(context);
+    final daylightBorder = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(28),
+      borderSide: const BorderSide(color: Color(0xD9FFFFFF), width: 1.4),
+    );
+    final pageTheme = dark
+        ? baseTheme.copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: Color(0xFFE46AFF),
+              onPrimary: Colors.white,
+              surface: Color(0xFF22052E),
+              onSurface: Color(0xFFFFF4FF),
+              outline: Color(0xFFCE94E6),
+            ),
+            textTheme: baseTheme.textTheme.apply(
+              bodyColor: foreground,
+              displayColor: foreground,
+            ),
+            inputDecorationTheme: baseTheme.inputDecorationTheme.copyWith(
+              filled: true,
+              fillColor: const Color(0xCC2A0B39),
+              labelStyle: TextStyle(color: muted),
+              floatingLabelStyle: TextStyle(color: accent),
+              prefixIconColor: accent,
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: const BorderSide(color: Color(0xFFAE61C9)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: const BorderSide(color: Color(0xFFF0B2FF), width: 1.5),
+              ),
+            ),
+          )
+        : baseTheme.copyWith(
+            inputDecorationTheme: baseTheme.inputDecorationTheme.copyWith(
+              fillColor: const Color(0xAEEBF7FF),
+              constraints: BoxConstraints(minHeight: spaciousDaylight ? 65 : 53),
+              prefixIconColor: accent,
+              enabledBorder: daylightBorder,
+              focusedBorder: daylightBorder.copyWith(
+                borderSide: BorderSide(color: accent, width: 1.5),
+              ),
+            ),
+          );
+    return Theme(
+      data: pageTheme,
+      child: _LoginScene(wide: wide, signIn: signIn),
     );
   }
 }
@@ -5046,6 +5308,7 @@ class _ForageHomeState extends State<ForageHome> {
   var _cloudSyncInProgress = false;
   bool _syncDeniedShown = false;
   final _announcedDeviceRequests = <String>{};
+  final _stockPartnerRevision = ValueNotifier(0);
 
   @override
   void initState() {
@@ -5054,12 +5317,27 @@ class _ForageHomeState extends State<ForageHome> {
   }
 
   Future<void> _startWorkshop() async {
-    await _synchronizeWorkshop(preferRemote: true);
+    // Show the local workshop immediately after login.  A full cloud mirror
+    // can be large because it contains pictures, so it must not hold the
+    // first usable frame hostage.
+    await loadWorkshop();
     if (!mounted) return;
+    // The full snapshot synchronizer is intentionally disabled for Windows
+    // startup. A workshop with images can make the Windows process consume
+    // all CPU while it serializes the snapshot, leaving the native window
+    // marked as "not responding". Mobile keeps automatic cloud sync; Windows
+    // stays immediately usable and opens its local mirror first.
+    if (Platform.isWindows) {
+      if (widget.user.isAdmin) unawaited(_pollDeviceRequests());
+      return;
+    }
     _cloudSyncTimer = Timer.periodic(
-      const Duration(seconds: 8),
+      const Duration(seconds: 30),
       (_) => _synchronizeWorkshop(),
     );
+    Timer(const Duration(milliseconds: 900), () {
+      if (mounted) unawaited(_synchronizeWorkshop(preferRemote: true));
+    });
     if (widget.user.isAdmin) {
       await _pollDeviceRequests();
       _deviceRequestTimer = Timer.periodic(
@@ -5129,13 +5407,21 @@ class _ForageHomeState extends State<ForageHome> {
   void dispose() {
     _cloudSyncTimer?.cancel();
     _deviceRequestTimer?.cancel();
+    _stockPartnerRevision.dispose();
     super.dispose();
   }
 
   Future<void> loadWorkshop() async {
     try {
-      final data = await widget.database.loadWorkshop();
-      final savedMeterRate = await widget.database.meterRate();
+      // Never leave the whole native window on an endless loading screen.
+      // A locked/corrupt local SQLite file is reported to the user instead
+      // of blocking navigation forever after a successful login.
+      final data = await widget.database
+          .loadWorkshop()
+          .timeout(const Duration(seconds: 12));
+      final savedMeterRate = await widget.database
+          .meterRate()
+          .timeout(const Duration(seconds: 5));
       if (!mounted) return;
       setState(() {
         products = data.products;
@@ -5158,6 +5444,7 @@ class _ForageHomeState extends State<ForageHome> {
         loadError = null;
         loading = false;
       });
+      _stockPartnerRevision.value++;
       if (widget.user.isAdmin && !_automaticBackupChecked) {
         _automaticBackupChecked = true;
         WidgetsBinding.instance.addPostFrameCallback(
@@ -5276,16 +5563,14 @@ class _ForageHomeState extends State<ForageHome> {
                 'la sauvegarde ne peut pas être récupérée sans lui.',
               ),
               const SizedBox(height: 12),
-              TextField(
+              _GlassPasswordField(
                 controller: password,
-                obscureText: true,
                 decoration: const InputDecoration(labelText: 'Mot de passe *'),
               ),
               if (confirm) ...[
                 const SizedBox(height: 10),
-                TextField(
+                _GlassPasswordField(
                   controller: confirmation,
-                  obscureText: true,
                   decoration: const InputDecoration(
                     labelText: 'Confirmer le mot de passe *',
                   ),
@@ -5551,24 +5836,25 @@ class _ForageHomeState extends State<ForageHome> {
     final item = await Navigator.push<ProductCreation>(
       context,
       MaterialPageRoute(
-        builder: (_) =>
-            ProductForm(
-              kind: kind,
-              depots: depots,
-              categories: categories,
-              catalogFamilies: catalogFamilies,
-            ),
+        builder: (_) => ProductForm(
+          kind: kind,
+          depots: depots,
+          categories: categories,
+          catalogFamilies: catalogFamilies,
+        ),
       ),
     );
     if (!mounted || item == null) return;
     final updatedCategory = await widget.database.insertCatalogProduct(
       item.product,
       item.categoryId,
-      item.familyId,
+      item.modelId,
     );
     if (!mounted) return;
     setState(() {
-      final index = categories.indexWhere((value) => value.id == item.categoryId);
+      final index = categories.indexWhere(
+        (value) => value.id == item.categoryId,
+      );
       if (index >= 0 && updatedCategory != null) {
         categories[index] = updatedCategory;
       }
@@ -5601,6 +5887,7 @@ class _ForageHomeState extends State<ForageHome> {
           // Purchase documents are selected from the device gallery for every
           // user; they are not evidence that must be taken live.
           allowGallery: true,
+          canPreviewAttachments: widget.user.isAdmin,
           initialProductId: initialProductId,
         ),
       ),
@@ -5666,26 +5953,40 @@ class _ForageHomeState extends State<ForageHome> {
   }
 
   Future<Supplier?> addSupplier() async {
+    if (!widget.user.canWritePage(AppPage.stock)) return null;
     final item = await Navigator.push<Supplier>(
       context,
       MaterialPageRoute(builder: (_) => const SupplierForm()),
     );
-    if (item != null) {
+    if (item == null || !mounted) return null;
+    try {
       await widget.database.insertSupplier(item);
-      if (mounted) setState(() => suppliers.add(item));
+    } catch (_) {
+      if (mounted) message(context, 'Impossible d’enregistrer le fournisseur.');
+      return null;
     }
+    if (!mounted) return null;
+    setState(() => suppliers.add(item));
+    _stockPartnerRevision.value++;
     return item;
   }
 
   Future<Client?> addClient() async {
+    if (!widget.user.canWritePage(AppPage.stock)) return null;
     final item = await Navigator.push<Client>(
       context,
       MaterialPageRoute(builder: (_) => const ClientForm()),
     );
-    if (item != null) {
+    if (item == null || !mounted) return null;
+    try {
       await widget.database.insertClient(item);
-      if (mounted) setState(() => clients.add(item));
+    } catch (_) {
+      if (mounted) message(context, 'Impossible d’enregistrer le client.');
+      return null;
     }
+    if (!mounted) return null;
+    setState(() => clients.add(item));
+    _stockPartnerRevision.value++;
     return item;
   }
 
@@ -5705,6 +6006,7 @@ class _ForageHomeState extends State<ForageHome> {
           available: depotStock,
           onAddClient: addClient,
           allowGallery: widget.user.isAdmin,
+          canPreviewAttachments: widget.user.isAdmin,
         ),
       ),
     );
@@ -5745,14 +6047,7 @@ class _ForageHomeState extends State<ForageHome> {
       forbidden('Validez d’abord cette vente avant d’enregistrer un retour.');
       return null;
     }
-    final alreadyReturned = saleReturns
-        .where(
-          (item) =>
-              item.saleId == sale.id &&
-              item.status != ReturnValidationStatus.rejected,
-        )
-        .fold(0, (total, item) => total + item.pieces);
-    final remaining = sale.pieces - alreadyReturned;
+    final remaining = _saleReturnMaximum(sale.id);
     if (pieces <= 0 || pieces > remaining) {
       forbidden(
         'La quantité retournée doit être comprise entre 1 et $remaining.',
@@ -5800,10 +6095,7 @@ class _ForageHomeState extends State<ForageHome> {
       forbidden('Validez d’abord l’achat d’origine avant de créer un retour.');
       return null;
     }
-    final alreadyReturned = stockAdditions
-        .where((item) => item.returnOfPurchaseId == purchase.id)
-        .fold(0, (total, item) => total + item.pieces.abs());
-    final remaining = purchase.pieces - alreadyReturned;
+    final remaining = _purchaseReturnMaximum(purchase.id!);
     if (pieces <= 0 || pieces > remaining) {
       forbidden('La quantité retournée dépasse la quantité achetée restante.');
       return null;
@@ -5832,6 +6124,27 @@ class _ForageHomeState extends State<ForageHome> {
     return item;
   }
 
+  int _saleReturnMaximum(String saleId, {String? excluding}) {
+    final sale = sales.where((item) => item.id == saleId && !item.draft).firstOrNull;
+    if (sale == null) return 0;
+    final used = saleReturns
+        .where((item) => item.saleId == saleId && item.id != excluding &&
+            item.status != ReturnValidationStatus.rejected)
+        .fold(0, (total, item) => total + item.pieces);
+    return max(0, sale.pieces - used);
+  }
+
+  int _purchaseReturnMaximum(int purchaseId, {int? excluding}) {
+    final purchase = stockAdditions
+        .where((item) => item.id == purchaseId && !item.draft)
+        .firstOrNull;
+    if (purchase == null) return 0;
+    final used = stockAdditions
+        .where((item) => item.returnOfPurchaseId == purchaseId && item.id != excluding)
+        .fold(0, (total, item) => total + item.pieces.abs());
+    return max(0, min(purchase.pieces - used, depotStock(purchase.productId, purchase.depotId)));
+  }
+
   void openStockRecords() {
     Navigator.push<void>(
       context,
@@ -5850,6 +6163,63 @@ class _ForageHomeState extends State<ForageHome> {
           onReturn: returnSale,
           canReturnPurchase: widget.user.canWritePage(AppPage.stock),
           onReturnPurchase: returnPurchase,
+          onOpenAttachments: widget.user.isAdmin ? _openTransactionPhotos : null,
+        ),
+      ),
+    );
+  }
+
+  void _openStockPartners() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ListenableBuilder(
+          listenable: _stockPartnerRevision,
+          builder: (_, _) {
+            final canAdd = widget.user.canWritePage(AppPage.stock);
+            return _StockPartnersPage(
+              suppliers: suppliers,
+              clients: clients,
+              onOpenPartner: _openStockPartner,
+              onAddSupplier: canAdd ? addSupplier : null,
+              onAddClient: canAdd ? addClient : null,
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  void _openStockPartner(_StockPartnerKind kind, String id) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ListenableBuilder(
+          listenable: _stockPartnerRevision,
+          builder: (_, _) {
+            final supplier = kind == _StockPartnerKind.supplier
+                ? suppliers.where((item) => item.id == id).firstOrNull
+                : null;
+            final client = kind == _StockPartnerKind.client
+                ? clients.where((item) => item.id == id).firstOrNull
+                : null;
+            return _StockPartnerDetails(
+              kind: kind,
+              supplier: supplier,
+              client: client,
+              purchases: supplier == null
+                  ? const []
+                  : stockAdditions
+                        .where((item) => item.supplierId == id)
+                        .toList(),
+              sales: client == null
+                  ? const []
+                  : sales.where((item) => item.clientId == id).toList(),
+              productName: (id) => product(id)?.displayReference ?? 'Produit',
+              depotName: (id) => depot(id)?.name ?? 'Stock général',
+              onOpenAttachments: widget.user.isAdmin
+                  ? _openTransactionPhotos
+                  : null,
+            );
+          },
         ),
       ),
     );
@@ -5868,9 +6238,24 @@ class _ForageHomeState extends State<ForageHome> {
           suppliers: suppliers,
           competitors: competitors,
           depotName: (id) => depot(id)?.name ?? 'Stock général',
+          onOpenAttachments: widget.user.isAdmin ? _openTransactionPhotos : null,
         ),
       ),
     );
+  }
+
+  void _openTransactionPhotos(
+    BuildContext context,
+    bool sale,
+    String? id,
+    List<Uint8List> images,
+  ) {
+    if (!widget.user.isAdmin) return;
+    final sync = widget.database.cloudSync;
+    final photos = images.isEmpty && id != null && sync is SupabaseCloudSyncClient
+        ? sync.loadTransactionPhotos(sale: sale, id: id)
+        : Future.value(images);
+    _showTransactionPhotos(context, photos);
   }
 
   Future<void> openExcelExport() async {
@@ -6065,14 +6450,14 @@ class _ForageHomeState extends State<ForageHome> {
     }
     final item = await Navigator.push<ProductCategory>(
       context,
-      MaterialPageRoute(
-        builder: (_) => CategoryForm(initial: value),
-      ),
+      MaterialPageRoute(builder: (_) => CategoryForm(initial: value)),
     );
     if (item != null) {
       await widget.database.updateCategory(item);
       if (mounted) {
-        final index = categories.indexWhere((category) => category.id == item.id);
+        final index = categories.indexWhere(
+          (category) => category.id == item.id,
+        );
         if (index >= 0) setState(() => categories[index] = item);
       }
     }
@@ -6085,6 +6470,20 @@ class _ForageHomeState extends State<ForageHome> {
     try {
       await widget.database.saveCatalogFamily(family);
       if (mounted) await loadWorkshop();
+    } on StateError catch (error) {
+      if (mounted) message(context, error.message.toString());
+    }
+  }
+
+  Future<void> saveCatalogModel(String categoryId, ProductModel model) async {
+    if (!widget.user.canWritePage(AppPage.products)) {
+      return forbidden('Vous n’avez pas le droit de modifier les produits.');
+    }
+    try {
+      final updated = await widget.database.saveCatalogModel(categoryId, model);
+      if (!mounted) return;
+      final index = categories.indexWhere((item) => item.id == categoryId);
+      if (index >= 0) setState(() => categories[index] = updated);
     } on StateError catch (error) {
       if (mounted) message(context, error.message.toString());
     }
@@ -6284,40 +6683,245 @@ class _ForageHomeState extends State<ForageHome> {
     );
   }
 
-  Future<void> updateStockDraft(StockAddition draft) async {
+  bool _openingValidationEditor = false;
+
+  Future<void> _editValidationDraft<T>({
+    required _ValidationDraftType type,
+    required String id,
+    required Widget Function(_ValidationDraft) form,
+    required Map<String, Object?> Function(T) updates,
+    required void Function(Map<String, Object?>) updateLocal,
+    List<Uint8List> Function(T)? newPhotos,
+  }) async {
     if (!widget.user.canValidate ||
+        !widget.user.canAccess(AppPage.validation) ||
         !widget.user.canWritePage(AppPage.validation)) {
       return forbidden('Vous n’avez pas le droit de modifier ce brouillon.');
     }
-    if (draft.returnOfPurchaseId != null) {
-      final purchase = stockAdditions
-          .where((item) => item.id == draft.returnOfPurchaseId)
-          .firstOrNull;
-      final otherReturns = stockAdditions
-          .where(
-            (item) =>
-                item.returnOfPurchaseId == draft.returnOfPurchaseId &&
-                item.id != draft.id,
-          )
-          .fold(0, (total, item) => total + item.pieces.abs());
-      if (purchase == null ||
-          draft.pieces >= 0 ||
-          draft.pieces.abs() > purchase.pieces - otherReturns) {
-        return forbidden(
-          'Ce retour fournisseur dépasse la quantité de l’achat d’origine.',
-        );
+    if (_openingValidationEditor) return;
+    _openingValidationEditor = true;
+    try {
+      final draft = await widget.database._loadValidationDraft(
+        type,
+        id,
+        canViewPhotos: widget.user.isAdmin,
+      );
+      if (!mounted) return;
+      if (draft == null) {
+        return forbidden('Ce brouillon n’est plus disponible.');
       }
+      final result = await Navigator.push<T>(
+        context,
+        MaterialPageRoute(builder: (_) => form(draft)),
+      );
+      if (!mounted || result == null) return;
+      final saved = await widget.database._saveValidationDraft(
+        draft,
+        updates(result),
+        actor: widget.user,
+        addedPhotos: newPhotos?.call(result) ?? const [],
+      );
+      if (!mounted) return;
+      if (saved == null) return message(context, 'Aucune modification.');
+      setState(() => updateLocal(saved));
+      _stockPartnerRevision.value++;
+      message(
+        context,
+        draft.revision == null
+            ? 'Brouillon enregistré sur cet appareil.'
+            : 'Brouillon corrigé. Modification enregistrée dans Sécurité.',
+      );
+    } on PostgrestException catch (error) {
+      if (!mounted) return;
+      message(context, switch (error.code) {
+        '40001' => 'Le brouillon a changé sur le serveur. Rouvrez-le avant de recommencer.',
+        'PGRST202' => 'La mise à jour du serveur nécessaire à la correction n’est pas installée.',
+        '42501' => 'La correction a été refusée. Vérifiez vos droits et l’état du brouillon.',
+        _ => 'Impossible d’enregistrer la correction. Vérifiez les données du brouillon.',
+      });
+    } on StateError catch (error) {
+      if (mounted) message(context, error.message);
+    } catch (_) {
+      if (mounted) message(context, 'Correction indisponible. Vérifiez la connexion et réessayez.');
+    } finally {
+      _openingValidationEditor = false;
     }
-    await widget.database.updateStockAddition(draft);
-    if (!mounted) return;
-    setState(
-      () =>
-          stockAdditions[stockAdditions.indexWhere(
-                (item) => item.id == draft.id,
-              )] =
-              draft,
+  }
+
+  Future<void> _openPurchaseCorrection(StockAddition item) async {
+    final id = item.id;
+    if (id == null) return;
+    if (item.returnOfPurchaseId != null) {
+      String? receipt;
+      return _editValidationDraft<int>(
+        type: _ValidationDraftType.purchase,
+        id: id.toString(),
+        form: (draft) {
+          final initial = widget.database._stockAdditionFromRow(draft.row);
+          return _ReturnQuantityForm(
+            title: 'Modifier le retour fournisseur',
+            summary: product(initial.productId)?.displayReference ?? 'Produit',
+            maximum: _purchaseReturnMaximum(initial.returnOfPurchaseId!, excluding: id),
+            initial: initial.pieces.abs(),
+            receipt: initial.receiptNumber,
+            onSaveReceipt: (value) => receipt = value,
+          );
+        },
+        updates: (pieces) => {
+          'pieces': -pieces,
+          'quantity': -pieces.toDouble(),
+          'unit': InventoryUnit.piece.name,
+          'receipt_number': ?receipt,
+        },
+        updateLocal: (row) => stockAdditions = [
+          for (final current in stockAdditions)
+            if (current.id == id) widget.database._stockAdditionFromRow(row) else current,
+        ],
+      );
+    }
+    await _editValidationDraft<StockAddition>(
+      type: _ValidationDraftType.purchase,
+      id: id.toString(),
+      form: (draft) => StockForm(
+        products: products.where((product) => !product.manufactured).toList(),
+        categories: categories,
+        catalogFamilies: catalogFamilies,
+        stock: stock,
+        depots: depots,
+        suppliers: suppliers,
+        onAddSupplier: widget.user.canWritePage(AppPage.stock) ? addSupplier : null,
+        allowGallery: true,
+        canPreviewAttachments: widget.user.isAdmin,
+        initialDraft: widget.database._stockAdditionFromRow(draft.row),
+        existingPhotos: draft.attachments,
+      ),
+      updates: (purchase) => {
+        'product_id': purchase.productId,
+        'depot_id': purchase.depotId,
+        'supplier_id': purchase.supplierId,
+        'pieces': purchase.pieces,
+        'quantity': purchase.quantity,
+        'unit': purchase.unit.name,
+        'receipt_number': purchase.receiptNumber,
+        'transport_charge': purchase.transportCharge.name,
+      },
+      newPhotos: (purchase) => purchase.images,
+      updateLocal: (row) => stockAdditions = [
+        for (final current in stockAdditions)
+          if (current.id == id) widget.database._stockAdditionFromRow(row) else current,
+      ],
     );
   }
+
+  Future<void> _openSaleCorrection(Sale item) => _editValidationDraft<Sale>(
+    type: _ValidationDraftType.sale,
+    id: item.id,
+    form: (draft) => SaleForm(
+      products: products,
+      categories: categories,
+      catalogFamilies: catalogFamilies,
+      depots: depots,
+      clients: clients,
+      available: depotStock,
+      onAddClient: widget.user.canWritePage(AppPage.stock) ? addClient : null,
+      allowGallery: widget.user.isAdmin,
+      canPreviewAttachments: widget.user.isAdmin,
+      initialDraft: widget.database._saleFromRow(draft.row),
+      existingPhotos: draft.attachments,
+    ),
+    updates: (sale) => widget.database._saleToRow(sale)
+      ..remove('images'),
+    newPhotos: (sale) => sale.images,
+    updateLocal: (row) => sales = [
+      for (final current in sales)
+        if (current.id == item.id) widget.database._saleFromRow(row) else current,
+    ],
+  );
+
+  Future<void> _openTransferCorrection(StockTransfer item) =>
+      _editValidationDraft<StockTransfer>(
+        type: _ValidationDraftType.transfer,
+        id: item.id,
+        form: (draft) => StockTransferForm(
+          products: products,
+          categories: categories,
+          catalogFamilies: catalogFamilies,
+          depots: depots,
+          available: depotStock,
+          initialDraft: widget.database._stockTransferFromRow(draft.row),
+        ),
+        updates: widget.database._stockTransferToRow,
+        updateLocal: (row) => stockTransfers = [
+          for (final current in stockTransfers)
+            if (current.id == item.id) widget.database._stockTransferFromRow(row) else current,
+        ],
+      );
+
+  Future<void> _openReturnCorrection(SaleReturn item) => _editValidationDraft<int>(
+    type: _ValidationDraftType.customerReturn,
+    id: item.id,
+    form: (draft) {
+      final initial = widget.database._saleReturnFromRow(draft.row);
+      return _ReturnQuantityForm(
+        title: 'Modifier le retour client',
+        summary: product(initial.productId)?.displayReference ?? 'Produit',
+        maximum: _saleReturnMaximum(initial.saleId, excluding: initial.id),
+        initial: initial.pieces,
+      );
+    },
+    updates: (pieces) => {'pieces': pieces},
+    updateLocal: (row) => saleReturns = [
+      for (final current in saleReturns)
+        if (current.id == item.id) widget.database._saleReturnFromRow(row) else current,
+    ],
+  );
+
+  Future<void> _openProductionCorrection(Operation item) =>
+      _editValidationDraft<Completion>(
+        type: _ValidationDraftType.operation,
+        id: item.id,
+        form: (draft) {
+          final initial = widget.database._operationFromRow(draft.row);
+          final factory = machine(initial.machineId);
+          final output = product(initial.outputProductId ?? factory?.outputId ?? '');
+          if (factory == null || output == null || initial.finishedAt == null) {
+            return const FormShell(
+              title: 'Production indisponible',
+              child: Text('Une machine ou un produit lié à cette production est introuvable.'),
+            );
+          }
+          return FinishOperation(
+            operation: initial,
+            machine: factory,
+            output: output,
+            depots: depots,
+            editing: true,
+          );
+        },
+        updates: (result) {
+          final source = product(item.productId);
+          final scrapId = item.scrapProductId ?? (source == null ? null : _scrapVariant(source).id);
+          if (result.scrapPieces > 0 && (scrapId == null || product(scrapId) == null)) {
+            throw StateError('Le produit de déchets doit exister dans le catalogue avant cette correction.');
+          }
+          return {
+            'output_pieces': result.outputPieces,
+            'output_depot_id': result.outputDepotId,
+            'remainder_pieces': result.remainderPieces,
+            'remainder_depot_id': result.remainderDepotId,
+            'scrap_pieces': result.scrapPieces,
+            'scrap_depot_id': result.scrapDepotId,
+            'scrap_product_id': result.scrapPieces == 0 ? null : scrapId,
+            'final_image': result.image,
+            'remainder_image': result.remainderImage,
+            'scrap_image': result.scrapImage,
+          };
+        },
+        updateLocal: (row) => operations = [
+          for (final current in operations)
+            if (current.id == item.id) widget.database._operationFromRow(row) else current,
+        ],
+      );
 
   Future<void> cancelStockDraft(StockAddition draft) async {
     if (!widget.user.canValidate ||
@@ -6396,36 +7000,6 @@ class _ForageHomeState extends State<ForageHome> {
     }
   }
 
-  Future<void> updateSaleDraft(Sale draft) async {
-    if (!widget.user.canValidate ||
-        !widget.user.canWritePage(AppPage.validation)) {
-      return forbidden('Vous n’avez pas le droit de modifier ce brouillon.');
-    }
-    await widget.database.updateSale(draft);
-    if (!mounted) return;
-    setState(
-      () => sales[sales.indexWhere((item) => item.id == draft.id)] = draft,
-    );
-  }
-
-  Future<void> updateStockTransferDraft(StockTransfer draft) async {
-    if (!widget.user.canValidate ||
-        !widget.user.canWritePage(AppPage.validation)) {
-      return forbidden('Vous n’avez pas le droit de modifier ce transfert.');
-    }
-    if (draft.pieces <= 0 || draft.sourceDepotId == draft.destinationDepotId) {
-      return forbidden(
-        'Le transfert doit avoir une quantité valide et deux dépôts différents.',
-      );
-    }
-    await widget.database.updateStockTransfer(draft);
-    if (!mounted) return;
-    setState(() {
-      stockTransfers[stockTransfers.indexWhere((item) => item.id == draft.id)] =
-          draft;
-    });
-  }
-
   Future<void> cancelSaleDraft(Sale draft) async {
     if (!widget.user.canValidate ||
         !widget.user.canWritePage(AppPage.validation)) {
@@ -6476,33 +7050,6 @@ class _ForageHomeState extends State<ForageHome> {
           approved,
     );
     message(context, 'Retour validé et ajouté au stock.');
-  }
-
-  Future<void> updateSaleReturn(SaleReturn draft) async {
-    if (!widget.user.canValidate ||
-        !widget.user.canWritePage(AppPage.validation)) {
-      return forbidden('Vous n’avez pas le droit de modifier ce retour.');
-    }
-    final sale = sales.where((item) => item.id == draft.saleId).firstOrNull;
-    final otherReturns = saleReturns
-        .where(
-          (item) =>
-              item.saleId == draft.saleId &&
-              item.id != draft.id &&
-              item.status != ReturnValidationStatus.rejected,
-        )
-        .fold(0, (total, item) => total + item.pieces);
-    if (sale == null ||
-        draft.pieces <= 0 ||
-        otherReturns + draft.pieces > sale.pieces) {
-      return forbidden('La quantité retournée dépasse la quantité vendue.');
-    }
-    await widget.database.updateSaleReturn(draft);
-    if (!mounted) return;
-    setState(
-      () => saleReturns[saleReturns.indexWhere((item) => item.id == draft.id)] =
-          draft,
-    );
   }
 
   Future<void> rejectSaleReturn(SaleReturn draft) async {
@@ -6564,15 +7111,6 @@ class _ForageHomeState extends State<ForageHome> {
           ? 'Travail externe validé : le stock a été mis à jour et la machine temporaire supprimée.'
           : 'Production validée et ajoutée au stock.',
     );
-  }
-
-  Future<void> updateOperationDraft(Operation draft) async {
-    if (!widget.user.canValidate ||
-        !widget.user.canWritePage(AppPage.validation)) {
-      return forbidden('Vous n’avez pas le droit de modifier ce brouillon.');
-    }
-    await widget.database.updateOperation(draft);
-    if (mounted) setState(() {});
   }
 
   Future<void> cancelOperationDraft(Operation draft) async {
@@ -6753,20 +7291,20 @@ class _ForageHomeState extends State<ForageHome> {
                         .where((item) => item.draft)
                         .toList(),
                     onApproveStock: approveStockDraft,
-                    onEditStock: updateStockDraft,
+                    onEditStock: _openPurchaseCorrection,
                     onCancelStock: cancelStockDraft,
                     onApproveSale: approveSaleDraft,
-                    onEditSale: updateSaleDraft,
+                    onEditSale: _openSaleCorrection,
                     onCancelSale: cancelSaleDraft,
                     onApproveReturn: approveSaleReturn,
-                    onEditReturn: updateSaleReturn,
+                    onEditReturn: _openReturnCorrection,
                     onRejectReturn: rejectSaleReturn,
                     onCancelReturn: cancelSaleReturn,
                     onApproveOperation: approveOperationDraft,
-                    onEditOperation: updateOperationDraft,
+                    onEditOperation: _openProductionCorrection,
                     onCancelOperation: cancelOperationDraft,
                     onApproveTransfer: approveStockTransfer,
-                    onEditTransfer: updateStockTransferDraft,
+                    onEditTransfer: _openTransferCorrection,
                     onCancelTransfer: cancelStockTransfer,
                   ),
                 ),
@@ -6820,6 +7358,7 @@ class _ForageHomeState extends State<ForageHome> {
         onOpenDepots: () => _openDepots(context),
         onOpenRecords: openStockRecords,
         onOpenPayments: openTransactionPayments,
+        onOpenPartners: _openStockPartners,
       ),
       MachinesPage(
         machines: machines,
@@ -6845,6 +7384,9 @@ class _ForageHomeState extends State<ForageHome> {
         onLoadSessions: widget.database.loadUserSessions,
         onOpenPayroll: () => _openPayroll(context),
         onOpenDeviceRequests: openDeviceRequests,
+        loadLocalSecurityEvents: widget.user.isAdmin
+            ? widget.database._loadLocalValidationEvents
+            : null,
       ),
       ValidationPage(
         products: products,
@@ -6859,20 +7401,20 @@ class _ForageHomeState extends State<ForageHome> {
             .toList(),
         transferDrafts: stockTransfers.where((item) => item.draft).toList(),
         onApproveStock: approveStockDraft,
-        onEditStock: updateStockDraft,
+        onEditStock: _openPurchaseCorrection,
         onCancelStock: cancelStockDraft,
         onApproveSale: approveSaleDraft,
-        onEditSale: updateSaleDraft,
+        onEditSale: _openSaleCorrection,
         onCancelSale: cancelSaleDraft,
         onApproveReturn: approveSaleReturn,
-        onEditReturn: updateSaleReturn,
+        onEditReturn: _openReturnCorrection,
         onRejectReturn: rejectSaleReturn,
         onCancelReturn: cancelSaleReturn,
         onApproveOperation: approveOperationDraft,
-        onEditOperation: updateOperationDraft,
+        onEditOperation: _openProductionCorrection,
         onCancelOperation: cancelOperationDraft,
         onApproveTransfer: approveStockTransfer,
-        onEditTransfer: updateStockTransferDraft,
+        onEditTransfer: _openTransferCorrection,
         onCancelTransfer: cancelStockTransfer,
       ),
     ];
@@ -6956,10 +7498,12 @@ class _ForageHomeState extends State<ForageHome> {
         child: CatalogFamiliesPage(
           loadCategories: () => categories,
           loadFamilies: () => catalogFamilies,
+          loadProducts: () => products,
           admin: widget.user.canWritePage(AppPage.products),
           onSaveFamily: saveCatalogFamily,
           onAddCategory: addCategory,
           onEditCategory: editCategory,
+          onSaveModel: saveCatalogModel,
         ),
       ),
     ),
@@ -7098,10 +7642,10 @@ class _PageAccessDenied extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(
+          Icon(
             Icons.lock_outline_rounded,
             size: 42,
-            color: AppPalette.primary,
+            color: Theme.of(context).colorScheme.primary,
           ),
           const SizedBox(height: 12),
           Text(
@@ -7109,10 +7653,10 @@ class _PageAccessDenied extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 6),
-          const Text(
+          Text(
             'Demandez au responsable de modifier vos droits.',
             textAlign: TextAlign.center,
-            style: TextStyle(color: AppPalette.muted),
+            style: TextStyle(color: _atelierMuted(context)),
           ),
         ],
       ),
@@ -7195,6 +7739,7 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
   DateTimeRange? period;
   final selections = <ExportDataset, Set<String>>{};
   Set<String> productFamilyIds = const {};
+  Set<String> productModelIds = const {};
   var saving = false;
   String? firstDepot;
   String? secondDepot;
@@ -7222,6 +7767,21 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
                 productFamilyIds.isEmpty || productFamilyIds.contains(group.id),
           )
           .expand((group) => group.sections);
+
+  String _modelKey(_CatalogSection section, ProductModel model) =>
+      jsonEncode([section.category.id, model.id]);
+
+  Iterable<_CatalogSection> _selectedProductSections(
+    List<_CatalogGroup> groups,
+  ) => productSections(groups).where(
+    (section) => matches(ExportDataset.products, section.category.id),
+  );
+
+  Map<String, String> _productModelOptions(List<_CatalogGroup> groups) => {
+    for (final section in _selectedProductSections(groups))
+      for (final model in section.models)
+        _modelKey(section, model): '${section.category.name} · ${model.name}',
+  };
 
   bool inRange(DateTime value) {
     final range = period;
@@ -7274,6 +7834,7 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
     final groups = dataset == ExportDataset.products
         ? productGroups
         : const <_CatalogGroup>[];
+    final modelOptions = _productModelOptions(groups);
     final suppliers = _choices(
       widget.suppliers,
       (item) => item.id,
@@ -7348,6 +7909,9 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
                     .toSet();
                 selections[dataset] = (selections[dataset] ?? const <String>{})
                     .intersection(available);
+                productModelIds = productModelIds.intersection(
+                  _productModelOptions(groups).keys.toSet(),
+                );
               }),
             ),
             if (options.isNotEmpty) const SizedBox(height: 8),
@@ -7358,7 +7922,14 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
               options: options,
               selected: selections[dataset] ?? const {},
               multiple: true,
-              onChanged: (ids) => setState(() => selections[dataset] = ids),
+              onChanged: (ids) => setState(() {
+                selections[dataset] = ids;
+                if (dataset == ExportDataset.products) {
+                  productModelIds = productModelIds.intersection(
+                    _productModelOptions(groups).keys.toSet(),
+                  );
+                }
+              }),
             )
           else if (dataset == ExportDataset.purchases ||
               dataset == ExportDataset.sales)
@@ -7370,6 +7941,16 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
                     : 'Aucun client disponible',
               ),
             ),
+          if (modelOptions.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            SearchChoiceField(
+              label: 'Modèles',
+              options: modelOptions,
+              selected: productModelIds,
+              multiple: true,
+              onChanged: (ids) => setState(() => productModelIds = ids),
+            ),
+          ],
           if (dataset == ExportDataset.transfers)
             _TransferDepotFields(
               depots: widget.depots,
@@ -7396,14 +7977,15 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
       if (selected.contains(ExportDataset.products)) {
         final filterProducts =
             productFamilyIds.isNotEmpty ||
+            productModelIds.isNotEmpty ||
             selections[ExportDataset.products]?.isNotEmpty == true;
         final matchingIds = filterProducts
-            ? productSections(productGroups)
-                  .where(
-                    (section) =>
-                        matches(ExportDataset.products, section.category.id),
-                  )
-                  .expand((section) => section.productIds)
+            ? _selectedProductSections(productGroups)
+                  .expand((section) => productModelIds.isEmpty
+                      ? section.productIds
+                      : section.models
+                          .where((model) => productModelIds.contains(_modelKey(section, model)))
+                          .expand((model) => model.productIds))
                   .toSet()
             : null;
         sheets.add(
@@ -7413,6 +7995,7 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
               'Référence',
               'Produit',
               'Catégorie',
+              'Modèle',
               'Type',
               'Matière',
               'Longueur (m)',
@@ -7430,6 +8013,13 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
                     item.name,
                     categoriesFor(item)
                         .map((category) => category.name)
+                        .join(', '),
+                    categoriesFor(item)
+                        .map((category) => category.models
+                            .where((model) => model.productIds.contains(_catalogMembershipId(item)))
+                            .firstOrNull?.name)
+                        .nonNulls
+                        .toSet()
                         .join(', '),
                     item.kind.label,
                     item.material.label,
@@ -7651,10 +8241,16 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
         sheets.add(
           ExcelSheetData(
             name: 'Fournisseurs',
-            headers: const ['Nom', 'Société', 'Contact'],
+            headers: const ['Nom', 'Société', 'Contact', 'Fax', 'ICE'],
             rows: widget.suppliers
                 .where((item) => matches(ExportDataset.suppliers, item.id))
-                .map((item) => [item.name, item.company, item.contact])
+                .map((item) => [
+                  item.name,
+                  item.company,
+                  item.contact,
+                  item.fax,
+                  item.ice,
+                ])
                 .toList(),
           ),
         );
@@ -7750,6 +8346,7 @@ class Glass extends StatelessWidget {
   final double radius;
   final Color accent;
   final bool frosted;
+
   /// Allows floating UI such as the phone navigation to reveal the content
   /// scrolling underneath it, without changing normal glass panels.
   final double? depth;
@@ -7761,19 +8358,20 @@ class Glass extends StatelessWidget {
     final panel = _LiquidLayer(
       radius: radius,
       accent: accent,
-      depth: depth ?? (frosted ? 1.34 : .93),
-      opacity: opacity ?? (frosted ? .98 : .96),
+      depth: depth ?? (frosted ? 1.58 : 1.23),
+      opacity: opacity ?? (frosted ? .93 : .87),
       child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
     );
     if (!frosted) return panel;
+    final dark = Theme.of(context).brightness == Brightness.dark;
     return DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: rounded,
-        boxShadow: const [
+        boxShadow: [
           BoxShadow(
-            color: Color(0x520B000F),
-            blurRadius: 22,
-            offset: Offset(0, 9),
+            color: dark ? const Color(0x440B000F) : const Color(0x244170A3),
+            blurRadius: 20,
+            offset: const Offset(0, 7),
           ),
         ],
       ),
@@ -7842,10 +8440,19 @@ class AppHeader extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => Padding(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF5FF) : AppPalette.text;
+    final secondary = dark ? const Color(0xFFE0BFEA) : AppPalette.muted;
+    return Padding(
     padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-    child: Glass(
+    child: IconTheme(
+      data: IconThemeData(color: foreground),
+      child: Glass(
       radius: 28,
+      frosted: true,
+      depth: 1.72,
+      opacity: .80,
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
       child: Row(
         children: [
@@ -7857,19 +8464,19 @@ class AppHeader extends StatelessWidget {
                   title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 20,
                     letterSpacing: -.6,
                     fontWeight: FontWeight.w800,
-                    color: AppPalette.text,
+                    color: foreground,
                   ),
                 ),
                 Text(
                   user.effectiveRole.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppPalette.muted,
+                  style: TextStyle(
+                    color: secondary,
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                   ),
@@ -7910,18 +8517,36 @@ class AppHeader extends StatelessWidget {
             ),
             const SizedBox(width: 4),
           ],
+          Builder(
+            builder: (context) {
+              final appearance = ForageAppearanceScope.of(context);
+              return _DashboardHeaderButton(
+                label: appearance.isDark ? 'Mode clair' : 'Mode sombre',
+                onTap: appearance.toggle,
+                child: Icon(
+                  appearance.isDark
+                      ? Icons.light_mode_rounded
+                      : Icons.dark_mode_rounded,
+                  size: 20,
+                ),
+              );
+            },
+          ),
+          const SizedBox(width: 7),
           _DashboardHeaderButton(
             label: 'Profil',
             onTap: () => _showProfile(context),
             child: Text(
               user.fullName.characters.first.toUpperCase(),
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: foreground),
             ),
           ),
         ],
       ),
     ),
+    ),
   );
+  }
 }
 
 class ProfileSheet extends StatelessWidget {
@@ -7942,7 +8567,15 @@ class ProfileSheet extends StatelessWidget {
   final VoidCallback? onOpenDeveloper;
 
   @override
-  Widget build(BuildContext context) => SafeArea(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF3FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFE3C5ED) : AppPalette.muted;
+    final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
+    final tileSurface = dark
+        ? const Color(0xE8280638)
+        : AppPalette.surfaceRaised.withValues(alpha: .82);
+    return SafeArea(
     top: false,
     child: TweenAnimationBuilder<double>(
       duration: const Duration(milliseconds: 340),
@@ -7964,7 +8597,7 @@ class ProfileSheet extends StatelessWidget {
                 width: 44,
                 height: 5,
                 decoration: BoxDecoration(
-                  color: AppPalette.line,
+                  color: dark ? const Color(0xFFBC76D6) : AppPalette.line,
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
@@ -7974,8 +8607,10 @@ class ProfileSheet extends StatelessWidget {
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     colors: [
-                      AppPalette.desktopAccentSoft,
-                      AppPalette.surfaceRaised,
+                      dark
+                          ? const Color(0xFF351047)
+                          : AppPalette.desktopAccentSoft,
+                      dark ? const Color(0xFF21052F) : AppPalette.surfaceRaised,
                     ],
                   ),
                   borderRadius: BorderRadius.circular(24),
@@ -7984,10 +8619,10 @@ class ProfileSheet extends StatelessWidget {
                   children: [
                     CircleAvatar(
                       radius: 29,
-                      backgroundColor: AppPalette.primary.withValues(
+                      backgroundColor: accent.withValues(
                         alpha: .16,
                       ),
-                      foregroundColor: AppPalette.primary,
+                      foregroundColor: accent,
                       child: Text(
                         user.fullName.substring(0, 1).toUpperCase(),
                         style: const TextStyle(
@@ -8003,8 +8638,8 @@ class ProfileSheet extends StatelessWidget {
                         children: [
                           Text(
                             user.fullName,
-                            style: const TextStyle(
-                              color: AppPalette.text,
+                            style: TextStyle(
+                              color: foreground,
                               fontSize: 18,
                               fontWeight: FontWeight.w900,
                             ),
@@ -8012,13 +8647,13 @@ class ProfileSheet extends StatelessWidget {
                           const SizedBox(height: 3),
                           Text(
                             '@${user.username}',
-                            style: const TextStyle(color: AppPalette.muted),
+                            style: TextStyle(color: muted),
                           ),
                           const SizedBox(height: 8),
                           Text(
                             user.effectiveRole.label,
-                            style: const TextStyle(
-                              color: AppPalette.muted,
+                            style: TextStyle(
+                              color: muted,
                               fontWeight: FontWeight.w800,
                             ),
                           ),
@@ -8029,16 +8664,48 @@ class ProfileSheet extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 12),
+              Builder(
+                builder: (context) {
+                  final appearance = ForageAppearanceScope.of(context);
+                  return ListTile(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    tileColor: tileSurface,
+                    leading: Icon(
+                      appearance.isDark
+                          ? Icons.dark_mode_rounded
+                          : Icons.light_mode_rounded,
+                      color: accent,
+                    ),
+                    title: const Text(
+                      'Apparence',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    subtitle: Text(
+                      appearance.isDark
+                          ? 'Mode sombre violet'
+                          : 'Mode clair bleu',
+                    ),
+                    trailing: Switch.adaptive(
+                      value: appearance.isDark,
+                      onChanged: appearance.setDark,
+                    ),
+                    onTap: appearance.toggle,
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
               if (user.isAdmin) ...[
                 ListTile(
                   onTap: onOpenTeam,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18),
                   ),
-                  tileColor: AppPalette.surfaceRaised.withValues(alpha: .82),
-                  leading: const Icon(
+                  tileColor: tileSurface,
+                  leading: Icon(
                     Icons.groups_rounded,
-                    color: AppPalette.primary,
+                    color: accent,
                   ),
                   title: const Text(
                     'Équipe',
@@ -8055,10 +8722,10 @@ class ProfileSheet extends StatelessWidget {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18),
                   ),
-                  tileColor: AppPalette.surfaceRaised.withValues(alpha: .82),
-                  leading: const Icon(
+                  tileColor: tileSurface,
+                  leading: Icon(
                     Icons.backup_rounded,
-                    color: AppPalette.primary,
+                    color: accent,
                   ),
                   title: const Text(
                     'Sauvegardes',
@@ -8074,9 +8741,9 @@ class ProfileSheet extends StatelessWidget {
               if (onOpenExport case final export?)
                 ListTile(
                   onTap: export,
-                  leading: const Icon(
+                  leading: Icon(
                     Icons.table_view_rounded,
-                    color: AppPalette.primary,
+                    color: accent,
                   ),
                   title: const Text('Exporter vers Excel'),
                 ),
@@ -8111,7 +8778,8 @@ class ProfileSheet extends StatelessWidget {
         ),
       ),
     ),
-  );
+    );
+  }
 }
 
 class BackupPage extends StatefulWidget {
@@ -8195,7 +8863,7 @@ class _BackupPageState extends State<BackupPage> {
       title: 'Restaurer la sauvegarde ?',
       detail: 'Les données actuelles de l’atelier seront remplacées par celles du fichier choisi.',
       action: 'Importer',
-      color: AppPalette.primary,
+      color: Theme.of(context).colorScheme.primary,
     );
     if (!confirmed || !mounted) return;
     setState(() => busy = true);
@@ -8270,7 +8938,7 @@ class _BackupPageState extends State<BackupPage> {
                             lastBackup == null
                                 ? 'Aucune sauvegarde n’a encore été téléchargée.'
                                 : 'Dernier téléchargement : ${dateText(lastBackup!)}',
-                            style: const TextStyle(color: AppPalette.muted),
+                            style: TextStyle(color: _atelierMuted(context)),
                           ),
                         ],
                       ),
@@ -8279,18 +8947,18 @@ class _BackupPageState extends State<BackupPage> {
                 ),
               ),
               const SizedBox(height: 18),
-              const Glass(
-                padding: EdgeInsets.all(14),
+              Glass(
+                padding: const EdgeInsets.all(14),
                 child: Row(
                   children: [
-                    Icon(Icons.lock_outline_rounded, color: AppPalette.primary),
-                    SizedBox(width: 10),
+                    Icon(Icons.lock_outline_rounded, color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         'Les sauvegardes automatiques sont volontairement désactivées : '
                         'chaque sauvegarde est chiffrée avec un mot de passe que '
                         'l’application ne conserve pas.',
-                        style: TextStyle(fontSize: 12, color: AppPalette.muted),
+                        style: TextStyle(fontSize: 12, color: _atelierMuted(context)),
                       ),
                     ),
                   ],
@@ -8302,9 +8970,9 @@ class _BackupPageState extends State<BackupPage> {
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 'Enregistre un fichier JSON complet que vous pourrez conserver et réimporter plus tard.',
-                style: TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
               const SizedBox(height: 10),
               SizedBox(
@@ -8321,9 +8989,9 @@ class _BackupPageState extends State<BackupPage> {
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 'Importez un fichier de sauvegarde FORAGE ZOUHOUR pour remplacer les données actuelles.',
-                style: TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
               const SizedBox(height: 10),
               SizedBox(
@@ -8335,12 +9003,12 @@ class _BackupPageState extends State<BackupPage> {
                 ),
               ),
               const SizedBox(height: 22),
-              const Text(
+              Text(
                 'Zone sensible',
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w900,
-                  color: Color(0xFF991B1B),
+                  color: Theme.of(context).colorScheme.error,
                 ),
               ),
               const SizedBox(height: 6),
@@ -8348,7 +9016,7 @@ class _BackupPageState extends State<BackupPage> {
                 hasRecentBackup
                     ? 'Une sauvegarde récente a été téléchargée : vous pouvez supprimer les informations de l’atelier.'
                     : 'La suppression reste bloquée tant qu’une nouvelle sauvegarde n’a pas été téléchargée.',
-                style: const TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
               const SizedBox(height: 10),
               SizedBox(
@@ -8397,156 +9065,502 @@ class DashboardPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Keep one responsive dashboard tree in both appearances. The old
+    // dark-only tree could collapse on phone after changing appearance,
+    // leaving the wallpaper and navigation visible without any Home content.
     final desktop =
         forceDesktopLayout ||
-        (_usesWorkspaceRail(context) && MediaQuery.sizeOf(context).width >= 1380);
+        (_usesWorkspaceRail(context) &&
+            MediaQuery.sizeOf(context).width >= 1380);
     return Page(
       child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (desktop)
-          _DesktopDashboardWelcome(
-            firstName: user.fullName.trim().split(RegExp(r'\s+')).first,
-          ),
-        if (desktop) const SizedBox(height: 18),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final hero = _AtelierOverview(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (desktop)
+            _DesktopDashboardWelcome(
               firstName: user.fullName.trim().split(RegExp(r'\s+')).first,
-              machineCount: machineCount,
-              desktop: desktop,
-            );
-            final products = _DashboardMetric(
-              icon: Icons.view_in_ar_outlined,
-              label: 'Produits',
-              value: productCount,
-              accent: AppPalette.secondary,
-            );
-            final reviews = _DashboardMetric(
-              icon: Icons.schedule_rounded,
-              label: 'Contrôles en attente',
-              value: pendingReviews,
-              accent: pendingReviews > 0
-                  ? AppPalette.amber
-                  : AppPalette.primary,
-            );
-            if (constraints.maxWidth >= (desktop ? 780 : 690)) {
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            ),
+          if (desktop) const SizedBox(height: 18),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final hero = _AtelierOverview(
+                firstName: user.fullName.trim().split(RegExp(r'\s+')).first,
+                machineCount: machineCount,
+                desktop: desktop,
+              );
+              final products = _DashboardMetric(
+                icon: Icons.view_in_ar_outlined,
+                label: 'Produits',
+                value: productCount,
+                accent: AppPalette.secondary,
+              );
+              final reviews = _DashboardMetric(
+                icon: Icons.schedule_rounded,
+                label: 'Contrôles en attente',
+                value: pendingReviews,
+                accent: pendingReviews > 0
+                    ? AppPalette.amber
+                    : AppPalette.primary,
+              );
+              if (constraints.maxWidth >= (desktop ? 780 : 690)) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 3, child: hero),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      flex: 2,
+                      child: Column(
+                        children: [
+                          products,
+                          const SizedBox(height: 12),
+                          reviews,
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Expanded(flex: 3, child: hero),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    flex: 2,
-                    child: Column(
-                      children: [products, const SizedBox(height: 12), reviews],
+                  hero,
+                  const SizedBox(height: 12),
+                  IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(child: products),
+                        const SizedBox(width: 10),
+                        Expanded(child: reviews),
+                      ],
                     ),
                   ),
                 ],
               );
-            }
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                hero,
-                const SizedBox(height: 12),
-                IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(child: products),
-                      const SizedBox(width: 10),
-                      Expanded(child: reviews),
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-        const SizedBox(height: 19),
-        Text(
-          'Accès rapide',
-          style: Theme.of(context).textTheme.titleMedium
-              ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -.4),
-        ),
-        const SizedBox(height: 12),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final columns = constraints.maxWidth >= (desktop ? 940 : 670)
-                ? 6
-                : constraints.maxWidth >= 670
-                ? 3
-                : constraints.maxWidth >= 290
-                ? 2
-                : 1;
-            const gap = 10.0;
-            final width =
-                (constraints.maxWidth - gap * (columns - 1)) / columns;
-            final shortcuts = [
-              _DashboardAction(
-                icon: Icons.inventory_2_outlined,
-                color: const Color(0xFF1A95E8),
-                label: 'Produits',
-                onTap: onProducts,
-              ),
-              _DashboardAction(
-                icon: Icons.warehouse_outlined,
-                color: const Color(0xFF2FB9E8),
-                label: 'Stock',
-                onTap: onStock,
-              ),
-              _DashboardAction(
-                icon: Icons.precision_manufacturing_outlined,
-                color: const Color(0xFF4A7EEA),
-                label: 'Machines',
-                onTap: onMachines,
-              ),
-              _DashboardAction(
-                icon: Icons.folder_outlined,
-                color: const Color(0xFF258DD8),
-                label: 'Familles',
-                onTap: onCategories,
-              ),
-              _DashboardAction(
-                icon: user.canValidate
-                    ? Icons.verified_user_outlined
-                    : Icons.fact_check_outlined,
-                color: const Color(0xFF38A8E6),
-                label: user.canValidate ? 'Validations' : 'Contrôles',
-                onTap: user.canValidate ? onValidation : onReviews,
-              ),
-              if (user.isAdmin)
+            },
+          ),
+          const SizedBox(height: 19),
+          Text(
+            'Accès rapide',
+            style: Theme.of(context).textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -.4),
+          ),
+          const SizedBox(height: 12),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final columns = constraints.maxWidth >= (desktop ? 940 : 670)
+                  ? 6
+                  : constraints.maxWidth >= 670
+                  ? 3
+                  : constraints.maxWidth >= 290
+                  ? 2
+                  : 1;
+              const gap = 10.0;
+              final width =
+                  (constraints.maxWidth - gap * (columns - 1)) / columns;
+              final shortcuts = [
                 _DashboardAction(
-                  icon: Icons.groups_outlined,
-                  color: const Color(0xFF668AEF),
-                  label: 'Équipe',
-                  onTap: onTeam,
+                  icon: Icons.inventory_2_outlined,
+                  color: const Color(0xFF1A95E8),
+                  label: 'Produits',
+                  onTap: onProducts,
                 ),
-            ];
-            return Wrap(
-              spacing: gap,
-              runSpacing: gap,
-              children: [
-                for (final shortcut in shortcuts)
-                  SizedBox(
-                    width: width,
-                    child: _DashboardAction(
-                      icon: shortcut.icon,
-                      color: shortcut.color,
-                      label: shortcut.label,
-                      onTap: shortcut.onTap,
-                      desktop: desktop,
-                    ),
+                _DashboardAction(
+                  icon: Icons.warehouse_outlined,
+                  color: const Color(0xFF2FB9E8),
+                  label: 'Stock',
+                  onTap: onStock,
+                ),
+                _DashboardAction(
+                  icon: Icons.precision_manufacturing_outlined,
+                  color: const Color(0xFF4A7EEA),
+                  label: 'Machines',
+                  onTap: onMachines,
+                ),
+                _DashboardAction(
+                  icon: Icons.folder_outlined,
+                  color: const Color(0xFF258DD8),
+                  label: 'Familles',
+                  onTap: onCategories,
+                ),
+                _DashboardAction(
+                  icon: user.canValidate
+                      ? Icons.verified_user_outlined
+                      : Icons.fact_check_outlined,
+                  color: const Color(0xFF38A8E6),
+                  label: user.canValidate ? 'Validations' : 'Contrôles',
+                  onTap: user.canValidate ? onValidation : onReviews,
+                ),
+                if (user.isAdmin)
+                  _DashboardAction(
+                    icon: Icons.groups_outlined,
+                    color: const Color(0xFF668AEF),
+                    label: 'Équipe',
+                    onTap: onTeam,
                   ),
-              ],
-            );
-          },
-        ),
-      ],
+              ];
+              return Wrap(
+                spacing: gap,
+                runSpacing: gap,
+                children: [
+                  for (final shortcut in shortcuts)
+                    SizedBox(
+                      width: width,
+                      child: _DashboardAction(
+                        icon: shortcut.icon,
+                        color: shortcut.color,
+                        label: shortcut.label,
+                        onTap: shortcut.onTap,
+                        desktop: desktop,
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+        ],
       ),
     );
   }
+}
+
+/// Purpose-built midnight presentation.  This is not a colour-filtered copy
+/// of the light dashboard: the panels, typography and reflections are drawn
+/// for the dark material itself.
+// ignore: unused_element
+class _DarkDashboardPage extends StatelessWidget {
+  const _DarkDashboardPage({
+    required this.user,
+    required this.productCount,
+    required this.machineCount,
+    required this.pendingReviews,
+    required this.onProducts,
+    required this.onStock,
+    required this.onMachines,
+    required this.onTeam,
+    required this.onValidation,
+    required this.onCategories,
+    required this.onReviews,
+    required this.forceDesktopLayout,
+  });
+
+  final AppUser user;
+  final int productCount;
+  final int machineCount;
+  final int pendingReviews;
+  final VoidCallback onProducts;
+  final VoidCallback onStock;
+  final VoidCallback onMachines;
+  final VoidCallback onTeam;
+  final VoidCallback onValidation;
+  final VoidCallback onCategories;
+  final VoidCallback onReviews;
+  final bool forceDesktopLayout;
+
+  @override
+  Widget build(BuildContext context) {
+    final desktop = forceDesktopLayout ||
+        (_usesWorkspaceRail(context) && MediaQuery.sizeOf(context).width >= 1100);
+    final name = user.fullName.trim().split(RegExp(r'\s+')).first;
+    final actions = <({IconData icon, String label, Color accent, VoidCallback tap})>[
+      (icon: Icons.inventory_2_outlined, label: 'Produits', accent: const Color(0xFFE65CFF), tap: onProducts),
+      (icon: Icons.warehouse_outlined, label: 'Stock', accent: const Color(0xFFCBADFF), tap: onStock),
+      (icon: Icons.precision_manufacturing_outlined, label: 'Machines', accent: const Color(0xFFF2A4FF), tap: onMachines),
+      (icon: Icons.folder_outlined, label: 'Familles', accent: const Color(0xFFFFC18F), tap: onCategories),
+      (icon: user.canValidate ? Icons.verified_user_outlined : Icons.fact_check_outlined, label: user.canValidate ? 'Validations' : 'Contrôles', accent: const Color(0xFFF3D3FF), tap: user.canValidate ? onValidation : onReviews),
+      if (user.isAdmin) (icon: Icons.groups_outlined, label: 'Équipe', accent: const Color(0xFFFF80EC), tap: onTeam),
+    ];
+    return Page(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = desktop && constraints.maxWidth >= 820;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (desktop) _DarkDashboardIntro(firstName: name),
+              if (desktop) const SizedBox(height: 15),
+              if (wide)
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 13, child: _DarkOverviewCard(firstName: name, machines: machineCount)),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      flex: 9,
+                      child: Column(
+                        children: [
+                          _DarkMetric(icon: Icons.view_in_ar_outlined, value: productCount, label: 'Produits', accent: const Color(0xFFE95CFF)),
+                          const SizedBox(height: 12),
+                          _DarkMetric(icon: Icons.schedule_rounded, value: pendingReviews, label: 'Contrôles en attente', accent: const Color(0xFFFF9D68)),
+                        ],
+                      ),
+                    ),
+                  ],
+                )
+              else ...[
+                _DarkOverviewCard(firstName: name, machines: machineCount),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(child: _DarkMetric(icon: Icons.view_in_ar_outlined, value: productCount, label: 'Produits', accent: const Color(0xFFE95CFF))),
+                    const SizedBox(width: 10),
+                    Expanded(child: _DarkMetric(icon: Icons.schedule_rounded, value: pendingReviews, label: 'Contrôles en attente', accent: const Color(0xFFFF9D68))),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 21),
+              const Text('Accès rapide', style: TextStyle(color: Color(0xFFFFF5FF), fontSize: 20, fontWeight: FontWeight.w800, letterSpacing: -.5)),
+              const SizedBox(height: 11),
+              LayoutBuilder(
+                builder: (context, quick) {
+                  final columns = wide ? min(6, actions.length) : 2;
+                  const gap = 10.0;
+                  final width = (quick.maxWidth - (columns - 1) * gap) / columns;
+                  return Wrap(
+                    spacing: gap,
+                    runSpacing: gap,
+                    children: [
+                      for (final action in actions)
+                        SizedBox(
+                          width: width,
+                          child: _DarkQuickAction(
+                            icon: action.icon,
+                            label: action.label,
+                            accent: action.accent,
+                            onTap: action.tap,
+                            desktop: wide,
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DarkGlassPanel extends StatelessWidget {
+  const _DarkGlassPanel({
+    super.key,
+    required this.child,
+    this.radius = 26,
+    this.accent = const Color(0xFFE9B1FF),
+    this.padding,
+    this.onTap,
+  });
+
+  final Widget child;
+  final double radius;
+  final Color accent;
+  final EdgeInsetsGeometry? padding;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final panel = Container(
+      padding: padding,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(color: const Color(0xFFF4C8FF).withValues(alpha: .58), width: 1.1),
+        boxShadow: [
+          BoxShadow(color: accent.withValues(alpha: .23), blurRadius: 24, spreadRadius: -5, offset: const Offset(0, 10)),
+          const BoxShadow(color: Color(0xA8000010), blurRadius: 19, offset: Offset(0, 12)),
+        ],
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color.lerp(const Color(0xFF6A2788), accent, .15)!.withValues(alpha: .78),
+            const Color(0xD01C062A),
+            const Color(0xE4380B51),
+          ],
+          stops: const [0, .44, 1],
+        ),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(radius - 1),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: const Alignment(-.9, -1),
+                      end: const Alignment(.55, .2),
+                      colors: [Colors.white.withValues(alpha: .27), Colors.white.withValues(alpha: .035), Colors.transparent],
+                      stops: const [0, .18, .58],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // The content must be a normal Stack child.  When it is wrapped
+            // in Positioned.fill it no longer participates in layout; a
+            // panel made only of positioned children receives a zero size on
+            // Windows. That was why Accueil looked completely empty.
+            child,
+          ],
+        ),
+      ),
+    );
+    if (onTap == null) return panel;
+    return Material(color: Colors.transparent, child: InkWell(borderRadius: BorderRadius.circular(radius), onTap: onTap, splashFactory: NoSplash.splashFactory, child: panel));
+  }
+}
+
+class _DarkDashboardIntro extends StatelessWidget {
+  const _DarkDashboardIntro({required this.firstName});
+  final String firstName;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(8, 3, 8, 2),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('VUE D’ENSEMBLE', style: TextStyle(color: Color(0xFFE78BFF), fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 2.2)),
+        const SizedBox(height: 6),
+        Text(firstName.isEmpty ? 'Bonjour' : 'Bonjour, $firstName 👋', style: const TextStyle(color: Color(0xFFFFF7FF), fontSize: 31, height: 1, fontWeight: FontWeight.w800, letterSpacing: -1.1)),
+        const SizedBox(height: 7),
+        const Text('Voici un aperçu de votre atelier aujourd’hui.', style: TextStyle(color: Color(0xFFD8B6E5), fontSize: 14, fontWeight: FontWeight.w600)),
+      ],
+    ),
+  );
+}
+
+class _DarkOverviewCard extends StatelessWidget {
+  const _DarkOverviewCard({required this.firstName, required this.machines});
+  final String firstName;
+  final int machines;
+
+  @override
+  Widget build(BuildContext context) => _DarkGlassPanel(
+    key: const ValueKey('dark-dashboard-overview'),
+    radius: 31,
+    accent: const Color(0xFFD94CFF),
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 211),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned(right: -28, bottom: -53, child: _DarkOrbitalGear()),
+          Positioned(left: 20, top: 16, child: _DarkGlassLabel()),
+          Positioned(
+            left: 21,
+            bottom: 20,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (MediaQuery.sizeOf(context).width < 620) ...[
+                  Text(firstName.isEmpty ? 'Bonjour' : 'Bonjour, $firstName', style: const TextStyle(color: Colors.white, fontSize: 25, fontWeight: FontWeight.w800, letterSpacing: -.8)),
+                  const SizedBox(height: 15),
+                ],
+                ShaderMask(
+                  shaderCallback: (rect) => const LinearGradient(colors: [Color(0xFFF5C9FF), Color(0xFFC253FF), Color(0xFFEF6CFF)]).createShader(rect),
+                  child: Text('$machines', style: const TextStyle(color: Colors.white, fontSize: 57, height: .9, fontWeight: FontWeight.w800, letterSpacing: -3)),
+                ),
+                const SizedBox(height: 7),
+                const Text('Machines de l’atelier', style: TextStyle(color: Color(0xFFF1DDF7), fontSize: 13, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _DarkGlassLabel extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: Colors.white.withValues(alpha: .32)),
+      gradient: LinearGradient(colors: [const Color(0xD9C65DFF), const Color(0x803D1459)]),
+    ),
+    child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.grid_view_rounded, color: Colors.white, size: 13), SizedBox(width: 6), Text('VUE D’ENSEMBLE', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.05))]),
+  );
+}
+
+class _DarkOrbitalGear extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 186,
+    height: 186,
+    child: Stack(alignment: Alignment.center, children: [
+      Transform.rotate(angle: -.48, child: Container(width: 176, height: 112, decoration: BoxDecoration(borderRadius: BorderRadius.circular(70), border: Border.all(color: const Color(0xFFD99CFF).withValues(alpha: .54), width: 1.2), gradient: RadialGradient(colors: [const Color(0x559D2FE4), Colors.transparent])))),
+      Transform.rotate(angle: .42, child: Container(width: 102, height: 102, decoration: BoxDecoration(borderRadius: BorderRadius.circular(34), border: Border.all(color: const Color(0xFFF6D8FF).withValues(alpha: .7), width: 1.2), boxShadow: [BoxShadow(color: const Color(0xFFDF54FF).withValues(alpha: .36), blurRadius: 24)], gradient: const LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFFB34BE1), Color(0xFF4D126F), Color(0xFF9C3FD3)])), child: Transform.rotate(angle: -.42, child: const Icon(Icons.settings_outlined, color: Colors.white, size: 42)))),
+    ]),
+  );
+}
+
+class _DarkMetric extends StatelessWidget {
+  const _DarkMetric({required this.icon, required this.value, required this.label, required this.accent});
+  final IconData icon;
+  final int value;
+  final String label;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) => _DarkGlassPanel(
+    radius: 25,
+    accent: accent,
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    child: SizedBox(
+      height: 64,
+      child: Row(children: [
+        _DarkIcon(icon: icon, color: accent),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text('$value', style: const TextStyle(color: Colors.white, fontSize: 26, height: .96, fontWeight: FontWeight.w800, fontFeatures: [FontFeature.tabularFigures()])),
+          const SizedBox(height: 4),
+          Text(label, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xFFF0DDF5), fontSize: 11, height: 1.05, fontWeight: FontWeight.w600)),
+        ])),
+      ]),
+    ),
+  );
+}
+
+class _DarkQuickAction extends StatelessWidget {
+  const _DarkQuickAction({required this.icon, required this.label, required this.accent, required this.onTap, required this.desktop});
+  final IconData icon;
+  final String label;
+  final Color accent;
+  final VoidCallback onTap;
+  final bool desktop;
+
+  @override
+  Widget build(BuildContext context) => _DarkGlassPanel(
+    radius: desktop ? 25 : 23,
+    accent: accent,
+    onTap: onTap,
+    padding: EdgeInsets.symmetric(horizontal: desktop ? 11 : 12, vertical: desktop ? 16 : 9),
+    child: desktop
+        ? SizedBox(height: 108, child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [_DarkIcon(icon: icon, color: accent, size: 44), const SizedBox(height: 10), Text(label, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800)), const SizedBox(height: 7), const Icon(Icons.arrow_forward_rounded, color: Color(0xFFEEDCFA), size: 16)]))
+        : SizedBox(height: 56, child: Row(children: [_DarkIcon(icon: icon, color: accent, size: 36), const SizedBox(width: 10), Expanded(child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800))), const Icon(Icons.chevron_right_rounded, color: Color(0xFFF2DDFC), size: 18)])),
+  );
+}
+
+class _DarkIcon extends StatelessWidget {
+  const _DarkIcon({required this.icon, required this.color, this.size = 40});
+  final IconData icon;
+  final Color color;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: size,
+    height: size,
+    decoration: BoxDecoration(borderRadius: BorderRadius.circular(size * .31), border: Border.all(color: Colors.white.withValues(alpha: .38)), boxShadow: [BoxShadow(color: color.withValues(alpha: .44), blurRadius: 14)], gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color.lerp(color, Colors.white, .33)!, color.withValues(alpha: .76), const Color(0xFF42105C)])),
+    child: Icon(icon, size: size * .55, color: Colors.white, shadows: const [Shadow(color: Color(0x990E0018), blurRadius: 4, offset: Offset(0, 2))]),
+  );
 }
 
 class MobileGlassNavigation extends StatelessWidget {
@@ -8697,24 +9711,14 @@ class _WindowsWorkspaceShellState extends State<WindowsWorkspaceShell> {
               ),
               const SizedBox(height: 12),
               Expanded(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 380),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  transitionBuilder: (page, animation) => FadeTransition(
-                    opacity: animation,
-                    child: SlideTransition(
-                      position: Tween<Offset>(
-                        begin: const Offset(.022, 0),
-                        end: Offset.zero,
-                      ).animate(animation),
-                      child: page,
-                    ),
-                  ),
-                  child: KeyedSubtree(
-                    key: ValueKey(widget.section),
-                    child: widget.child,
-                  ),
+                // A previous AnimatedSwitcher occasionally retained an
+                // outgoing transparent page on Windows after a quick click,
+                // leaving the workspace apparently empty.  The new page is
+                // deliberately installed immediately; individual controls
+                // still keep their own small press animations.
+                child: KeyedSubtree(
+                  key: ValueKey(widget.section),
+                  child: widget.child,
                 ),
               ),
             ],
@@ -8738,7 +9742,9 @@ class _WindowsWorkspaceShellState extends State<WindowsWorkspaceShell> {
           user: widget.user,
           onOpenTeam: closeThen(widget.onOpenTeam),
           onOpenBackups: closeThen(widget.onOpenBackups),
-          onOpenExport: widget.canExport ? closeThen(widget.onOpenExport) : null,
+          onOpenExport: widget.canExport
+              ? closeThen(widget.onOpenExport)
+              : null,
           onOpenDeveloper: widget.user.isDeveloper
               ? closeThen(widget.onOpenDeveloper)
               : null,
@@ -8782,21 +9788,27 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
   }
 
   @override
-  Widget build(BuildContext context) => CallbackShortcuts(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF5FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFDDBFE8) : AppPalette.muted;
+    return CallbackShortcuts(
     bindings: {
       const SingleActivator(LogicalKeyboardKey.keyK, control: true):
           searchFocus.requestFocus,
     },
     child: Focus(
-      autofocus: true,
+      // Do not steal keyboard focus during login/page changes on Windows.
+      // The previous autofocus could race the native text-input channel.
+      autofocus: false,
       child: Glass(
         radius: 28,
         accent: AppPalette.primary,
         frosted: true,
         // A lighter lens makes the wallpaper visibly refract under the
         // desktop header instead of reading as a plain white panel.
-        depth: 1.72,
-        opacity: .70,
+        depth: 1.87,
+        opacity: .80,
         padding: const EdgeInsets.fromLTRB(18, 8, 10, 8),
         child: Row(
           children: [
@@ -8810,16 +9822,17 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
                     widget.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 20,
                       letterSpacing: -.6,
                       fontWeight: FontWeight.w800,
+                      color: foreground,
                     ),
                   ),
                   Text(
                     widget.user.effectiveRole.label,
-                    style: const TextStyle(
-                      color: AppPalette.muted,
+                    style: TextStyle(
+                      color: muted,
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
                     ),
@@ -8839,9 +9852,13 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
                       style: const TextStyle(fontSize: 13),
                       decoration: InputDecoration(
                         isDense: true,
+                        filled: true,
+                        fillColor: dark
+                            ? const Color(0x55340B50)
+                            : AppPalette.surface.withValues(alpha: .48),
                         hintText: 'Rechercher un produit, une machine, …',
-                        hintStyle: const TextStyle(
-                          color: AppPalette.muted,
+                        hintStyle: TextStyle(
+                          color: muted,
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                         ),
@@ -8852,18 +9869,26 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
                             margin: const EdgeInsets.all(7),
                             alignment: Alignment.center,
                             decoration: BoxDecoration(
-                              color: AppPalette.primary.withValues(alpha: .18),
+                                color: (dark
+                                        ? const Color(0xFFCA69EF)
+                                        : AppPalette.primary)
+                                    .withValues(alpha: .18),
                               borderRadius: BorderRadius.circular(7),
                               border: Border.all(
-                                color: AppPalette.primary.withValues(alpha: .42),
+                                color: (dark
+                                        ? const Color(0xFFCA69EF)
+                                        : AppPalette.primary)
+                                    .withValues(
+                                  alpha: .42,
+                                ),
                               ),
                             ),
-                            child: const Text(
+                            child: Text(
                               'Ctrl K',
                               style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w800,
-                                color: AppPalette.text,
+                                color: foreground,
                               ),
                             ),
                           ),
@@ -8894,19 +9919,39 @@ class _WindowsTopBarState extends State<_WindowsTopBar> {
               ),
             ],
             const SizedBox(width: 7),
+            Builder(
+              builder: (context) {
+                final appearance = ForageAppearanceScope.of(context);
+                return _DashboardHeaderButton(
+                  label: appearance.isDark ? 'Mode clair' : 'Mode sombre',
+                  onTap: appearance.toggle,
+                  child: Icon(
+                    appearance.isDark
+                        ? Icons.light_mode_rounded
+                        : Icons.dark_mode_rounded,
+                    size: 20,
+                  ),
+                );
+              },
+            ),
+            const SizedBox(width: 7),
             _DashboardHeaderButton(
               label: 'Profil',
               onTap: widget.onOpenProfile,
               child: Text(
                 widget.user.fullName.characters.first.toUpperCase(),
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
           ],
         ),
       ),
     ),
-  );
+    );
+  }
 }
 
 class _WindowsNavigationRail extends StatelessWidget {
@@ -8936,156 +9981,151 @@ class _WindowsNavigationRail extends StatelessWidget {
   ];
 
   @override
-  Widget build(BuildContext context) => AnimatedContainer(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final muted = dark ? const Color(0xFFDEC0E9) : AppPalette.muted;
+    return AnimatedContainer(
     duration: MediaQuery.disableAnimationsOf(context)
         ? Duration.zero
         : const Duration(milliseconds: 280),
     curve: Curves.easeOutCubic,
     width: compact ? 76 : 246,
     margin: const EdgeInsets.fromLTRB(14, 12, 0, 18),
-    child: DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: AppPalette.line.withValues(alpha: .72)),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            AppPalette.surface.withValues(alpha: .78),
-            const Color(0xFFB9E0FA).withValues(alpha: .62),
-            AppPalette.surfaceRaised.withValues(alpha: .70),
+    child: Glass(
+      radius: 28,
+      depth: 1.75,
+      opacity: .82,
+      frosted: true,
+      padding: EdgeInsets.fromLTRB(
+          compact ? 8 : 12,
+          12,
+          compact ? 8 : 12,
+          12,
+        ),
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _DesktopBrand(compact: compact, onToggle: onToggle),
+            SizedBox(height: compact ? 20 : 26),
+            if (!compact) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Text(
+                  'ESPACE DE TRAVAIL',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w900,
+                    color: muted,
+                    letterSpacing: 1.25,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+            ..._entries.indexed
+                .where((entry) {
+                  final index = entry.$1;
+                  if (index == 4 && !user.isAdmin) return false;
+                  return user.canAccess(AppPage.values[index]);
+                })
+                .map(
+                  (entry) => _DesktopNavigationButton(
+                    entry: entry.$2,
+                    selected: selectedIndex == entry.$1,
+                    compact: compact,
+                    onTap: () => onSelected(entry.$1),
+                  ),
+                ),
+            const Spacer(),
+            Glass(
+              radius: 18,
+              depth: 1.32,
+              opacity: .72,
+              padding: EdgeInsets.all(compact ? 7 : 12),
+              child: compact
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircleAvatar(
+                          radius: 17,
+                          backgroundColor: dark
+                              ? const Color(0xFF61247F)
+                              : AppPalette.desktopAccentSoft,
+                          foregroundColor: dark
+                              ? const Color(0xFFFFE9FF)
+                              : AppPalette.desktopAccent,
+                          child: Text(
+                            user.fullName.substring(0, 1).toUpperCase(),
+                            style: const TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        IconButton(
+                          tooltip: 'Déconnexion',
+                          onPressed: onLogout,
+                          icon: const Icon(Icons.logout_rounded, size: 18),
+                          color: muted,
+                        ),
+                      ],
+                    )
+                  : Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 17,
+                          backgroundColor: dark
+                              ? const Color(0xFF61247F)
+                              : AppPalette.desktopAccentSoft,
+                          foregroundColor: dark
+                              ? const Color(0xFFFFE9FF)
+                              : AppPalette.desktopAccent,
+                          child: Text(
+                            user.fullName.substring(0, 1).toUpperCase(),
+                            style: const TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                        ),
+                        const SizedBox(width: 9),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                user.fullName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                  color: dark
+                                      ? const Color(0xFFFFF5FF)
+                                      : AppPalette.text,
+                                ),
+                              ),
+                              Text(
+                                user.effectiveRole.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: muted,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Déconnexion',
+                          onPressed: onLogout,
+                          icon: const Icon(Icons.logout_rounded, size: 18),
+                          color: muted,
+                        ),
+                      ],
+                    ),
+            ),
           ],
         ),
-        boxShadow: [
-          BoxShadow(
-            color: AppPalette.primary.withValues(alpha: .12),
-            blurRadius: 24,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(
-          compact ? 8 : 12,
-          12,
-          compact ? 8 : 12,
-          12,
-        ),
-        child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-        _DesktopBrand(compact: compact, onToggle: onToggle),
-        SizedBox(height: compact ? 20 : 26),
-        if (!compact) ...[
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 10),
-            child: Text(
-              'ESPACE DE TRAVAIL',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w900,
-                color: AppPalette.muted,
-                letterSpacing: 1.25,
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-        ],
-        ..._entries.indexed
-            .where((entry) {
-              final index = entry.$1;
-              if (index == 4 && !user.isAdmin) return false;
-              return user.canAccess(AppPage.values[index]);
-            })
-            .map(
-              (entry) => _DesktopNavigationButton(
-                entry: entry.$2,
-                selected: selectedIndex == entry.$1,
-                compact: compact,
-                onTap: () => onSelected(entry.$1),
-              ),
-            ),
-        const Spacer(),
-        Container(
-          padding: EdgeInsets.all(compact ? 7 : 12),
-          decoration: BoxDecoration(
-            color: AppPalette.surface.withValues(alpha: .70),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: AppPalette.line.withValues(alpha: .75)),
-          ),
-          child: compact
-              ? Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircleAvatar(
-                      radius: 17,
-                      backgroundColor: AppPalette.desktopAccentSoft,
-                      foregroundColor: AppPalette.desktopAccent,
-                      child: Text(
-                        user.fullName.substring(0, 1).toUpperCase(),
-                        style: const TextStyle(fontWeight: FontWeight.w900),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    IconButton(
-                      tooltip: 'Déconnexion',
-                      onPressed: onLogout,
-                      icon: const Icon(Icons.logout_rounded, size: 18),
-                      color: AppPalette.muted,
-                    ),
-                  ],
-                )
-              : Row(
-                  children: [
-              CircleAvatar(
-                radius: 17,
-                backgroundColor: AppPalette.desktopAccentSoft,
-                foregroundColor: AppPalette.desktopAccent,
-                child: Text(
-                  user.fullName.substring(0, 1).toUpperCase(),
-                  style: const TextStyle(fontWeight: FontWeight.w900),
-                ),
-              ),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      user.fullName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    Text(
-                      user.effectiveRole.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppPalette.muted,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                tooltip: 'Déconnexion',
-                onPressed: onLogout,
-                icon: const Icon(Icons.logout_rounded, size: 18),
-                color: AppPalette.muted,
-              ),
-                  ],
-                ),
-        ),
-        ],
-        ),
-      ),
     ),
-  );
+    );
+  }
 }
 
 class _DesktopBrand extends StatelessWidget {
@@ -9093,27 +10133,29 @@ class _DesktopBrand extends StatelessWidget {
   final bool compact;
   final VoidCallback onToggle;
 
-  Widget _mark() => Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: AppPalette.desktopAccent,
-          borderRadius: BorderRadius.circular(13),
-          boxShadow: [
-            BoxShadow(
-              color: AppPalette.desktopAccent.withValues(alpha: .26),
-              blurRadius: 18,
-            ),
-          ],
-        ),
-        child: const Icon(
+  Widget _mark(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Glass(
+      radius: 13,
+      accent: scheme.primary,
+      depth: 1.44,
+      child: SizedBox.square(
+        dimension: 40,
+        child: Icon(
           Icons.precision_manufacturing_rounded,
-          color: AppPalette.background,
+          color: scheme.onSurface,
         ),
-      );
+      ),
+    );
+  }
 
   @override
-  Widget build(BuildContext context) => Glass(
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF5FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFE1BEEB) : AppPalette.muted;
+    final accent = dark ? const Color(0xFFE77BFF) : AppPalette.desktopAccent;
+    return Glass(
     radius: 20,
     accent: AppPalette.primary,
     frosted: true,
@@ -9121,59 +10163,59 @@ class _DesktopBrand extends StatelessWidget {
     opacity: .72,
     padding: const EdgeInsets.all(6),
     child: compact
-      ? SizedBox(
-          height: 84,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        ? Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Align(
-                alignment: Alignment.centerRight,
-                child: IconButton(
-                  tooltip: 'Agrandir le menu',
-                  onPressed: onToggle,
-                  icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
-                  iconSize: 16,
-                  color: AppPalette.muted,
+              IconButton(
+                tooltip: 'Agrandir le menu',
+                onPressed: onToggle,
+                icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
+                iconSize: 16,
+                color: muted,
+              ),
+              const SizedBox(height: 4),
+              _mark(context),
+            ],
+          )
+        : Row(
+            children: [
+              _mark(context),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'FORAGE',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w900,
+                        color: foreground,
+                      ),
+                    ),
+                    Text(
+                      'WORKSPACE',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: accent,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.3,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              _mark(),
+              IconButton(
+                tooltip: 'Réduire le menu',
+                onPressed: onToggle,
+                icon: const Icon(Icons.keyboard_double_arrow_left_rounded),
+                iconSize: 16,
+                color: muted,
+              ),
             ],
           ),
-        )
-      : Row(
-          children: [
-            _mark(),
-            const SizedBox(width: 10),
-            const Expanded(
-              child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'FORAGE',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
-            ),
-            Text(
-              'WORKSPACE',
-              style: TextStyle(
-                fontSize: 10,
-                color: AppPalette.desktopAccent,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 1.3,
-              ),
-            ),
-          ],
-        ),
-            ),
-            IconButton(
-              tooltip: 'Réduire le menu',
-              onPressed: onToggle,
-              icon: const Icon(Icons.keyboard_double_arrow_left_rounded),
-              iconSize: 16,
-              color: AppPalette.muted,
-            ),
-          ],
-        ),
-  );
+    );
+  }
 }
 
 class _DesktopNavigationEntry {
@@ -9197,74 +10239,84 @@ class _DesktopNavigationButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    final foreground = dark ? const Color(0xFFFFF6FF) : AppPalette.text;
+    final muted = dark ? const Color(0xFFE2C4ED) : AppPalette.muted;
+    final accent = dark ? const Color(0xFFE65CFF) : AppPalette.desktopAccent;
     final button = Padding(
       padding: const EdgeInsets.only(bottom: 5),
       child: _LiquidTapTarget(
-      radius: 14,
-      selected: selected,
-      accent: selected ? AppPalette.primary : AppPalette.secondary,
-      idleOpacity: .16,
-      selectedOpacity: .72,
-      onTap: onTap,
-      child: Padding(
-        padding: compact
-            ? const EdgeInsets.symmetric(vertical: 11)
-            : const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        child: compact
-            ? Center(
-                child: AnimatedScale(
-                  duration: const Duration(milliseconds: 240),
-                  curve: Curves.easeOutBack,
-                  scale: selected ? 1.1 : 1,
-                  child: Icon(
-                    entry.icon,
-                    color: selected
-                        ? AppPalette.desktopAccent
-                        : AppPalette.muted,
-                    size: 21,
+        radius: 14,
+        selected: selected,
+        accent: selected
+            ? accent
+            : (dark ? const Color(0xFF9868AA) : AppPalette.secondary),
+        idleOpacity: .49,
+        selectedOpacity: .86,
+        onTap: onTap,
+        child: Padding(
+          padding: compact
+              ? const EdgeInsets.symmetric(vertical: 11)
+              : const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          child: compact
+              ? Center(
+                  child: AnimatedScale(
+                    duration: const Duration(milliseconds: 240),
+                    curve: Curves.easeOutBack,
+                    scale: selected ? 1.1 : 1,
+                    child: Icon(
+                      entry.icon,
+                      color: selected
+                          ? accent
+                          : muted,
+                      size: 21,
+                    ),
                   ),
+                )
+              : Row(
+                  children: [
+                    AnimatedScale(
+                      duration: const Duration(milliseconds: 240),
+                      curve: Curves.easeOutBack,
+                      scale: selected ? 1.08 : 1,
+                      child: Icon(
+                        entry.icon,
+                        color: selected
+                            ? accent
+                            : muted,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    AnimatedOpacity(
+                      duration: const Duration(milliseconds: 180),
+                      opacity: selected ? 1 : .86,
+                      child: Text(
+                        entry.label,
+                        style: TextStyle(
+                          color: selected ? foreground : muted,
+                          fontWeight: selected
+                              ? FontWeight.w900
+                              : FontWeight.w700,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    AnimatedOpacity(
+                      duration: const Duration(milliseconds: 160),
+                      opacity: selected ? 1 : 0,
+                      child: Container(
+                        width: 6,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: accent,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              )
-            : Row(
-          children: [
-            AnimatedScale(
-              duration: const Duration(milliseconds: 240),
-              curve: Curves.easeOutBack,
-              scale: selected ? 1.08 : 1,
-              child: Icon(
-                entry.icon,
-                color: selected ? AppPalette.desktopAccent : AppPalette.muted,
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 12),
-            AnimatedOpacity(
-              duration: const Duration(milliseconds: 180),
-              opacity: selected ? 1 : .86,
-              child: Text(
-                entry.label,
-                style: TextStyle(
-                  color: selected ? AppPalette.text : AppPalette.muted,
-                  fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
-                  fontSize: 13,
-                ),
-              ),
-            ),
-            const Spacer(),
-            AnimatedOpacity(
-              duration: const Duration(milliseconds: 160),
-              opacity: selected ? 1 : 0,
-              child: Container(
-                width: 6,
-                height: 6,
-                decoration: const BoxDecoration(
-                  color: AppPalette.desktopAccent,
-                  shape: BoxShape.circle,
-                ),
-              ),
-            ),
-          ],
-              ),
         ),
       ),
     );
@@ -9285,7 +10337,10 @@ class Page extends StatelessWidget {
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: isWindows ? 1260 : 1050),
-          child: AppEntrance(child: child),
+          // Windows section changes are immediate. Besides feeling more
+          // responsive, this prevents a failed entrance animation from
+          // leaving the desktop content at zero opacity.
+          child: isWindows ? child : AppEntrance(child: child),
         ),
       ),
     );
@@ -9306,44 +10361,48 @@ class SectionHero extends StatelessWidget {
   final Widget? trailing;
 
   @override
-  Widget build(BuildContext context) => Glass(
-    padding: const EdgeInsets.all(17),
-    radius: 26,
-    accent: AppPalette.primary,
-    frosted: true,
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _AtelierIcon(icon, size: 47),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w900,
-                  color: AppPalette.text,
+  Widget build(BuildContext context) {
+    final foreground = _atelierForeground(context);
+    final muted = _atelierMuted(context);
+    return Glass(
+      padding: const EdgeInsets.all(17),
+      radius: 26,
+      accent: AppPalette.primary,
+      frosted: true,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _AtelierIcon(icon, size: 47),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                    color: foreground,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: const TextStyle(
-                  color: AppPalette.muted,
-                  height: 1.35,
-                  fontWeight: FontWeight.w600,
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: muted,
+                    height: 1.35,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        if (trailing != null) ...[const SizedBox(width: 8), trailing!],
-      ],
-    ),
-  );
+          if (trailing != null) ...[const SizedBox(width: 8), trailing!],
+        ],
+      ),
+    );
+  }
 }
 
 class ManagementScreen extends StatelessWidget {
@@ -9775,7 +10834,7 @@ class ProductCard extends StatelessWidget {
             const SizedBox(height: 3),
             Text(
               productSpecification(product),
-              style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+              style: TextStyle(color: _atelierMuted(context), fontSize: 12),
             ),
           ],
         ),
@@ -9796,19 +10855,20 @@ class ProductImage extends StatelessWidget {
   final bool circular;
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final image = SizedBox(
       height: height,
       width: circular ? height : double.infinity,
       child: product.image == null
           ? DecoratedBox(
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [AppPalette.desktopAccentSoft, AppPalette.surface],
+                  colors: [scheme.primaryContainer, scheme.surface],
                 ),
               ),
-              child: const Icon(
+              child: Icon(
                 Icons.layers_rounded,
-                color: AppPalette.primary,
+                color: scheme.primary,
                 size: 44,
               ),
             )
@@ -9832,14 +10892,7 @@ class CategoryImage extends StatelessWidget {
       width: size,
       height: size,
       child: category.image.isEmpty
-          ? const DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [AppPalette.surfaceRaised, AppPalette.background],
-                ),
-              ),
-              child: Icon(Icons.category_rounded, color: AppPalette.secondary),
-            )
+          ? _AtelierIcon(Icons.category_rounded, size: size)
           : Image.memory(category.image, fit: BoxFit.cover),
     ),
   );
@@ -9965,7 +11018,7 @@ class ProductDetailsPage extends StatelessWidget {
                             const SizedBox(height: 4),
                             Text(
                               product.kind.label,
-                              style: const TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                             if (product.reference.isNotEmpty) ...[
                               const SizedBox(height: 10),
@@ -10109,10 +11162,10 @@ class ProductDetailsPage extends StatelessWidget {
                                 ),
                               ),
                               const SizedBox(height: 6),
-                              const Text(
+                              Text(
                                 'Ces dimensions ne figurent pas dans la liste générale. Leur stock est inclus dans le total ci-dessus.',
                                 style: TextStyle(
-                                  color: AppPalette.muted,
+                                  color: _atelierMuted(context),
                                   fontSize: 12,
                                 ),
                               ),
@@ -10181,9 +11234,9 @@ class _DerivedProductTile extends StatelessWidget {
       child: Ink(
         padding: const EdgeInsets.all(9),
         decoration: BoxDecoration(
-          color: AppPalette.surfaceRaised,
+          color: Theme.of(context).colorScheme.surfaceContainerHigh,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppPalette.line),
+          border: Border.all(color: Theme.of(context).colorScheme.outline),
         ),
         child: Row(
           children: [
@@ -10212,7 +11265,7 @@ class _DerivedProductTile extends StatelessWidget {
                 fontWeight: FontWeight.w900,
               ),
             ),
-            const Icon(Icons.chevron_right_rounded, color: AppPalette.muted),
+            Icon(Icons.chevron_right_rounded, color: _atelierMuted(context)),
           ],
         ),
       ),
@@ -10329,11 +11382,11 @@ class AnalyticsPage extends StatelessWidget {
                   children: [
                     const _AtelierBackButton(),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Text(
                         'Analyses',
                         style: TextStyle(
-                          color: AppPalette.text,
+                          color: _atelierForeground(context),
                           fontSize: 23,
                           fontWeight: FontWeight.w900,
                         ),
@@ -10357,25 +11410,25 @@ class AnalyticsPage extends StatelessWidget {
                           children: [
                             Row(
                               children: [
-                                const _AtelierIcon(
+                                _AtelierIcon(
                                   Icons.insights_rounded,
-                                  color: AppPalette.secondary,
+                                  color: Theme.of(context).colorScheme.secondary,
                                 ),
                                 const Spacer(),
                                 Text(
                                   '$available produits disponibles',
-                                  style: const TextStyle(
-                                    color: AppPalette.secondary,
+                                  style: TextStyle(
+                                    color: Theme.of(context).colorScheme.secondary,
                                     fontWeight: FontWeight.w800,
                                   ),
                                 ),
                               ],
                             ),
                             const SizedBox(height: 18),
-                            const Text(
+                            Text(
                               'Vue d’ensemble de l’atelier',
                               style: TextStyle(
-                                color: AppPalette.text,
+                                color: _atelierForeground(context),
                                 fontSize: 23,
                                 fontWeight: FontWeight.w900,
                               ),
@@ -10383,7 +11436,7 @@ class AnalyticsPage extends StatelessWidget {
                             const SizedBox(height: 5),
                             Text(
                               '$totalPieces unités actuellement suivies dans le stock.',
-                              style: const TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                           ],
                         ),
@@ -10403,7 +11456,7 @@ class AnalyticsPage extends StatelessWidget {
                                 icon: Icons.inventory_2_rounded,
                                 value: '$totalPieces',
                                 label: 'Unités en stock',
-                                color: AppPalette.primary,
+                                color: Theme.of(context).colorScheme.primary,
                               ),
                               _AnalyticsMetric(
                                 width: metricWidth,
@@ -10424,7 +11477,7 @@ class AnalyticsPage extends StatelessWidget {
                                 icon: Icons.play_circle_outline_rounded,
                                 value: '$activeOperations',
                                 label: 'Opérations en cours',
-                                color: AppPalette.secondary,
+                                color: Theme.of(context).colorScheme.secondary,
                               ),
                             ],
                           );
@@ -10477,17 +11530,18 @@ class AnalyticsPage extends StatelessWidget {
                                     vertical: 7,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: quantity > 0
-                                        ? const Color(0xFFE8F8F4)
-                                        : const Color(0xFFFFEDF0),
+                                    color: (quantity > 0
+                                            ? AppPalette.mint
+                                            : AppPalette.coral)
+                                        .withValues(alpha: .16),
                                     borderRadius: BorderRadius.circular(14),
                                   ),
                                   child: Text(
                                     productQuantityLabel(product, quantity),
                                     style: TextStyle(
                                       color: quantity > 0
-                                          ? const Color(0xFF2A9B83)
-                                          : const Color(0xFFD85B74),
+                                          ? _atelierSuccess(context)
+                                          : Theme.of(context).colorScheme.error,
                                       fontWeight: FontWeight.w900,
                                     ),
                                   ),
@@ -10532,6 +11586,7 @@ class _PurchaseSaleChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final today = DateTime.now();
+    final scheme = Theme.of(context).colorScheme;
     final months = List.generate(
       6,
       (index) => DateTime(today.year, today.month - 5 + index),
@@ -10576,9 +11631,9 @@ class _PurchaseSaleChart extends StatelessWidget {
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 3),
-          const Text(
+          Text(
             'Comparaison mensuelle des unités validées — 6 derniers mois.',
-            style: TextStyle(color: AppPalette.muted, fontSize: 12),
+            style: TextStyle(color: _atelierMuted(context), fontSize: 12),
           ),
           const SizedBox(height: 12),
           Wrap(
@@ -10596,19 +11651,37 @@ class _PurchaseSaleChart extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          SizedBox(
-            height: 210,
-            width: double.infinity,
-            child: CustomPaint(
-              painter: _PurchaseSalePainter(
-                purchaseValues: purchaseValues,
-                saleValues: saleValues,
-                labels: months
-                    .map((month) => _monthLabels[month.month - 1])
-                    .toList(),
+          if (purchasesTotal == 0 && salesTotal == 0)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(
+                child: Text(
+                  'Aucun achat ou vente validé sur cette période',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: scheme.onSurfaceVariant),
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              height: 210,
+              width: double.infinity,
+              child: CustomPaint(
+                painter: _PurchaseSalePainter(
+                  purchaseValues: purchaseValues,
+                  saleValues: saleValues,
+                  labelStyle: DefaultTextStyle.of(context).style.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  gridColor: scheme.outline.withValues(alpha: .32),
+                  labels: months
+                      .map((month) => _monthLabels[month.month - 1])
+                      .toList(),
+                ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -10643,11 +11716,15 @@ class _PurchaseSalePainter extends CustomPainter {
     required this.purchaseValues,
     required this.saleValues,
     required this.labels,
+    required this.labelStyle,
+    required this.gridColor,
   });
 
   final List<int> purchaseValues;
   final List<int> saleValues;
   final List<String> labels;
+  final TextStyle labelStyle;
+  final Color gridColor;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -10666,7 +11743,7 @@ class _PurchaseSalePainter extends CustomPainter {
     final scale = highest == 0 ? 1.0 : highest.toDouble();
 
     final gridPaint = Paint()
-      ..color = const Color(0xFFDBD8EC)
+      ..color = gridColor
       ..strokeWidth = 1;
     for (var step = 0; step <= 4; step++) {
       final y = top + chartHeight * step / 4;
@@ -10676,22 +11753,7 @@ class _PurchaseSalePainter extends CustomPainter {
         gridPaint,
       );
     }
-    if (highest == 0) {
-      final text = TextPainter(
-        text: const TextSpan(
-          text: 'Aucun achat ou vente validé sur cette période',
-          style: TextStyle(color: AppPalette.muted, fontSize: 12),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout(maxWidth: size.width - 20);
-      text.paint(
-        canvas,
-        Offset(
-          (size.width - text.width) / 2,
-          top + chartHeight / 2 - text.height / 2,
-        ),
-      );
-    } else {
+    if (highest > 0) {
       _drawSeries(
         canvas: canvas,
         values: purchaseValues,
@@ -10720,15 +11782,15 @@ class _PurchaseSalePainter extends CustomPainter {
       final text = TextPainter(
         text: TextSpan(
           text: labels[index],
-          style: const TextStyle(
-            color: AppPalette.muted,
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-          ),
+          style: labelStyle,
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      text.paint(canvas, Offset(x - text.width / 2, baseline + 9));
+      final textX = (x - text.width / 2)
+          .clamp(0.0, max(0.0, size.width - text.width))
+          .toDouble();
+      text.paint(canvas, Offset(textX, baseline + 9));
+      text.dispose();
     }
   }
 
@@ -10796,7 +11858,9 @@ class _PurchaseSalePainter extends CustomPainter {
   bool shouldRepaint(covariant _PurchaseSalePainter oldDelegate) =>
       oldDelegate.purchaseValues != purchaseValues ||
       oldDelegate.saleValues != saleValues ||
-      oldDelegate.labels != labels;
+      oldDelegate.labels != labels ||
+      oldDelegate.labelStyle != labelStyle ||
+      oldDelegate.gridColor != gridColor;
 }
 
 class _AnalyticsMetric extends StatelessWidget {
@@ -10838,7 +11902,7 @@ class _AnalyticsMetric extends StatelessWidget {
           const SizedBox(height: 2),
           Text(
             label,
-            style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+            style: TextStyle(color: _atelierMuted(context), fontSize: 12),
           ),
         ],
       ),
@@ -10860,6 +11924,7 @@ class StockPage extends StatelessWidget {
     required this.onOpenDepots,
     required this.onOpenRecords,
     required this.onOpenPayments,
+    this.onOpenPartners,
   });
   final List<Product> products;
   final List<ProductCategory> categories;
@@ -10872,8 +11937,10 @@ class StockPage extends StatelessWidget {
   final VoidCallback onOpenDepots;
   final VoidCallback onOpenRecords;
   final VoidCallback onOpenPayments;
+  final VoidCallback? onOpenPartners;
   @override
   Widget build(BuildContext context) {
+    final muted = _atelierMuted(context);
     final availableProducts = products
         .where((product) => stock(product.id) > 0)
         .length;
@@ -10912,7 +11979,7 @@ class StockPage extends StatelessWidget {
                           ),
                           Text(
                             '$availableProducts disponibles sur ${products.length}',
-                            style: const TextStyle(color: AppPalette.muted),
+                            style: TextStyle(color: muted),
                           ),
                         ],
                       ),
@@ -10984,7 +12051,7 @@ class StockPage extends StatelessWidget {
                 child: _StockSecondaryAction(
                   icon: Icons.receipt_long_rounded,
                   label: 'Registres',
-                  color: AppPalette.secondary,
+                  color: Theme.of(context).colorScheme.secondary,
                   onTap: onOpenRecords,
                 ),
               ),
@@ -10994,9 +12061,18 @@ class StockPage extends StatelessWidget {
           _StockSecondaryAction(
             icon: Icons.account_balance_wallet_rounded,
             label: 'Paiements',
-            color: AppPalette.primary,
+            color: Theme.of(context).colorScheme.primary,
             onTap: onOpenPayments,
           ),
+          if (onOpenPartners case final openPartners?) ...[
+            const SizedBox(height: 12),
+            _StockSecondaryAction(
+              icon: Icons.contacts_outlined,
+              label: 'Fournisseurs et clients',
+              color: Theme.of(context).colorScheme.primary,
+              onTap: openPartners,
+            ),
+          ],
           if (draftCount > 0) ...[
             const SizedBox(height: 14),
             Glass(
@@ -11009,9 +12085,9 @@ class StockPage extends StatelessWidget {
                       color: Color(0xFF3A3215),
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(
+                    child: Icon(
                       Icons.edit_note_rounded,
-                      color: AppPalette.primary,
+                      color: Theme.of(context).colorScheme.primary,
                     ),
                   ),
                   const SizedBox(width: 11),
@@ -11068,7 +12144,9 @@ class TransactionPaymentsPage extends StatefulWidget {
     required this.suppliers,
     required this.competitors,
     required this.depotName,
+    this.onOpenAttachments,
   });
+  final OpenTransactionPhotos? onOpenAttachments;
   final List<TransactionPayment> payments;
   final List<Sale> sales;
   final List<StockAddition> purchases;
@@ -11150,7 +12228,6 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
     final DateTime date;
     final bool draft;
     final String? receiptNumber;
-    final int photoCount;
     if (sale != null) {
       isSale = true;
       productId = sale.productId;
@@ -11162,7 +12239,6 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
       date = sale.createdAt;
       draft = sale.draft;
       receiptNumber = null;
-      photoCount = sale.images.length;
     } else if (purchase != null) {
       isSale = false;
       productId = purchase.productId;
@@ -11174,7 +12250,6 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
       date = purchase.addedAt;
       draft = purchase.draft;
       receiptNumber = purchase.receiptNumber;
-      photoCount = purchase.images.length;
     } else {
       return;
     }
@@ -11217,7 +12292,17 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                       ? 'Non renseigné'
                       : receiptNumber,
                 ),
-              _PaymentDetail(label: 'Photos jointes', value: '$photoCount'),
+              if (widget.onOpenAttachments case final open?)
+                OutlinedButton.icon(
+                  onPressed: () => open(
+                    context,
+                    isSale,
+                    sale?.id ?? purchase?.id?.toString(),
+                    sale?.images ?? purchase?.images ?? const [],
+                  ),
+                  icon: const Icon(Icons.photo_library_outlined),
+                  label: const Text('Photos jointes'),
+                ),
               _PaymentDetail(
                 label: 'Source de paiement',
                 value: payment.source.label,
@@ -11264,9 +12349,9 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (selectedSource == null) ...[
-            const Text(
+            Text(
               'Montants enregistrés par source de paiement.',
-              style: TextStyle(color: AppPalette.muted),
+              style: TextStyle(color: _atelierMuted(context)),
             ),
             const SizedBox(height: 16),
             ...PaymentSource.values.map(
@@ -11290,9 +12375,9 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.account_balance_wallet_rounded,
-                    color: AppPalette.primary,
+                    color: Theme.of(context).colorScheme.primary,
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -11354,7 +12439,7 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                               sale != null
                                   ? Icons.point_of_sale_rounded
                                   : Icons.add_shopping_cart_rounded,
-                              color: AppPalette.primary,
+                              color: Theme.of(context).colorScheme.primary,
                             ),
                             const SizedBox(width: 12),
                             Expanded(
@@ -11374,15 +12459,15 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                                   const SizedBox(height: 3),
                                   Text(
                                     '$partner · ${dateText(payment.createdAt)}',
-                                    style: const TextStyle(
-                                      color: AppPalette.muted,
+                                    style: TextStyle(
+                                      color: _atelierMuted(context),
                                       fontSize: 12,
                                     ),
                                   ),
                                   Text(
                                     payment.mode,
-                                    style: const TextStyle(
-                                      color: AppPalette.muted,
+                                    style: TextStyle(
+                                      color: _atelierMuted(context),
                                       fontSize: 12,
                                     ),
                                   ),
@@ -11391,9 +12476,9 @@ class _TransactionPaymentsPageState extends State<TransactionPaymentsPage> {
                             ),
                             Text(
                               '${formatNumber(payment.amount)} DH',
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontWeight: FontWeight.w900,
-                                color: AppPalette.primary,
+                                color: Theme.of(context).colorScheme.primary,
                               ),
                             ),
                           ],
@@ -11433,12 +12518,12 @@ class _PaymentSourceCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: AppPalette.primary.withValues(alpha: .14),
+                color: Theme.of(context).colorScheme.primary.withValues(alpha: .14),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(
+              child: Icon(
                 Icons.payments_rounded,
-                color: AppPalette.primary,
+                color: Theme.of(context).colorScheme.primary,
               ),
             ),
             const SizedBox(width: 12),
@@ -11450,13 +12535,13 @@ class _PaymentSourceCard extends StatelessWidget {
             ),
             Text(
               '${formatNumber(total)} DH',
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.w900,
-                color: AppPalette.primary,
+                color: Theme.of(context).colorScheme.primary,
               ),
             ),
             const SizedBox(width: 4),
-            const Icon(Icons.chevron_right_rounded, color: AppPalette.muted),
+            Icon(Icons.chevron_right_rounded, color: _atelierMuted(context)),
           ],
         ),
       ),
@@ -11477,7 +12562,7 @@ class _PaymentDetail extends StatelessWidget {
       children: [
         Text(
           label,
-          style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+          style: TextStyle(color: _atelierMuted(context), fontSize: 12),
         ),
         Text(value, style: const TextStyle(fontWeight: FontWeight.w800)),
       ],
@@ -11513,15 +12598,15 @@ class _StockActionButton extends StatelessWidget {
           const SizedBox(height: 12),
           Text(
             title,
-            style: const TextStyle(
-              color: AppPalette.text,
+            style: TextStyle(
+              color: _atelierForeground(context),
               fontWeight: FontWeight.w800,
             ),
           ),
           const SizedBox(height: 3),
           Text(
             subtitle,
-            style: const TextStyle(color: AppPalette.muted, fontSize: 11),
+            style: TextStyle(color: _atelierMuted(context), fontSize: 11),
           ),
         ],
       ),
@@ -11543,8 +12628,8 @@ class _StockMetric extends StatelessWidget {
         children: [
           Text(
             value,
-            style: const TextStyle(
-              color: AppPalette.text,
+            style: TextStyle(
+              color: _atelierForeground(context),
               fontSize: 20,
               fontWeight: FontWeight.w900,
             ),
@@ -11552,8 +12637,8 @@ class _StockMetric extends StatelessWidget {
           const SizedBox(height: 2),
           Text(
             label,
-            style: const TextStyle(
-              color: AppPalette.muted,
+            style: TextStyle(
+              color: _atelierMuted(context),
               fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
@@ -11577,37 +12662,47 @@ class _StockSecondaryAction extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => _LiquidTapTarget(
-    radius: 20,
-    accent: color,
-    onTap: onTap,
-    child: SizedBox(
-      height: 66,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 13),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: .16),
-                shape: BoxShape.circle,
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final accent = scheme.brightness == Brightness.dark &&
+            (color == AppPalette.primary || color == AppPalette.secondary)
+        ? scheme.primary
+        : color;
+    return _LiquidTapTarget(
+      radius: 20,
+      accent: accent,
+      onTap: onTap,
+      child: SizedBox(
+        height: 66,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 13),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: .16),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, color: accent, size: 20),
               ),
-              child: Icon(icon, color: color, size: 20),
-            ),
-            const SizedBox(width: 9),
-            Expanded(
-              child: Text(
-                label,
-                style: const TextStyle(fontWeight: FontWeight.w900),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
               ),
-            ),
-            const Icon(Icons.chevron_right_rounded, color: AppPalette.muted),
-          ],
+              Icon(
+                Icons.chevron_right_rounded,
+                color: scheme.onSurfaceVariant,
+              ),
+            ],
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _StockProductTile extends StatelessWidget {
@@ -11652,7 +12747,7 @@ class _StockProductTile extends StatelessWidget {
                   subtitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+                  style: TextStyle(color: _atelierMuted(context), fontSize: 12),
                 ),
               ],
             ),
@@ -11685,6 +12780,66 @@ class _StockProductTile extends StatelessWidget {
   }
 }
 
+typedef OpenTransactionPhotos = void Function(
+  BuildContext context,
+  bool sale,
+  String? id,
+  List<Uint8List> images,
+);
+
+void _showTransactionPhotos(BuildContext context, Future<List<Uint8List>> photos) {
+  showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Photos jointes'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 600, maxHeight: 440),
+        child: FutureBuilder<List<Uint8List>>(
+          future: photos,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const SizedBox(
+                width: 180,
+                height: 100,
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.hasError) return const Text('Photos indisponibles.');
+            final images = snapshot.data ?? const <Uint8List>[];
+            if (images.isEmpty) return const Text('Aucune photo jointe.');
+            return SizedBox(
+              width: 600,
+              height: min(420, MediaQuery.sizeOf(context).height * .52),
+              child: ListView.separated(
+                itemCount: images.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 12),
+                itemBuilder: (context, index) => AspectRatio(
+                  aspectRatio: 4 / 3,
+                  child: InteractiveViewer(
+                    child: Image.memory(
+                      images[index],
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, _, _) => const Center(
+                        child: Text('Photo illisible.'),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Fermer'),
+        ),
+      ],
+    ),
+  );
+}
+
 class StockRecordsPage extends StatefulWidget {
   const StockRecordsPage({
     super.key,
@@ -11701,9 +12856,11 @@ class StockRecordsPage extends StatefulWidget {
     required this.onReturn,
     required this.canReturnPurchase,
     required this.onReturnPurchase,
+    this.onOpenAttachments,
   });
 
   final List<Product> products;
+  final OpenTransactionPhotos? onOpenAttachments;
   final List<StockAddition> additions;
   final List<Sale> sales;
   final List<StockTransfer> transfers;
@@ -11733,6 +12890,27 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
   String? secondDepot;
   late List<SaleReturn> saleReturns;
   late List<StockAddition> additions;
+
+  Widget? _recordActions({
+    required bool sale,
+    required String? id,
+    required List<Uint8List> images,
+    Widget? returnAction,
+  }) {
+    final open = widget.onOpenAttachments;
+    if (open == null) return returnAction;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          tooltip: 'Voir les photos jointes',
+          onPressed: () => open(context, sale, id, images),
+          icon: const Icon(Icons.photo_library_outlined),
+        ),
+        ?returnAction,
+      ],
+    );
+  }
 
   Widget recordFilters() => switch (section) {
     _StockRecordSection.purchases => SearchChoiceField(
@@ -11874,7 +13052,7 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                     children: [
                       const _AtelierBackButton(),
                       const SizedBox(width: 12),
-                      const Expanded(
+                      Expanded(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -11884,13 +13062,13 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                               style: TextStyle(
                                 fontSize: 21,
                                 fontWeight: FontWeight.w900,
-                                color: AppPalette.text,
+                                color: _atelierForeground(context),
                               ),
                             ),
-                            SizedBox(height: 3),
+                            const SizedBox(height: 3),
                             Text(
                               'Achats, ventes et transferts entre dépôts.',
-                              style: TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                           ],
                         ),
@@ -11964,48 +13142,17 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
   Future<void> _returnPurchase(StockAddition purchase) async {
     final maximum = purchase.pieces - returnedPurchasePieces(purchase);
     if (maximum <= 0) return;
-    final controller = TextEditingController();
-    final selectedProduct = product(purchase.productId);
-    final pieces = await showDialog<int>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Retour fournisseur'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Maximum retournable : ${selectedProduct == null ? maximum : productQuantityLabel(selectedProduct, maximum)}.',
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: const InputDecoration(
-                labelText: 'Quantité retournée *',
-              ),
-            ),
-          ],
+    final pieces = await Navigator.push<int>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _ReturnQuantityForm(
+          title: 'Retour fournisseur',
+          summary: product(purchase.productId)?.displayReference ?? 'Produit',
+          maximum: maximum,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final value = int.tryParse(controller.text);
-              if (value == null || value <= 0 || value > maximum) return;
-              Navigator.pop(dialogContext, value);
-            },
-            child: const Text('Envoyer à la validation'),
-          ),
-        ],
       ),
     );
-    controller.dispose();
+    if (!mounted) return;
     if (pieces == null) return;
     final request = await widget.onReturnPurchase(purchase, pieces);
     if (mounted && request != null) {
@@ -12036,7 +13183,11 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
         '${product(addition.productId)?.displayReference ?? 'Produit'} · ${widget.depotName(addition.depotId)}\n${supplierName(addition.supplierId)} · ${addition.receiptNumber.isEmpty ? 'Sans n° de bon' : 'Bon n° ${addition.receiptNumber}'} · ${addition.draft ? 'Brouillon à valider' : 'Validé'} · ${addition.addedAt.millisecondsSinceEpoch == 0 ? 'Ajout antérieur' : dateText(addition.addedAt)}',
       ),
       isThreeLine: true,
-      trailing: widget.canReturnPurchase && returnable
+      trailing: _recordActions(
+        sale: false,
+        id: addition.id?.toString(),
+        images: addition.images,
+        returnAction: widget.canReturnPurchase && returnable
           ? IconButton(
               tooltip: 'Retourner au fournisseur',
               onPressed: () => _returnPurchase(addition),
@@ -12045,7 +13196,8 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                 color: Color(0xFFB45309),
               ),
             )
-          : null,
+            : null,
+      ),
     );
   }
 
@@ -12060,48 +13212,17 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
   Future<void> _returnSale(Sale sale) async {
     final maximum = sale.pieces - returnedPieces(sale);
     if (maximum <= 0) return;
-    final controller = TextEditingController();
-    final selectedProduct = product(sale.productId);
-    final pieces = await showDialog<int>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Retour client'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Maximum retournable : ${selectedProduct == null ? maximum : productQuantityLabel(selectedProduct, maximum)}.',
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: const InputDecoration(
-                labelText: 'Quantité retournée *',
-              ),
-            ),
-          ],
+    final pieces = await Navigator.push<int>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _ReturnQuantityForm(
+          title: 'Retour client',
+          summary: product(sale.productId)?.displayReference ?? 'Produit',
+          maximum: maximum,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final value = int.tryParse(controller.text);
-              if (value == null || value <= 0 || value > maximum) return;
-              Navigator.pop(dialogContext, value);
-            },
-            child: const Text('Envoyer à la validation'),
-          ),
-        ],
       ),
     );
-    controller.dispose();
+    if (!mounted) return;
     if (pieces == null) return;
     final returnRequest = await widget.onReturn(sale, pieces);
     if (mounted && returnRequest != null) {
@@ -12139,7 +13260,11 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
         '${product(sale.productId)?.displayReference ?? 'Produit'} · ${widget.depotName(sale.depotId)}\n${clientName(sale.clientId)} · ${dateText(sale.createdAt)}${approved > 0 ? '\nRetour validé : ${product(sale.productId) == null ? approved : productQuantityLabel(product(sale.productId)!, approved)}' : ''}${pending > 0 ? '\nRetour en attente : ${product(sale.productId) == null ? pending : productQuantityLabel(product(sale.productId)!, pending)}' : ''}',
       ),
       isThreeLine: approved > 0 || pending > 0,
-      trailing: canReturnSale
+      trailing: _recordActions(
+        sale: true,
+        id: sale.id,
+        images: sale.images,
+        returnAction: canReturnSale
           ? IconButton(
               tooltip: 'Retourner au stock',
               onPressed: () => _returnSale(sale),
@@ -12148,7 +13273,8 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
                 color: Color(0xFF15803D),
               ),
             )
-          : null,
+            : null,
+      ),
     );
   }
 }
@@ -12259,8 +13385,8 @@ class DepotsPage extends StatelessWidget {
                                 const SizedBox(height: 4),
                                 Text(
                                   '$pieces pièce(s)',
-                                  style: const TextStyle(
-                                    color: AppPalette.muted,
+                                  style: TextStyle(
+                                    color: _atelierMuted(context),
                                   ),
                                 ),
                               ],
@@ -12269,13 +13395,13 @@ class DepotsPage extends StatelessWidget {
                           Container(
                             width: 32,
                             height: 32,
-                            decoration: const BoxDecoration(
-                              color: AppPalette.soft,
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.surfaceContainerHigh,
                               shape: BoxShape.circle,
                             ),
-                            child: const Icon(
+                            child: Icon(
                               Icons.chevron_right_rounded,
-                              color: AppPalette.primary,
+                              color: Theme.of(context).colorScheme.primary,
                             ),
                           ),
                         ],
@@ -12553,13 +13679,17 @@ class MachinesPage extends StatelessWidget {
                                 width: double.infinity,
                                 alignment: Alignment.center,
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFFFFF7ED),
+                                  color: m.temporary
+                                      ? Theme.of(context).colorScheme.tertiaryContainer
+                                      : Theme.of(context).colorScheme.surfaceContainerHigh,
                                   borderRadius: BorderRadius.circular(17),
                                 ),
-                                child: const Icon(
-                                  Icons.local_shipping_outlined,
+                                child: Icon(
+                                  m.temporary ? Icons.local_shipping_outlined : Icons.precision_manufacturing_outlined,
                                   size: 48,
-                                  color: Color(0xFFB45309),
+                                  color: m.temporary
+                                      ? Theme.of(context).colorScheme.onTertiaryContainer
+                                      : Theme.of(context).colorScheme.onSurfaceVariant,
                                 ),
                               ),
                             const SizedBox(height: 10),
@@ -12576,16 +13706,16 @@ class MachinesPage extends StatelessWidget {
                               m.temporary
                                   ? 'Fin prévue : ${m.deadline == null ? 'non définie' : dateText(m.deadline!)} · ${m.type == MachineType.roulage ? 'Roulage' : 'Standard'}'
                                   : 'Exemplaire ${unit.usable ? 'disponible' : 'indisponible'} · ${m.type == MachineType.roulage ? 'Roulage' : 'Standard'}',
-                              style: const TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                             Text(
                               'Catégorie : ${categoryName(m.categoryId)}',
-                              style: const TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                             Text(
                               'Produit fabriqué : ${productName(m.outputId)}',
-                              style: const TextStyle(
-                                color: Color(0xFF15803D),
+                              style: TextStyle(
+                                color: _atelierSuccess(context),
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
@@ -12631,10 +13761,10 @@ class MachinesPage extends StatelessWidget {
                                 ),
                               )
                             else
-                              const Text(
+                              Text(
                                 'Accès réservé à l’opérateur assigné',
                                 style: TextStyle(
-                                  color: AppPalette.muted,
+                                  color: _atelierMuted(context),
                                   fontSize: 12,
                                 ),
                               ),
@@ -12722,7 +13852,6 @@ class MachinesPage extends StatelessWidget {
   );
 }
 
-
 class CategoryForm extends StatefulWidget {
   const CategoryForm({super.key, this.initial});
   final ProductCategory? initial;
@@ -12780,7 +13909,7 @@ class _CategoryFormState extends State<CategoryForm> {
         name: name.text.trim(),
         productIds: widget.initial?.productIds ?? const [],
         image: image ?? Uint8List(0),
-        families: widget.initial?.families ?? const [],
+        models: widget.initial?.models ?? const [],
       ),
     );
   }
@@ -13058,16 +14187,16 @@ class _ReviewsPageState extends State<ReviewsPage> {
           if (pendingOperations.isEmpty)
             Glass(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
-              child: const Center(
+              child: Center(
                 child: Column(
                   children: [
-                    Icon(
+                    const Icon(
                       Icons.task_alt_rounded,
                       color: Color(0xFF16A34A),
                       size: 48,
                     ),
-                    SizedBox(height: 12),
-                    Text(
+                    const SizedBox(height: 12),
+                    const Text(
                       'Aucun contrôle en attente',
                       style: TextStyle(
                         fontSize: 17,
@@ -13078,7 +14207,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
                     Text(
                       'Les opérations à contrôler apparaîtront ici.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: AppPalette.muted),
+                      style: TextStyle(color: _atelierMuted(context)),
                     ),
                   ],
                 ),
@@ -13162,11 +14291,11 @@ class _ReviewsPageState extends State<ReviewsPage> {
                           ),
                         ),
                       ] else
-                        const Padding(
-                          padding: EdgeInsets.only(top: 12),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12),
                           child: Text(
                             'En attente de l’approbation du responsable.',
-                            style: TextStyle(color: AppPalette.muted),
+                            style: TextStyle(color: _atelierMuted(context)),
                           ),
                         ),
                     ],
@@ -13245,281 +14374,7 @@ class ValidationPage extends StatelessWidget {
           .firstOrNull ??
       'Dépôt inconnu';
 
-  Future<void> _editStock(BuildContext context, StockAddition item) async {
-    final isPurchaseReturn = item.returnOfPurchaseId != null;
-    final quantity = TextEditingController(
-      text: formatNumber(
-        isPurchaseReturn ? item.quantity.abs() : item.quantity,
-      ),
-    );
-    final receipt = TextEditingController(text: item.receiptNumber);
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          isPurchaseReturn
-              ? 'Corriger le retour fournisseur'
-              : 'Corriger l’achat',
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: quantity,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              decoration: InputDecoration(
-                labelText: 'Quantité (${item.unit.shortLabel})',
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: receipt,
-              decoration: const InputDecoration(labelText: 'N° de bon'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-    final product = _product(item.productId);
-    final entered = number(quantity.text);
-    if (saved != true ||
-        product == null ||
-        entered <= 0 ||
-        receipt.text.trim().isEmpty) {
-      return;
-    }
-    await onEditStock(
-      StockAddition(
-        id: item.id,
-        productId: item.productId,
-        depotId: item.depotId,
-        pieces: isPurchaseReturn
-            ? -piecesForQuantity(product, entered, item.unit)
-            : piecesForQuantity(product, entered, item.unit),
-        receiptNumber: receipt.text.trim(),
-        supplierId: item.supplierId,
-        returnOfPurchaseId: item.returnOfPurchaseId,
-        quantity: isPurchaseReturn ? -entered : entered,
-        unit: item.unit,
-        images: item.images,
-        addedAt: item.addedAt,
-        transportCharge: item.transportCharge,
-      ),
-    );
-  }
-
-  Future<void> _editSale(BuildContext context, Sale item) async {
-    final quantity = TextEditingController(text: formatNumber(item.quantity));
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Corriger la vente'),
-        content: TextField(
-          controller: quantity,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: InputDecoration(
-            labelText: 'Quantité (${item.unit.shortLabel})',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-    final product = _product(item.productId);
-    final entered = number(quantity.text);
-    if (saved != true || product == null || entered <= 0) return;
-    await onEditSale(
-      Sale(
-        id: item.id,
-        productId: item.productId,
-        depotId: item.depotId,
-        clientId: item.clientId,
-        pieces: piecesForQuantity(product, entered, item.unit),
-        quantity: entered,
-        unit: item.unit,
-        images: item.images,
-        createdAt: item.createdAt,
-        transportCharge: item.transportCharge,
-      ),
-    );
-  }
-
-  Future<void> _editReturn(BuildContext context, SaleReturn item) async {
-    final pieces = TextEditingController(text: '${item.pieces}');
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Corriger le retour'),
-        content: TextField(
-          controller: pieces,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: const InputDecoration(labelText: 'Pièces retournées'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-    final value = int.tryParse(pieces.text);
-    if (saved != true || value == null || value <= 0) return;
-    await onEditReturn(
-      SaleReturn(
-        id: item.id,
-        saleId: item.saleId,
-        productId: item.productId,
-        depotId: item.depotId,
-        pieces: value,
-        createdAt: item.createdAt,
-        status: ReturnValidationStatus.pending,
-      ),
-    );
-  }
-
-  Future<void> _editOperation(BuildContext context, Operation operation) async {
-    final output = TextEditingController(
-      text: '${operation.outputPieces ?? 0}',
-    );
-    final remainder = TextEditingController(
-      text: '${operation.remainderPieces}',
-    );
-    final scrap = TextEditingController(text: '${operation.scrapPieces}');
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Corriger la production'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: output,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Pièces fabriquées'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: remainder,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Pièces restantes (retour au stock)',
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: scrap,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Pièces perdues / déchets',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-    final outputPieces = int.tryParse(output.text);
-    final remainderPieces = int.tryParse(remainder.text);
-    final scrapPieces = int.tryParse(scrap.text);
-    if (saved != true ||
-        outputPieces == null ||
-        remainderPieces == null ||
-        scrapPieces == null ||
-        outputPieces < 0 ||
-        remainderPieces < 0 ||
-        scrapPieces < 0 ||
-        (remainderPieces > 0 && operation.remainderDepotId == null) ||
-        (scrapPieces > 0 && operation.scrapDepotId == null) ||
-        (!operation.externalProduction &&
-            (operation.hopperPieces == null
-                    ? outputPieces + remainderPieces + scrapPieces
-                    : outputPieces * operation.hopperPieces! +
-                          remainderPieces +
-                          scrapPieces) !=
-                operation.pieces)) {
-      return;
-    }
-    operation.outputPieces = outputPieces;
-    operation.remainderPieces = remainderPieces;
-    operation.scrapPieces = scrapPieces;
-    await onEditOperation(operation);
-  }
-
-  Future<void> _editTransfer(BuildContext context, StockTransfer item) async {
-    final pieces = TextEditingController(text: '${item.pieces}');
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Corriger le transfert'),
-        content: TextField(
-          controller: pieces,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: const InputDecoration(labelText: 'Nombre de pièces'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-    final quantity = int.tryParse(pieces.text);
-    if (saved != true || quantity == null || quantity <= 0) return;
-    await onEditTransfer(
-      StockTransfer(
-        id: item.id,
-        productId: item.productId,
-        sourceDepotId: item.sourceDepotId,
-        destinationDepotId: item.destinationDepotId,
-        pieces: quantity,
-        createdAt: item.createdAt,
-        draft: true,
-      ),
-    );
-  }
-
-  Widget _draftCard({
+  Widget _draftCard(BuildContext context, {
     required IconData icon,
     required String title,
     required String detail,
@@ -13544,7 +14399,7 @@ class ValidationPage extends StatelessWidget {
                     title,
                     style: const TextStyle(fontWeight: FontWeight.w900),
                   ),
-                  Text(detail, style: const TextStyle(color: AppPalette.muted)),
+                  Text(detail, style: TextStyle(color: _atelierMuted(context))),
                 ],
               ),
             ),
@@ -13612,9 +14467,9 @@ class ValidationPage extends StatelessWidget {
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             'Chaque brouillon peut être corrigé, validé ou annulé. Une annulation ne modifie pas le stock.',
-            style: TextStyle(color: AppPalette.muted),
+            style: TextStyle(color: _atelierMuted(context)),
           ),
           const SizedBox(height: 16),
           if (total == 0)
@@ -13628,6 +14483,7 @@ class ValidationPage extends StatelessWidget {
               (item) => Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _draftCard(
+                  context,
                   icon: item.returnOfPurchaseId == null
                       ? Icons.shopping_cart_checkout_rounded
                       : Icons.assignment_return_outlined,
@@ -13635,7 +14491,7 @@ class ValidationPage extends StatelessWidget {
                       '${item.returnOfPurchaseId == null ? 'Achat' : 'Retour fournisseur'} · ${_product(item.productId)?.displayReference ?? 'Produit'}',
                   detail:
                       '${formatQuantity(item.quantity.abs(), item.unit)} · Bon ${item.receiptNumber}',
-                  onEdit: () => _editStock(context, item),
+                  onEdit: () => onEditStock(item),
                   onCancel: () => onCancelStock(item),
                   onApprove: () => onApproveStock(item),
                 ),
@@ -13645,11 +14501,12 @@ class ValidationPage extends StatelessWidget {
               (item) => Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _draftCard(
+                  context,
                   icon: Icons.point_of_sale_rounded,
                   title:
                       'Vente · ${_product(item.productId)?.displayReference ?? 'Produit'}',
                   detail: formatQuantity(item.quantity, item.unit),
-                  onEdit: () => _editSale(context, item),
+                  onEdit: () => onEditSale(item),
                   onCancel: () => onCancelSale(item),
                   onApprove: () => onApproveSale(item),
                 ),
@@ -13663,11 +14520,12 @@ class ValidationPage extends StatelessWidget {
               return Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _draftCard(
+                  context,
                   icon: Icons.assignment_return_rounded,
                   title:
                       'Retour client · ${product?.displayReference ?? 'Produit'}',
                   detail: '$quantity · en attente',
-                  onEdit: () => _editReturn(context, item),
+                  onEdit: () => onEditReturn(item),
                   onApprove: () => onApproveReturn(item),
                   onReject: () => onRejectReturn(item),
                   onCancel: () => onCancelReturn(item),
@@ -13678,6 +14536,7 @@ class ValidationPage extends StatelessWidget {
               (item) => Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _draftCard(
+                  context,
                   icon: item.externalProduction
                       ? Icons.local_shipping_outlined
                       : Icons.precision_manufacturing_rounded,
@@ -13687,7 +14546,7 @@ class ValidationPage extends StatelessWidget {
                   detail: item.externalProduction
                       ? '${item.outputPieces ?? 0} à ajouter au stock · sans opérateur'
                       : '${item.outputPieces ?? 0} fabriquées · ${item.remainderPieces} restantes · ${item.scrapPieces} déchet(s)',
-                  onEdit: () => _editOperation(context, item),
+                  onEdit: () => onEditOperation(item),
                   onCancel: () => onCancelOperation(item),
                   onApprove: () => onApproveOperation(item),
                 ),
@@ -13697,12 +14556,13 @@ class ValidationPage extends StatelessWidget {
               (item) => Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _draftCard(
+                  context,
                   icon: Icons.swap_horiz_rounded,
                   title:
                       'Transfert · ${_product(item.productId)?.displayReference ?? 'Produit'}',
                   detail:
                       '${item.pieces} pièce(s) · ${_depotName(item.sourceDepotId)} → ${_depotName(item.destinationDepotId)}',
-                  onEdit: () => _editTransfer(context, item),
+                  onEdit: () => onEditTransfer(item),
                   onCancel: () => onCancelTransfer(item),
                   onApprove: () => onApproveTransfer(item),
                 ),
@@ -13834,9 +14694,9 @@ class _PayrollPageState extends State<PayrollPage> {
             ),
           ),
           const SizedBox(height: 14),
-          const Text(
+          Text(
             'Le paiement est facultatif : un montant supérieur crée une avance, un montant inférieur laisse un reste à payer.',
-            style: TextStyle(color: AppPalette.muted),
+            style: TextStyle(color: _atelierMuted(context)),
           ),
           const SizedBox(height: 16),
           if (operators.isEmpty)
@@ -13881,8 +14741,8 @@ class _PayrollPageState extends State<PayrollPage> {
                       Row(
                         children: [
                           CircleAvatar(
-                            backgroundColor: AppPalette.soft,
-                            foregroundColor: AppPalette.primary,
+                            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                            foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
                             child: Text(
                               operator.fullName.substring(0, 1).toUpperCase(),
                             ),
@@ -13918,24 +14778,24 @@ class _PayrollPageState extends State<PayrollPage> {
                       if (balance > 0)
                         Text(
                           'Reste à payer : ${formatNumber(balance)} DH',
-                          style: const TextStyle(
-                            color: Color(0xFFB45309),
+                          style: TextStyle(
+                            color: _atelierWarning(context),
                             fontWeight: FontWeight.w900,
                           ),
                         )
                       else if (balance < 0)
                         Text(
                           'Avance : ${formatNumber(-balance)} DH · équivaut à ${formatNumber((-balance) / meterRate)} m',
-                          style: const TextStyle(
-                            color: Color(0xFF15803D),
+                          style: TextStyle(
+                            color: _atelierSuccess(context),
                             fontWeight: FontWeight.w900,
                           ),
                         )
                       else
-                        const Text(
+                        Text(
                           'Solde réglé',
                           style: TextStyle(
-                            color: Color(0xFF15803D),
+                            color: _atelierSuccess(context),
                             fontWeight: FontWeight.w900,
                           ),
                         ),
@@ -14238,9 +15098,7 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
       'Nom de la catégorie',
     );
     if (name == null || name.isEmpty) return;
-    await widget.database.updateCategory(
-      item.copyWith(name: name),
-    );
+    await widget.database.updateCategory(item.copyWith(name: name));
     await _finish('Catégorie modifiée.');
   }
 
@@ -14599,14 +15457,14 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
             children: [
               IconButton(
                 onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.arrow_back, color: AppPalette.primary),
+                icon: Icon(Icons.arrow_back, color: Theme.of(context).colorScheme.primary),
               ),
-              const Text(
+              Text(
                 'Mode développeur',
                 style: TextStyle(
                   fontSize: 26,
                   fontWeight: FontWeight.w900,
-                  color: AppPalette.text,
+                  color: _atelierForeground(context),
                 ),
               ),
               const SizedBox(height: 6),
@@ -14631,9 +15489,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier un produit'),
                       onTap: _editProduct,
@@ -14649,9 +15507,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_location_alt_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier un dépôt'),
                       onTap: _editDepot,
@@ -14667,9 +15525,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier une catégorie'),
                       onTap: _editCategory,
@@ -14694,9 +15552,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier un achat'),
                       onTap: _editPurchase,
@@ -14712,9 +15570,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier une vente'),
                       onTap: _editSale,
@@ -14730,9 +15588,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier une machine'),
                       onTap: _editMachine,
@@ -14748,9 +15606,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier une opération'),
                       onTap: _editOperation,
@@ -14766,9 +15624,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier un transfert'),
                       onTap: _editTransfer,
@@ -14784,9 +15642,9 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
                     ),
                     const Divider(),
                     ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.edit_outlined,
-                        color: AppPalette.primary,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('Modifier un retour client'),
                       onTap: _editReturn,
@@ -14803,9 +15661,16 @@ class _DeveloperModePageState extends State<DeveloperModePage> {
 }
 
 class DeviceRequestsPage extends StatefulWidget {
-  const DeviceRequestsPage({super.key, required this.userName});
+  const DeviceRequestsPage({
+    super.key,
+    required this.userName,
+    this.loadRequests = SupabaseAccounts.pendingDeviceRequests,
+    this.loadDevices = SupabaseAccounts.trustedDevices,
+  });
 
   final String Function(String userId) userName;
+  final Future<List<DeviceAccessRequest>> Function() loadRequests;
+  final Future<List<TrustedDevice>> Function() loadDevices;
 
   @override
   State<DeviceRequestsPage> createState() => _DeviceRequestsPageState();
@@ -14818,13 +15683,13 @@ class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
   @override
   void initState() {
     super.initState();
-    requests = SupabaseAccounts.pendingDeviceRequests();
-    devices = SupabaseAccounts.trustedDevices();
+    requests = widget.loadRequests();
+    devices = widget.loadDevices();
   }
 
   void reload() => setState(() {
-    requests = SupabaseAccounts.pendingDeviceRequests();
-    devices = SupabaseAccounts.trustedDevices();
+    requests = widget.loadRequests();
+    devices = widget.loadDevices();
   });
 
   Future<void> changeStatus(TrustedDevice device, String status) async {
@@ -14872,7 +15737,10 @@ class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
         IconButton(onPressed: reload, icon: const Icon(Icons.refresh_rounded)),
       ],
     ),
-    body: FutureBuilder<List<DeviceAccessRequest>>(
+    body: Aura(child: _buildBody()),
+  );
+
+  Widget _buildBody() => FutureBuilder<List<DeviceAccessRequest>>(
       future: requests,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
@@ -14918,19 +15786,19 @@ class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
                             frosted: true,
                             padding: const EdgeInsets.all(4),
                             child: ListTile(
-                            leading: Icon(
-                              device.primary
-                                  ? Icons.star_rounded
-                                  : Icons.phone_android_rounded,
-                            ),
-                            title: Text(device.label),
-                            subtitle: Text(
-                              '${device.email}\n'
-                              '${device.primary ? 'Principal' : 'Secondaire'} · ${device.status}\n'
-                              'Entrée : ${device.lastLoginAt == null ? '—' : dateText(device.lastLoginAt!)} · '
-                              'Sortie : ${device.lastLogoutAt == null ? 'En cours' : dateText(device.lastLogoutAt!)}',
-                            ),
-                            isThreeLine: true,
+                              leading: Icon(
+                                device.primary
+                                    ? Icons.star_rounded
+                                    : Icons.phone_android_rounded,
+                              ),
+                              title: Text(device.label),
+                              subtitle: Text(
+                                '${device.email}\n'
+                                '${device.primary ? 'Principal' : 'Secondaire'} · ${device.status}\n'
+                                'Entrée : ${device.lastLoginAt == null ? '—' : dateText(device.lastLoginAt!)} · '
+                                'Sortie : ${device.lastLogoutAt == null ? 'En cours' : dateText(device.lastLogoutAt!)}',
+                              ),
+                              isThreeLine: true,
                               trailing: PopupMenuButton<String>(
                                 onSelected: (value) =>
                                     changeStatus(device, value),
@@ -15001,7 +15869,6 @@ class _DeviceRequestsPageState extends State<DeviceRequestsPage> {
           },
         );
       },
-    ),
   );
 }
 
@@ -15015,6 +15882,7 @@ class UsersPage extends StatefulWidget {
     required this.onLoadSessions,
     required this.onOpenPayroll,
     required this.onOpenDeviceRequests,
+    this.loadLocalSecurityEvents,
   });
   final List<AppUser> users;
   final bool admin;
@@ -15023,6 +15891,7 @@ class UsersPage extends StatefulWidget {
   final Future<List<UserSession>> Function(String) onLoadSessions;
   final VoidCallback onOpenPayroll;
   final VoidCallback onOpenDeviceRequests;
+  final Future<List<Map<String, dynamic>>> Function()? loadLocalSecurityEvents;
   @override
   State<UsersPage> createState() => _UsersPageState();
 }
@@ -15069,6 +15938,7 @@ class _UsersPageState extends State<UsersPage> {
     final visibleUsers = widget.users
         .where((user) => !user.isPrivateOwner)
         .toList();
+    final scheme = Theme.of(context).colorScheme;
     return Page(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -15103,7 +15973,9 @@ class _UsersPageState extends State<UsersPage> {
                 OutlinedButton.icon(
                   onPressed: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
-                      builder: (_) => const SecurityActivityPage(),
+                      builder: (_) => SecurityActivityPage(
+                        loadLocalEvents: widget.loadLocalSecurityEvents,
+                      ),
                     ),
                   ),
                   icon: const Icon(Icons.security_rounded),
@@ -15126,10 +15998,12 @@ class _UsersPageState extends State<UsersPage> {
                     (u) => ListTile(
                       onTap: () => open(u),
                       leading: CircleAvatar(
-                        backgroundColor: AppPalette.primary.withValues(
+                        backgroundColor: scheme.primary.withValues(
                           alpha: .16,
                         ),
-                        foregroundColor: AppPalette.primaryDark,
+                        foregroundColor: scheme.brightness == Brightness.dark
+                            ? scheme.onPrimaryContainer
+                            : AppPalette.primaryDark,
                         child: Text(u.fullName.substring(0, 1).toUpperCase()),
                       ),
                       title: Text(
@@ -15164,12 +16038,14 @@ class StockTransferForm extends StatefulWidget {
     this.catalogFamilies = const [],
     required this.depots,
     required this.available,
+    this.initialDraft,
   });
   final List<Product> products;
   final List<ProductCategory> categories;
   final List<CatalogFamily> catalogFamilies;
   final List<Depot> depots;
   final int Function(String productId, String depotId) available;
+  final StockTransfer? initialDraft;
   @override
   State<StockTransferForm> createState() => _StockTransferFormState();
 }
@@ -15180,6 +16056,23 @@ class _StockTransferFormState extends State<StockTransferForm> {
   String? productId;
   String? sourceDepotId;
   String? destinationDepotId;
+
+  @override
+  void initState() {
+    super.initState();
+    final draft = widget.initialDraft;
+    if (draft == null) return;
+    productId = draft.productId;
+    sourceDepotId = draft.sourceDepotId;
+    destinationDepotId = draft.destinationDepotId;
+    pieces.text = '${draft.pieces}';
+  }
+
+  @override
+  void dispose() {
+    pieces.dispose();
+    super.dispose();
+  }
 
   void save() {
     if (!(form.currentState?.validate() ?? false)) return;
@@ -15199,19 +16092,19 @@ class _StockTransferFormState extends State<StockTransferForm> {
     Navigator.pop(
       context,
       StockTransfer(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        id: widget.initialDraft?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
         productId: productId!,
         sourceDepotId: sourceDepotId!,
         destinationDepotId: destinationDepotId!,
         pieces: quantity,
-        createdAt: DateTime.now(),
+        createdAt: widget.initialDraft?.createdAt ?? DateTime.now(),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) => FormShell(
-    title: 'Transférer le stock',
+    title: widget.initialDraft == null ? 'Transférer le stock' : 'Modifier le transfert',
     subtitle: 'Le transfert reste en brouillon jusqu’à sa validation.',
     child: Form(
       key: form,
@@ -15220,6 +16113,7 @@ class _StockTransferFormState extends State<StockTransferForm> {
           CatalogProductBrowser(
             products: widget.products,
             categories: widget.categories,
+            initialProductId: widget.initialDraft?.productId,
             catalogFamilies: widget.catalogFamilies,
             buildProducts: (products) => ProductPicker(
               products: products,
@@ -15284,7 +16178,7 @@ class _StockTransferFormState extends State<StockTransferForm> {
             child: FilledButton.icon(
               onPressed: save,
               icon: const Icon(Icons.send_rounded),
-              label: const Text('Envoyer à la validation'),
+              label: Text(widget.initialDraft == null ? 'Envoyer à la validation' : 'Enregistrer les modifications'),
             ),
           ),
         ],
@@ -15392,7 +16286,7 @@ class ProductKindPage extends StatelessWidget {
                         ProductKind.manufactured =>
                           Icons.precision_manufacturing_outlined,
                         ProductKind.diameter => Icons.architecture_outlined,
-                      }, color: AppPalette.primary),
+                      }, color: Theme.of(context).colorScheme.primary),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
@@ -15407,8 +16301,8 @@ class ProductKindPage extends StatelessWidget {
                             const SizedBox(height: 4),
                             Text(
                               kind.description,
-                              style: const TextStyle(
-                                color: AppPalette.muted,
+                              style: TextStyle(
+                                color: _atelierMuted(context),
                                 fontSize: 12,
                               ),
                             ),
@@ -15457,6 +16351,7 @@ class _ProductFormState extends State<ProductForm> {
   String? initialDepotId;
   String? categoryId;
   String? familyId;
+  String? modelId;
   MaterialType material = MaterialType.steel;
   LengthUnit lengthUnit = LengthUnit.meter;
   LengthUnit widthUnit = LengthUnit.meter;
@@ -15571,7 +16466,7 @@ class _ProductFormState extends State<ProductForm> {
       context,
       ProductCreation(
         categoryId: categoryId,
-        familyId: selectedSection?.legacyFamilyId,
+        modelId: modelId == '' ? null : modelId,
         product: Product(
           id: DateTime.now().microsecondsSinceEpoch.toString(),
           name: productName,
@@ -15609,7 +16504,9 @@ class _ProductFormState extends State<ProductForm> {
         children: [
           ImageInput(bytes: image, label: 'Photo du produit *', onTap: pick),
           const SizedBox(height: 14),
-          if (!isManufactured || widget.categories.isNotEmpty || widget.catalogFamilies.isNotEmpty) ...[
+          if (!isManufactured ||
+              widget.categories.isNotEmpty ||
+              widget.catalogFamilies.isNotEmpty) ...[
             LiquidSelectFormField<String>(
               initialValue: familyId,
               isExpanded: true,
@@ -15621,8 +16518,10 @@ class _ProductFormState extends State<ProductForm> {
               onChanged: (value) => setState(() {
                 familyId = value;
                 categoryId = null;
+                modelId = null;
               }),
-              validator: (value) => value == null ? 'Choisissez une famille.' : null,
+              validator: (value) =>
+                  value == null ? 'Choisissez une famille.' : null,
             ),
             if (selectedGroup case final family?) ...[
               const SizedBox(height: 14),
@@ -15633,13 +16532,35 @@ class _ProductFormState extends State<ProductForm> {
                 decoration: const InputDecoration(labelText: 'Catégorie *'),
                 items: [
                   for (final section in family.sections)
-                    DropdownMenuItem(value: section.category.id, child: Text(section.category.name)),
+                    DropdownMenuItem(
+                      value: section.category.id,
+                      child: Text(section.category.name),
+                    ),
                 ],
-                onChanged: (value) => setState(() => categoryId = value),
-                validator: (value) => value == null ? 'Choisissez une catégorie.' : null,
+                onChanged: (value) => setState(() {
+                  categoryId = value;
+                  modelId = null;
+                }),
+                validator: (value) =>
+                    value == null ? 'Choisissez une catégorie.' : null,
               ),
               if (family.sections.isEmpty)
                 const Text('Ajoutez d’abord une catégorie à cette famille.'),
+            ],
+            if (selectedSection case final section?) ...[
+              const SizedBox(height: 14),
+              LiquidSelectFormField<String>(
+                key: ValueKey((familyId, section.category.id)),
+                initialValue: modelId ?? '',
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Modèle'),
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('Sans modèle')),
+                  for (final model in section.category.models)
+                    DropdownMenuItem(value: model.id, child: Text(model.name)),
+                ],
+                onChanged: (value) => setState(() => modelId = value),
+              ),
             ],
             const SizedBox(height: 14),
           ],
@@ -15929,7 +16850,10 @@ class StockForm extends StatefulWidget {
     required this.suppliers,
     required this.onAddSupplier,
     required this.allowGallery,
+    this.canPreviewAttachments = false,
     this.initialProductId,
+    this.initialDraft,
+    this.existingPhotos,
   });
   final List<Product> products;
   final List<ProductCategory> categories;
@@ -15937,9 +16861,12 @@ class StockForm extends StatefulWidget {
   final int Function(String) stock;
   final List<Depot> depots;
   final List<Supplier> suppliers;
-  final Future<Supplier?> Function() onAddSupplier;
+  final Future<Supplier?> Function()? onAddSupplier;
   final bool allowGallery;
+  final bool canPreviewAttachments;
   final String? initialProductId;
+  final StockAddition? initialDraft;
+  final ValidationDraftPhotos? existingPhotos;
 
   @override
   State<StockForm> createState() => _StockFormState();
@@ -15953,11 +16880,22 @@ class SupplierForm extends StatefulWidget {
 }
 
 class _SupplierFormState extends State<SupplierForm> {
-  final form = GlobalKey<FormState>();
   final name = TextEditingController();
   final company = TextEditingController();
-  final contact = TextEditingController();
+  final phone = TextEditingController();
+  final fax = TextEditingController();
+  final ice = TextEditingController();
   final images = <Uint8List>[];
+
+  @override
+  void dispose() {
+    name.dispose();
+    company.dispose();
+    phone.dispose();
+    fax.dispose();
+    ice.dispose();
+    super.dispose();
+  }
 
   Future<void> pickImages() async {
     final available = 10 - images.length;
@@ -15981,14 +16919,21 @@ class _SupplierFormState extends State<SupplierForm> {
   }
 
   void save() {
-    if (!(form.currentState?.validate() ?? false)) return;
+    final personalName = name.text.trim();
+    final companyName = company.text.trim();
+    if (personalName.isEmpty && companyName.isEmpty) {
+      message(context, 'Indiquez au moins le nom ou la société du fournisseur.');
+      return;
+    }
     Navigator.pop(
       context,
       Supplier(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
-        name: name.text.trim(),
-        company: company.text.trim(),
-        contact: contact.text.trim(),
+        name: personalName,
+        company: companyName,
+        contact: personalName.isEmpty ? '' : phone.text.trim(),
+        fax: companyName.isEmpty ? '' : fax.text.trim(),
+        ice: companyName.isEmpty ? '' : ice.text.trim(),
         images: images,
       ),
     );
@@ -15997,50 +16942,59 @@ class _SupplierFormState extends State<SupplierForm> {
   @override
   Widget build(BuildContext context) => FormShell(
     title: 'Ajouter un fournisseur',
-    child: Form(
-      key: form,
-      child: Column(
-        children: [
-          TextFormField(
-            controller: name,
-            decoration: const InputDecoration(
-              labelText: 'Nom du fournisseur *',
-            ),
-            validator: required,
-          ),
+    child: Column(
+      children: [
+        TextField(
+          controller: name,
+          onChanged: (_) => setState(() {}),
+          decoration: const InputDecoration(labelText: 'Nom'),
+        ),
+        if (name.text.trim().isNotEmpty) ...[
           const SizedBox(height: 12),
           TextField(
-            controller: company,
-            decoration: const InputDecoration(
-              hintText: 'Société',
-              labelText: 'Nom de société',
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: contact,
+            controller: phone,
             keyboardType: TextInputType.phone,
             decoration: const InputDecoration(
-              labelText: 'Contact (facultatif)',
-            ),
-          ),
-          const SizedBox(height: 12),
-          MultiImageInput(
-            images: images,
-            label: 'Photos du fournisseur (${images.length}/10)',
-            onTap: pickImages,
-            onRemove: (index) => setState(() => images.removeAt(index)),
-          ),
-          const SizedBox(height: 20),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton(
-              onPressed: save,
-              child: const Text('Enregistrer le fournisseur'),
+              labelText: 'N° de téléphone (facultatif)',
             ),
           ),
         ],
-      ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: company,
+          onChanged: (_) => setState(() {}),
+          decoration: const InputDecoration(labelText: 'Nom de société'),
+        ),
+        if (company.text.trim().isNotEmpty) ...[
+          const SizedBox(height: 12),
+          TextField(
+            controller: fax,
+            keyboardType: TextInputType.phone,
+            decoration: const InputDecoration(labelText: 'Fax (facultatif)'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: ice,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'ICE (facultatif)'),
+          ),
+        ],
+        const SizedBox(height: 12),
+        MultiImageInput(
+          images: images,
+          label: 'Photos du fournisseur (${images.length}/10)',
+          onTap: pickImages,
+          onRemove: (index) => setState(() => images.removeAt(index)),
+        ),
+        const SizedBox(height: 20),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: save,
+            child: const Text('Enregistrer le fournisseur'),
+          ),
+        ),
+      ],
     ),
   );
 }
@@ -16170,6 +17124,9 @@ class SaleForm extends StatefulWidget {
     required this.available,
     required this.onAddClient,
     required this.allowGallery,
+    this.canPreviewAttachments = false,
+    this.initialDraft,
+    this.existingPhotos,
   });
   final List<Product> products;
   final List<ProductCategory> categories;
@@ -16177,8 +17134,11 @@ class SaleForm extends StatefulWidget {
   final List<Depot> depots;
   final List<Client> clients;
   final int Function(String, String) available;
-  final Future<Client?> Function() onAddClient;
+  final Future<Client?> Function()? onAddClient;
   final bool allowGallery;
+  final bool canPreviewAttachments;
+  final Sale? initialDraft;
+  final ValidationDraftPhotos? existingPhotos;
 
   @override
   State<SaleForm> createState() => _SaleFormState();
@@ -16193,6 +17153,29 @@ class _SaleFormState extends State<SaleForm> {
   final images = <Uint8List>[];
   InventoryUnit unit = InventoryUnit.piece;
   TransportCharge transportCharge = TransportCharge.none;
+
+  int get photoCount => (widget.existingPhotos?.remaining ?? 0) + images.length;
+  bool get requiresPhoto => widget.existingPhotos == null || widget.existingPhotos!.count > 0;
+
+  @override
+  void initState() {
+    super.initState();
+    final draft = widget.initialDraft;
+    if (draft == null) return;
+    productId = draft.productId;
+    openedProductFamilyId = selectedProduct?.parentProductId;
+    depotId = draft.depotId;
+    clientId = draft.clientId;
+    quantity.text = draft.quantity.toString();
+    unit = draft.unit;
+    transportCharge = draft.transportCharge;
+  }
+
+  @override
+  void dispose() {
+    quantity.dispose();
+    super.dispose();
+  }
 
   Product? get selectedProduct {
     for (final product in widget.products) {
@@ -16251,12 +17234,12 @@ class _SaleFormState extends State<SaleForm> {
   }
 
   Future<void> addClient() async {
-    final added = await widget.onAddClient();
+    final added = await widget.onAddClient?.call();
     if (added != null && mounted) setState(() => clientId = added.id);
   }
 
   Future<void> pickImages() async {
-    final available = 10 - images.length;
+    final available = 10 - photoCount;
     if (available <= 0) return message(context, 'Maximum : 10 photos.');
     final selectedImages = widget.allowGallery
         ? await Future.wait(
@@ -16291,7 +17274,7 @@ class _SaleFormState extends State<SaleForm> {
         clientId == null ||
         entered <= 0 ||
         pieces <= 0 ||
-        images.isEmpty) {
+        (requiresPhoto && photoCount == 0)) {
       return message(
         context,
         'Prenez une photo, puis choisissez un client, un produit, un dépôt et une quantité valide.',
@@ -16306,7 +17289,7 @@ class _SaleFormState extends State<SaleForm> {
     Navigator.pop(
       context,
       Sale(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        id: widget.initialDraft?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
         productId: productId!,
         depotId: depotId!,
         clientId: clientId!,
@@ -16314,7 +17297,7 @@ class _SaleFormState extends State<SaleForm> {
         quantity: entered,
         unit: unit,
         images: images,
-        createdAt: DateTime.now(),
+        createdAt: widget.initialDraft?.createdAt ?? DateTime.now(),
         transportCharge: transportCharge,
       ),
     );
@@ -16322,7 +17305,7 @@ class _SaleFormState extends State<SaleForm> {
 
   @override
   Widget build(BuildContext context) => FormShell(
-    title: 'Vente',
+    title: widget.initialDraft == null ? 'Vente' : 'Modifier la vente',
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -16341,12 +17324,14 @@ class _SaleFormState extends State<SaleForm> {
                 onChanged: (ids) => setState(() => clientId = ids.first),
               ),
             ),
-            const SizedBox(width: 8),
-            IconButton.filledTonal(
-              onPressed: addClient,
-              icon: const Icon(Icons.person_add_alt_1_rounded),
-              tooltip: 'Ajouter un client',
-            ),
+            if (widget.onAddClient != null) ...[
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                onPressed: addClient,
+                icon: const Icon(Icons.person_add_alt_1_rounded),
+                tooltip: 'Ajouter un client',
+              ),
+            ],
           ],
         ),
         const SizedBox(height: 16),
@@ -16469,8 +17454,8 @@ class _SaleFormState extends State<SaleForm> {
                   : selectedProduct?.isHose == true
                   ? 'Sortie de stock : $pieces pièce(s) = ${formatNumber(pieces * selectedProduct!.lengthMeters)} m'
                   : 'Sortie de stock : $pieces pièce(s)',
-              style: const TextStyle(
-                color: AppPalette.muted,
+              style: TextStyle(
+                color: _atelierMuted(context),
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -16488,11 +17473,20 @@ class _SaleFormState extends State<SaleForm> {
           onChanged: (value) => setState(() => transportCharge = value!),
         ),
         const SizedBox(height: 12),
+        if (widget.existingPhotos case final photos?)
+          _ExistingDraftPhotos(
+            photos: photos,
+            onRemove: (index) => setState(() => photos.removed.add(index)),
+          ),
         MultiImageInput(
           images: images,
           label: widget.allowGallery
-              ? 'Photos des pièces / accessoires * (${images.length}/10)'
-              : 'Prendre une photo * (${images.length}/10)',
+              ? 'Photos des pièces / accessoires ($photoCount/10)'
+              : 'Prendre une photo ($photoCount/10)',
+          showPreviews: widget.canPreviewAttachments,
+          onPreview: widget.canPreviewAttachments
+              ? () => _showTransactionPhotos(context, Future.value(List.of(images)))
+              : null,
           onTap: pickImages,
           onRemove: (index) => setState(() => images.removeAt(index)),
         ),
@@ -16502,7 +17496,7 @@ class _SaleFormState extends State<SaleForm> {
           child: FilledButton.icon(
             onPressed: save,
             icon: const Icon(Icons.point_of_sale_rounded),
-            label: const Text('Enregistrer la vente'),
+            label: Text(widget.initialDraft == null ? 'Enregistrer la vente' : 'Enregistrer les modifications'),
           ),
         ),
       ],
@@ -16519,6 +17513,16 @@ class _StockFormState extends State<StockForm> {
   final images = <Uint8List>[];
   InventoryUnit unit = InventoryUnit.piece;
   TransportCharge transportCharge = TransportCharge.none;
+
+  int get photoCount => (widget.existingPhotos?.remaining ?? 0) + images.length;
+  bool get requiresPhoto => widget.existingPhotos == null || widget.existingPhotos!.count > 0;
+
+  @override
+  void dispose() {
+    pieces.dispose();
+    receiptNumber.dispose();
+    super.dispose();
+  }
 
   Product? get selectedProduct {
     for (final product in widget.products) {
@@ -16541,12 +17545,12 @@ class _StockFormState extends State<StockForm> {
   }
 
   Future<void> addSupplier() async {
-    final added = await widget.onAddSupplier();
+    final added = await widget.onAddSupplier?.call();
     if (added != null && mounted) setState(() => supplierId = added.id);
   }
 
   Future<void> pickImages() async {
-    final available = 10 - images.length;
+    final available = 10 - photoCount;
     if (available <= 0) {
       message(context, 'Vous pouvez ajouter au maximum 10 photos.');
       return;
@@ -16580,6 +17584,17 @@ class _StockFormState extends State<StockForm> {
   @override
   void initState() {
     super.initState();
+    final draft = widget.initialDraft;
+    if (draft != null) {
+      selected = draft.productId;
+      depotId = draft.depotId;
+      supplierId = draft.supplierId;
+      pieces.text = draft.quantity.toString();
+      receiptNumber.text = draft.receiptNumber;
+      unit = draft.unit;
+      transportCharge = draft.transportCharge;
+      return;
+    }
     if (widget.products.any(
       (product) => product.id == widget.initialProductId,
     )) {
@@ -16599,7 +17614,7 @@ class _StockFormState extends State<StockForm> {
         count <= 0 ||
         supplierId == null ||
         receiptNumber.text.trim().isEmpty ||
-        images.isEmpty) {
+        (requiresPhoto && photoCount == 0)) {
       message(
         context,
         'Ajoutez une photo, puis choisissez un produit, un fournisseur, un dépôt, une quantité valide et le n° de bon.',
@@ -16609,6 +17624,7 @@ class _StockFormState extends State<StockForm> {
     Navigator.pop(
       context,
       StockAddition(
+        id: widget.initialDraft?.id,
         productId: selected!,
         depotId: depotId!,
         pieces: count,
@@ -16617,7 +17633,7 @@ class _StockFormState extends State<StockForm> {
         quantity: enteredQuantity,
         unit: unit,
         images: images,
-        addedAt: DateTime.now(),
+        addedAt: widget.initialDraft?.addedAt ?? DateTime.now(),
         transportCharge: transportCharge,
       ),
     );
@@ -16625,7 +17641,7 @@ class _StockFormState extends State<StockForm> {
 
   @override
   Widget build(BuildContext context) => FormShell(
-    title: 'Achat · Ajouter au stock',
+    title: widget.initialDraft == null ? 'Achat · Ajouter au stock' : 'Modifier l’achat',
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -16638,7 +17654,7 @@ class _StockFormState extends State<StockForm> {
           products: widget.products,
           categories: widget.categories,
           catalogFamilies: widget.catalogFamilies,
-          initialProductId: widget.initialProductId,
+          initialProductId: widget.initialDraft?.productId ?? widget.initialProductId,
           buildProducts: (products) => ProductPicker(
             products: products,
             selected: selected == null ? <String>{} : {selected!},
@@ -16671,12 +17687,14 @@ class _StockFormState extends State<StockForm> {
                 onChanged: (ids) => setState(() => supplierId = ids.first),
               ),
             ),
-            const SizedBox(width: 8),
-            IconButton.filledTonal(
-              onPressed: addSupplier,
-              tooltip: 'Ajouter un fournisseur',
-              icon: const Icon(Icons.person_add_alt_1_rounded),
-            ),
+            if (widget.onAddSupplier != null) ...[
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                onPressed: addSupplier,
+                tooltip: 'Ajouter un fournisseur',
+                icon: const Icon(Icons.person_add_alt_1_rounded),
+              ),
+            ],
           ],
         ),
         const SizedBox(height: 12),
@@ -16755,11 +17773,20 @@ class _StockFormState extends State<StockForm> {
           onChanged: (value) => setState(() => transportCharge = value!),
         ),
         const SizedBox(height: 12),
+        if (widget.existingPhotos case final photos?)
+          _ExistingDraftPhotos(
+            photos: photos,
+            onRemove: (index) => setState(() => photos.removed.add(index)),
+          ),
         MultiImageInput(
           images: images,
           label: widget.allowGallery
-              ? 'Photos des pièces / accessoires * (${images.length}/10)'
-              : 'Prendre une photo * (${images.length}/10)',
+              ? 'Photos des pièces / accessoires ($photoCount/10)'
+              : 'Prendre une photo ($photoCount/10)',
+          showPreviews: widget.canPreviewAttachments,
+          onPreview: widget.canPreviewAttachments
+              ? () => _showTransactionPhotos(context, Future.value(List.of(images)))
+              : null,
           onTap: pickImages,
           onRemove: (index) => setState(() => images.removeAt(index)),
         ),
@@ -16789,14 +17816,14 @@ class _StockFormState extends State<StockForm> {
                     width: double.infinity,
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFE9D5FF),
+                      color: Theme.of(context).colorScheme.primary.withValues(alpha: .14),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
                       'Le stock est conservé en pièces : ${formatQuantity(enteredQuantity, unit)} est converti en $addedPieces pièce(s) pour ce produit.',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
-                        color: Color(0xFF45116C),
+                        color: _atelierForeground(context),
                       ),
                     ),
                   ),
@@ -16808,10 +17835,7 @@ class _StockFormState extends State<StockForm> {
                 const SizedBox(height: 4),
                 Text(
                   '${productQuantityLabel(selectedProduct!, widget.stock(selectedProduct!.id) + addedPieces)} au total',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppPalette.muted,
-                  ),
+                  style: TextStyle(fontSize: 12, color: _atelierMuted(context)),
                 ),
               ],
             ),
@@ -16822,7 +17846,7 @@ class _StockFormState extends State<StockForm> {
           width: double.infinity,
           child: FilledButton(
             onPressed: save,
-            child: const Text('Ajouter au stock'),
+            child: Text(widget.initialDraft == null ? 'Ajouter au stock' : 'Enregistrer les modifications'),
           ),
         ),
       ],
@@ -17371,9 +18395,9 @@ class _MachineFormState extends State<MachineForm> {
             ),
             const SizedBox(height: 12),
             if (!temporary) ...[
-              const Text(
+              Text(
                 'Chaque exemplaire a sa propre photo et sa propre carte.',
-                style: TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -17401,9 +18425,9 @@ class _MachineFormState extends State<MachineForm> {
                 ),
               ),
             ] else ...[
-              const Text(
+              Text(
                 'À utiliser quand des pièces sont envoyées chez un voisin. Une photo est requise ; le stock ne sera crédité qu’après validation.',
-                style: TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
               const SizedBox(height: 12),
               ImageInput(
@@ -17483,7 +18507,7 @@ class _MachineFormState extends State<MachineForm> {
               temporary
                   ? 'Choisissez ensuite la matière envoyée : elle sera déduite du stock à la validation.'
                   : 'Le travailleur choisira le produit de cette catégorie au démarrage.',
-              style: const TextStyle(fontSize: 12, color: AppPalette.muted),
+              style: TextStyle(fontSize: 12, color: _atelierMuted(context)),
             ),
             if (temporary && categoryId != null) ...[
               const SizedBox(height: 16),
@@ -17638,6 +18662,7 @@ class ProductPicker extends StatelessWidget {
     runSpacing: 10,
     children: products.map((product) {
       final isSelected = selected.contains(product.id);
+      final scheme = Theme.of(context).colorScheme;
       return SizedBox(
         width: 145,
         child: InkWell(
@@ -17649,11 +18674,11 @@ class ProductPicker extends StatelessWidget {
             padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
               color: isSelected
-                  ? AppPalette.desktopAccentSoft
-                  : AppPalette.surfaceRaised.withValues(alpha: .56),
+                  ? scheme.primaryContainer
+                  : scheme.surfaceContainerHigh.withValues(alpha: .56),
               borderRadius: BorderRadius.circular(18),
               border: Border.all(
-                color: isSelected ? AppPalette.primary : AppPalette.line,
+                color: isSelected ? scheme.primary : scheme.outline,
                 width: isSelected ? 2 : 1,
               ),
             ),
@@ -17705,6 +18730,7 @@ class CatalogProductBrowser extends StatefulWidget {
 class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
   String? familyId;
   String? categoryId;
+  String? modelId;
 
   List<_CatalogGroup> get groups => _catalogGroups(
     widget.categories,
@@ -17728,6 +18754,10 @@ class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
       if (section == null) continue;
       familyId = group.id;
       categoryId = section.category.id;
+      modelId = section.models
+          .where((model) => model.productIds.contains(_catalogMembershipId(product)))
+          .firstOrNull
+          ?.id;
       break;
     }
   }
@@ -17753,6 +18783,7 @@ class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
               onTap: () => setState(() {
                 familyId = group.id;
                 categoryId = null;
+                modelId = null;
               }),
             ),
       ]);
@@ -17760,12 +18791,14 @@ class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
     final section = family.sections
         .where((item) => item.category.id == categoryId)
         .firstOrNull;
-    final products = section == null
+    final models = section?.models ?? const <ProductModel>[];
+    final model = models.where((item) => item.id == modelId).firstOrNull;
+    final members = model?.productIds.toSet();
+    final products = members == null
         ? const <Product>[]
         : widget.products
               .where(
-                (item) =>
-                    section.productIds.contains(_catalogMembershipId(item)),
+                (item) => members.contains(_catalogMembershipId(item)),
               )
               .toList();
     return Column(
@@ -17773,33 +18806,55 @@ class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
       children: [
         TextButton.icon(
           icon: const Icon(Icons.arrow_back_rounded),
-          label: Text(section == null ? 'Familles' : 'Catégories'),
+          label: Text(model != null ? 'Modèles' : section == null ? 'Familles' : 'Catégories'),
           onPressed: () => setState(() {
-            if (section == null) familyId = null;
-            categoryId = null;
+            if (model != null) {
+              modelId = null;
+            } else {
+              if (section == null) familyId = null;
+              categoryId = null;
+              modelId = null;
+            }
           }),
         ),
         Text(
-          section == null
-              ? family.name
-              : '${family.name} · ${section.category.name}',
+          [family.name, ?section?.category.name, ?model?.name].join(' · '),
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 10),
-        if (section != null)
+        if (model != null)
           if (products.isEmpty)
-            const Text('Aucun produit dans cette catégorie.')
+            const Text('Aucun produit dans ce modèle.')
           else
             widget.buildProducts(products)
+        else if (section != null)
+          if (models.isEmpty)
+            const Text('Aucun modèle dans cette catégorie.')
+          else
+            _catalogCards([
+              for (final item in models)
+                if (widget.showEmptyCategories ||
+                    item.productIds.any(availableIds.contains))
+                  _CatalogGroupCard(
+                    name: item.name,
+                    icon: Icons.view_in_ar_outlined,
+                    onTap: () => setState(() => modelId = item.id),
+                  ),
+            ])
         else if (family.sections.isEmpty)
           const Text('Aucune catégorie dans cette famille.')
         else
           _catalogCards([
             for (final item in family.sections)
-              _CatalogGroupCard(
-                name: item.category.name,
-                onTap: () => setState(() => categoryId = item.category.id),
-              ),
+              if (widget.showEmptyCategories ||
+                  item.productIds.any(availableIds.contains))
+                _CatalogGroupCard(
+                  name: item.category.name,
+                  onTap: () => setState(() {
+                    categoryId = item.category.id;
+                    modelId = null;
+                  }),
+                ),
           ]),
       ],
     );
@@ -17827,11 +18882,13 @@ class _CatalogGroupCard extends StatelessWidget {
     required this.name,
     required this.onTap,
     this.preview = const [],
+    this.icon = Icons.folder_outlined,
   });
 
   final String name;
   final List<String> preview;
   final VoidCallback onTap;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) => InkWell(
@@ -17848,7 +18905,7 @@ class _CatalogGroupCard extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const _AtelierIcon(Icons.folder_outlined, size: 38),
+                _AtelierIcon(icon, size: 38),
                 for (final label in preview)
                   Padding(
                     padding: const EdgeInsets.only(top: 5),
@@ -17856,7 +18913,10 @@ class _CatalogGroupCard extends StatelessWidget {
                       label,
                       textAlign: TextAlign.center,
                       maxLines: 1,
-                      style: const TextStyle(color: AppPalette.muted, fontSize: 12),
+                      style: TextStyle(
+                        color: _atelierMuted(context),
+                        fontSize: 12,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
@@ -18087,7 +19147,7 @@ class _StartOperationState extends State<StartOperation> {
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 'Stock disponible dans ce dépôt : ${widget.available(productId!, depotId!)} pièce(s)',
-                style: const TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
             ),
         ],
@@ -18132,8 +19192,8 @@ class _StartOperationState extends State<StartOperation> {
               child: Text(
                 'Longueur calculée du cadous : ${formatNumber((int.parse(hopper.text)) * Operation.hopperSheetLengthMeters)} m '
                 '(${hopper.text} tôle(s) × ${formatNumber(Operation.hopperSheetLengthMeters)} m)',
-                style: const TextStyle(
-                  color: AppPalette.muted,
+                style: TextStyle(
+                  color: _atelierMuted(context),
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -18152,9 +19212,9 @@ class _StartOperationState extends State<StartOperation> {
             ),
         ],
         const SizedBox(height: 14),
-        const Text(
+        Text(
           'Le stock sera réservé immédiatement et l’opération sera affichée comme « en cours ».',
-          style: TextStyle(fontSize: 12, color: AppPalette.muted),
+          style: TextStyle(fontSize: 12, color: _atelierMuted(context)),
         ),
         const SizedBox(height: 20),
         SizedBox(
@@ -18202,11 +19262,13 @@ class FinishOperation extends StatefulWidget {
     required this.machine,
     required this.output,
     required this.depots,
+    this.editing = false,
   });
   final Operation operation;
   final FactoryMachine machine;
   final Product output;
   final List<Depot> depots;
+  final bool editing;
   @override
   State<FinishOperation> createState() => _FinishOperationState();
 }
@@ -18223,6 +19285,32 @@ class _FinishOperationState extends State<FinishOperation> {
   String? scrapDepotId;
   int step = 0;
 
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.editing) return;
+    final draft = widget.operation;
+    pieces.text = '${draft.outputPieces ?? 0}';
+    remainderPieces.text = '${draft.remainderPieces}';
+    scrapPieces.text = '${draft.scrapPieces}';
+    image = draft.finalImage;
+    remainderImage = draft.remainderImage;
+    scrapImage = draft.scrapImage;
+    outputDepotId = draft.outputDepotId;
+    remainderDepotId = draft.remainderDepotId;
+    scrapDepotId = draft.scrapDepotId;
+  }
+
+  @override
+  void dispose() {
+    pieces.dispose();
+    remainderPieces.dispose();
+    scrapPieces.dispose();
+    super.dispose();
+  }
+
+  bool get external => widget.operation.externalProduction;
+
   Future<void> pick(ValueChanged<Uint8List> onPicked) async {
     final file = await ImagePicker().pickImage(
       source: ImageSource.gallery,
@@ -18238,7 +19326,7 @@ class _FinishOperationState extends State<FinishOperation> {
           'Cette image est trop grande. Choisissez-en une autre.',
         );
       }
-      onPicked(bytes);
+      setState(() => onPicked(bytes));
     }
   }
 
@@ -18257,8 +19345,8 @@ class _FinishOperationState extends State<FinishOperation> {
         n != null &&
         n >= 0 &&
         used >= 0 &&
-        used + remainder + scrap == widget.operation.pieces;
-    final outputComplete = n == 0 || (outputDepotId != null && image != null);
+        (external || used + remainder + scrap == widget.operation.pieces);
+    final outputComplete = n == 0 || (outputDepotId != null && (external || image != null));
     final remainderComplete =
         remainder == 0 || (remainderDepotId != null && remainderImage != null);
     final scrapComplete =
@@ -18280,15 +19368,15 @@ class _FinishOperationState extends State<FinishOperation> {
       context,
       Completion(
         outputPieces: n,
-        image: image,
-        finishedAt: DateTime.now(),
+        image: n == 0 ? null : image,
+        finishedAt: widget.editing ? widget.operation.finishedAt! : DateTime.now(),
         outputDepotId: outputDepotId ?? 'general-depot',
         scrapPieces: scrap,
         remainderPieces: remainder,
-        remainderImage: remainderImage,
-        remainderDepotId: remainderDepotId,
-        scrapImage: scrapImage,
-        scrapDepotId: scrapDepotId,
+        remainderImage: remainder == 0 ? null : remainderImage,
+        remainderDepotId: remainder == 0 ? null : remainderDepotId,
+        scrapImage: scrap == 0 ? null : scrapImage,
+        scrapDepotId: scrap == 0 ? null : scrapDepotId,
       ),
     );
   }
@@ -18336,15 +19424,15 @@ class _FinishOperationState extends State<FinishOperation> {
             const SizedBox(height: 14),
             ImageInput(
               bytes: image,
-              label: 'Photo du produit fabriqué *',
+              label: external ? 'Photo du produit fabriqué' : 'Photo du produit fabriqué *',
               onTap: () => pick((value) => image = value),
             ),
           ] else
-            const Padding(
-              padding: EdgeInsets.only(top: 12),
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
               child: Text(
                 'Indiquez une quantité fabriquée supérieure à zéro pour choisir son dépôt et sa photo.',
-                style: TextStyle(color: AppPalette.muted),
+                style: TextStyle(color: _atelierMuted(context)),
               ),
             ),
         ],
@@ -18456,7 +19544,9 @@ class _FinishOperationState extends State<FinishOperation> {
       ),
     };
     return FormShell(
-      title: 'Terminer l’opération · ${step + 1}/3',
+      title: external
+          ? 'Modifier le travail externe'
+          : '${widget.editing ? 'Modifier la production' : 'Terminer l’opération'} · ${step + 1}/3',
       subtitle: widget.machine.name,
       child: Column(
         children: [
@@ -18481,13 +19571,15 @@ class _FinishOperationState extends State<FinishOperation> {
               if (step > 0) const SizedBox(width: 10),
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: step == 2 ? finish : () => setState(() => step++),
+                  onPressed: external || step == 2 ? finish : () => setState(() => step++),
                   icon: Icon(
                     step == 2
                         ? Icons.task_alt_rounded
                         : Icons.arrow_forward_rounded,
                   ),
-                  label: Text(step == 2 ? 'Vérifier et terminer' : 'Continuer'),
+                  label: Text(external || step == 2
+                      ? (widget.editing ? 'Enregistrer les modifications' : 'Vérifier et terminer')
+                      : 'Continuer'),
                 ),
               ),
             ],
@@ -18512,11 +19604,11 @@ class Receipt extends StatelessWidget {
   final AppUser operator;
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Row(
+    title: Row(
       children: [
-        Icon(Icons.receipt_long_rounded, color: AppPalette.primary),
-        SizedBox(width: 8),
-        Text('Bon de production'),
+        Icon(Icons.receipt_long_rounded, color: Theme.of(context).colorScheme.primary),
+        const SizedBox(width: 8),
+        const Text('Bon de production'),
       ],
     ),
     content: SingleChildScrollView(
@@ -18551,15 +19643,28 @@ class Receipt extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: const Color(0xFFFFEDD5),
+                color: _atelierWarning(context).withValues(alpha: .16),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Text(
-                '⚠ ${operation.pieces - (operation.outputPieces ?? 0)} pièce(s) restante(s) photographiée(s) et envoyée(s) au contrôle.',
-                style: const TextStyle(
-                  color: Color(0xFF92400E),
-                  fontWeight: FontWeight.w800,
-                ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    size: 18,
+                    color: _atelierWarning(context),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${operation.pieces - (operation.outputPieces ?? 0)} pièce(s) restante(s) photographiée(s) et envoyée(s) au contrôle.',
+                      style: TextStyle(
+                        color: _atelierWarning(context),
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -18714,17 +19819,19 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
                 'Définissez un nouveau mot de passe pour ${widget.user.fullName}.',
               ),
               const SizedBox(height: 12),
-              TextField(
+              _GlassPasswordField(
                 controller: password,
-                obscureText: true,
                 autofocus: true,
-                decoration: const InputDecoration(labelText: 'Nouveau mot de passe'),
+                decoration: const InputDecoration(
+                  labelText: 'Nouveau mot de passe',
+                ),
               ),
               const SizedBox(height: 10),
-              TextField(
+              _GlassPasswordField(
                 controller: confirmation,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Confirmer le mot de passe'),
+                decoration: const InputDecoration(
+                  labelText: 'Confirmer le mot de passe',
+                ),
               ),
               if (error != null) ...[
                 const SizedBox(height: 8),
@@ -18828,7 +19935,10 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('Fiche utilisateur')),
-    body: SafeArea(
+    body: Aura(child: _buildBody(context)),
+  );
+
+  Widget _buildBody(BuildContext context) => SafeArea(
       child: ListView(
         padding: const EdgeInsets.all(20),
         children: [
@@ -18850,9 +19960,9 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               child: ListTile(
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(
+                leading: Icon(
                   Icons.lock_reset_rounded,
-                  color: AppPalette.primary,
+                  color: Theme.of(context).colorScheme.primary,
                 ),
                 title: const Text('Mot de passe'),
                 subtitle: Text(
@@ -18893,9 +20003,9 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
             'Pages et droit d’ajout',
             style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
           ),
-          const Text(
+          Text(
             'L’icône œil signifie lecture seule ; le crayon autorise aussi les ajouts et modifications.',
-            style: TextStyle(color: AppPalette.muted, fontSize: 12),
+            style: TextStyle(color: _atelierMuted(context), fontSize: 12),
           ),
           const SizedBox(height: 6),
           ...AppPage.values.map(accessCheck),
@@ -18917,9 +20027,9 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
               'Plage quotidienne de connexion',
               style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
             ),
-            const Text(
+            Text(
               'En dehors de cette plage, le compte ne peut pas accéder à l’application.',
-              style: TextStyle(color: AppPalette.muted, fontSize: 12),
+              style: TextStyle(color: _atelierMuted(context), fontSize: 12),
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -19038,7 +20148,6 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
           ],
         ],
       ),
-    ),
   );
 }
 
@@ -19097,9 +20206,8 @@ class _UserFormState extends State<UserForm> {
             validator: emailValidator,
           ),
           const SizedBox(height: 12),
-          TextFormField(
+          _GlassPasswordField(
             controller: password,
-            obscureText: true,
             decoration: const InputDecoration(labelText: 'Mot de passe *'),
             validator: securePasswordValidator,
           ),
@@ -19113,6 +20221,7 @@ class _UserFormState extends State<UserForm> {
           ),
           const SizedBox(height: 8),
           SegmentedButton<UserRole>(
+            showSelectedIcon: MediaQuery.sizeOf(context).width >= 440,
             segments: const [
               ButtonSegment(value: UserRole.operator, label: Text('Opérateur')),
               ButtonSegment(value: UserRole.visitor, label: Text('Visiteur')),
@@ -19167,46 +20276,53 @@ class PatternPad extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      const Text('Glissez le doigt entre les points (4 minimum).'),
-      const SizedBox(height: 10),
-      SizedBox(
-        width: 230,
-        height: 230,
-        child: LayoutBuilder(
-          builder: (context, constraints) => GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onPanStart: onChanged == null
-                ? null
-                : (details) => _add(
-                    details.localPosition,
-                    constraints.maxWidth,
-                    reset: true,
-                  ),
-            onPanUpdate: onChanged == null
-                ? null
-                : (details) =>
-                      _add(details.localPosition, constraints.maxWidth),
-            child: CustomPaint(
-              painter: _PatternPadPainter(pattern),
-              child: const SizedBox.expand(),
+  Widget build(BuildContext context) {
+    final dark = ForageAppearanceScope.of(context).isDark;
+    return Column(
+      children: [
+        Text(
+          'Glissez le doigt entre les points (4 minimum).',
+          style: TextStyle(color: dark ? const Color(0xFFE4C7EE) : null),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: 230,
+          height: 230,
+          child: LayoutBuilder(
+            builder: (context, constraints) => GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: onChanged == null
+                  ? null
+                  : (details) => _add(
+                      details.localPosition,
+                      constraints.maxWidth,
+                      reset: true,
+                    ),
+              onPanUpdate: onChanged == null
+                  ? null
+                  : (details) =>
+                        _add(details.localPosition, constraints.maxWidth),
+              child: CustomPaint(
+                painter: _PatternPadPainter(pattern, dark: dark),
+                child: const SizedBox.expand(),
+              ),
             ),
           ),
         ),
-      ),
-      TextButton.icon(
-        onPressed: onChanged == null ? null : () => onChanged!(const []),
-        icon: const Icon(Icons.refresh_rounded),
-        label: const Text('Effacer le schéma'),
-      ),
-    ],
-  );
+        TextButton.icon(
+          onPressed: onChanged == null ? null : () => onChanged!(const []),
+          icon: const Icon(Icons.refresh_rounded),
+          label: const Text('Effacer le schéma'),
+        ),
+      ],
+    );
+  }
 }
 
 class _PatternPadPainter extends CustomPainter {
-  const _PatternPadPainter(this.pattern);
+  const _PatternPadPainter(this.pattern, {required this.dark});
   final List<int> pattern;
+  final bool dark;
 
   Offset _center(int index, double side) =>
       Offset((index % 3 + .5) * side / 3, (index ~/ 3 + .5) * side / 3);
@@ -19214,8 +20330,11 @@ class _PatternPadPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final side = size.shortestSide;
+    final accent = dark ? const Color(0xFFE46AFF) : AppPalette.primary;
+    final idleFill = dark ? const Color(0xFF30103F) : AppPalette.soft;
+    final idleBorder = dark ? const Color(0xFFE7B5FF) : AppPalette.line;
     final line = Paint()
-      ..color = AppPalette.primary
+      ..color = accent
       ..strokeWidth = 5
       ..strokeCap = StrokeCap.round;
     final path = Path();
@@ -19232,13 +20351,13 @@ class _PatternPadPainter extends CustomPainter {
       canvas.drawCircle(
         point,
         side / 11,
-        Paint()..color = selected ? AppPalette.primary : AppPalette.soft,
+        Paint()..color = selected ? accent : idleFill,
       );
       canvas.drawCircle(
         point,
         side / 11,
         Paint()
-          ..color = selected ? AppPalette.primary : AppPalette.line
+          ..color = selected ? accent : idleBorder
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2,
       );
@@ -19247,7 +20366,7 @@ class _PatternPadPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_PatternPadPainter oldDelegate) =>
-      !listEquals(pattern, oldDelegate.pattern);
+      !listEquals(pattern, oldDelegate.pattern) || oldDelegate.dark != dark;
 }
 
 class ImageInput extends StatelessWidget {
@@ -19260,82 +20379,87 @@ class ImageInput extends StatelessWidget {
   final Uint8List? bytes;
   final String label;
   final VoidCallback onTap;
+
   @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: onTap,
-    borderRadius: BorderRadius.circular(16),
-    child: AnimatedContainer(
-      duration: const Duration(milliseconds: 220),
-      height: bytes == null ? 118 : 174,
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: AppPalette.soft,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFDCD9F8)),
-      ),
-      child: bytes == null
-          ? Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.add_a_photo_outlined,
-                    color: AppPalette.primary,
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Flexible(
-                  child: Column(
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final image = bytes;
+    return Semantics(
+      button: true,
+      label: image == null ? null : label,
+      child: _LiquidTapTarget(
+        onTap: onTap,
+        radius: 18,
+        accent: scheme.primary,
+        child: AnimatedSize(
+          duration: MediaQuery.disableAnimationsOf(context)
+              ? Duration.zero
+              : const Duration(milliseconds: 220),
+          child: image == null
+              ? Container(
+                  constraints: const BoxConstraints(minHeight: 118),
+                  alignment: Alignment.center,
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        label,
-                        style: const TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                      const SizedBox(height: 4),
-                      const Text(
-                        'Touchez pour choisir une image',
-                        style: TextStyle(color: AppPalette.muted, fontSize: 12),
+                      const _AtelierIcon(Icons.add_a_photo_outlined, size: 46),
+                      const SizedBox(width: 14),
+                      Flexible(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              label,
+                              style: TextStyle(
+                                color: scheme.onSurface,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Touchez pour choisir une image',
+                              style: TextStyle(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
-                ),
-              ],
-            )
-          : ClipRRect(
-              borderRadius: BorderRadius.circular(15),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Image.memory(bytes!, fit: BoxFit.cover),
-                  Positioned(
-                    right: 10,
-                    bottom: 10,
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.edit_rounded,
-                        size: 18,
-                        color: AppPalette.primary,
+                )
+              : Padding(
+                  padding: const EdgeInsets.all(3),
+                  child: SizedBox(
+                    height: 168,
+                    width: double.infinity,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(15),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Image.memory(
+                            image,
+                            fit: BoxFit.cover,
+                            excludeFromSemantics: true,
+                          ),
+                          const Positioned(
+                            right: 10,
+                            bottom: 10,
+                            child: _AtelierIcon(Icons.edit_rounded, size: 36),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-                ],
-              ),
-            ),
-    ),
-  );
+                ),
+        ),
+      ),
+    );
+  }
 }
 
 class MultiImageInput extends StatelessWidget {
@@ -19345,11 +20469,15 @@ class MultiImageInput extends StatelessWidget {
     required this.label,
     required this.onTap,
     required this.onRemove,
+    this.showPreviews = true,
+    this.onPreview,
   });
   final List<Uint8List> images;
   final String label;
   final VoidCallback onTap;
   final ValueChanged<int> onRemove;
+  final bool showPreviews;
+  final VoidCallback? onPreview;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -19360,7 +20488,22 @@ class MultiImageInput extends StatelessWidget {
         icon: const Icon(Icons.add_photo_alternate_outlined),
         label: Text(label),
       ),
-      if (images.isNotEmpty) ...[
+      if (images.isNotEmpty && !showPreviews)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: List.generate(
+              images.length,
+              (index) => InputChip(
+                label: Text('Photo ${index + 1}'),
+                onDeleted: () => onRemove(index),
+              ),
+            ),
+          ),
+        ),
+      if (images.isNotEmpty && showPreviews) ...[
         const SizedBox(height: 8),
         SizedBox(
           height: 92,
@@ -19372,11 +20515,14 @@ class MultiImageInput extends StatelessWidget {
               children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: Image.memory(
-                    images[index],
-                    width: 92,
-                    height: 92,
-                    fit: BoxFit.cover,
+                  child: InkWell(
+                    onTap: onPreview,
+                    child: Image.memory(
+                      images[index],
+                      width: 92,
+                      height: 92,
+                      fit: BoxFit.cover,
+                    ),
                   ),
                 ),
                 Positioned(
@@ -19430,6 +20576,8 @@ class FormShell extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
               child: Glass(
                 radius: 22,
+                depth: 1.65,
+                opacity: .81,
                 padding: const EdgeInsets.fromLTRB(6, 6, 12, 6),
                 child: Row(
                   children: [
@@ -19450,7 +20598,7 @@ class FormShell extends StatelessWidget {
                             const SizedBox(height: 3),
                             Text(
                               description,
-                              style: const TextStyle(color: AppPalette.muted),
+                              style: TextStyle(color: _atelierMuted(context)),
                             ),
                           ],
                         ],

@@ -123,6 +123,192 @@ void main() {
     }
   });
 
+  testWidgets('the dark dashboard renders its overview on a desktop layout',
+      (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1440, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final user = AppUser(
+      id: 'dashboard-admin',
+      username: 'dashboard.admin',
+      password: 'Correct_password_2026',
+      fullName: 'Youssef Forage',
+      admin: true,
+      role: UserRole.admin,
+      roles: {UserRole.admin},
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: atelierTheme(),
+        darkTheme: atelierDarkTheme(),
+        themeMode: ThemeMode.dark,
+        home: MediaQuery(
+          data: const MediaQueryData(size: Size(1440, 900)),
+          child: ForageAppearanceScope(
+            appearance: ForageAppearance.dark,
+            onChanged: (_) {},
+            child: DashboardPage(
+              user: user,
+              productCount: 49,
+              machineCount: 6,
+              pendingReviews: 2,
+              forceDesktopLayout: true,
+              onProducts: () {},
+              onStock: () {},
+              onMachines: () {},
+              onTeam: () {},
+              onValidation: () {},
+              onCategories: () {},
+              onReviews: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.pumpAndSettle();
+    expect(find.text('Bonjour, Youssef'), findsOneWidget);
+    expect(find.text('Accès rapide'), findsOneWidget);
+    expect(find.text('Machines de l’atelier'), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.text('VUE D’ENSEMBLE')).style?.color,
+      atelierDarkTheme().colorScheme.primary,
+    );
+    expect(
+      tester.widget<Text>(find.text('Voici un aperçu de votre atelier aujourd’hui.'))
+          .style?.color,
+      atelierDarkTheme().colorScheme.onSurfaceVariant,
+    );
+    expect(
+      tester.getSize(find.byKey(const ValueKey('atelier-overview'))).height,
+      greaterThanOrEqualTo(176),
+    );
+  });
+
+  testWidgets('the dark dashboard remains visible on a phone layout',
+      (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final user = AppUser(
+      id: 'mobile-dashboard-admin',
+      username: 'mobile.dashboard.admin',
+      password: 'Correct_password_2026',
+      fullName: 'Youssef Forage',
+      admin: true,
+      role: UserRole.admin,
+      roles: {UserRole.admin},
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: atelierTheme(),
+        darkTheme: atelierDarkTheme(),
+        themeMode: ThemeMode.dark,
+        home: MediaQuery(
+          data: const MediaQueryData(size: Size(390, 844)),
+          child: ForageAppearanceScope(
+            appearance: ForageAppearance.dark,
+            onChanged: (_) {},
+            child: DashboardPage(
+              user: user,
+              productCount: 49,
+              machineCount: 6,
+              pendingReviews: 2,
+              onProducts: () {},
+              onStock: () {},
+              onMachines: () {},
+              onTeam: () {},
+              onValidation: () {},
+              onCategories: () {},
+              onReviews: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Bonjour, Youssef'), findsOneWidget);
+    expect(find.text('Machines de l’atelier'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('atelier-overview'))).height,
+      greaterThan(180),
+    );
+  });
+
+  testWidgets('the Excel family filter inherits the dark dialog theme',
+      (tester) async {
+    final theme = atelierDarkTheme();
+    await tester.binding.setSurfaceSize(const Size(650, 820));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: atelierTheme(),
+        darkTheme: theme,
+        themeMode: ThemeMode.dark,
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (_) => ExcelExportDialog(
+                  products: const [],
+                  categories: const [],
+                  catalogFamilies: const [
+                    CatalogFamily(id: 'forage', name: 'Forage', categoryIds: []),
+                  ],
+                  depots: const [],
+                  stockAdditions: const [],
+                  sales: const [],
+                  operations: const [],
+                  transfers: const [],
+                  returns: const [],
+                  machines: const [],
+                  suppliers: const [],
+                  clients: const [],
+                  productName: (id) => id,
+                  depotName: (id) => id,
+                  clientName: (id) => id,
+                  supplierName: (id) => id,
+                  saveSheets: (_) async {},
+                ),
+              ),
+              child: const Text('Exporter'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Exporter'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(CheckboxListTile, 'Produits'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(SearchChoiceField, 'Familles'));
+    await tester.pumpAndSettle();
+
+    final pickerSurface = tester.widget<Material>(
+      find.descendant(of: find.byType(Dialog).last, matching: find.byType(Material)).first,
+    );
+    expect(pickerSurface.color, theme.dialogTheme.backgroundColor);
+    await tester.tap(find.text('Forage'));
+    await tester.pumpAndSettle();
+    final checkbox = find.descendant(
+      of: find.widgetWithText(CheckboxListTile, 'Forage'),
+      matching: find.byType(Checkbox),
+    );
+    expect(tester.widget<Checkbox>(checkbox).value, isTrue);
+    expect(
+      CheckboxTheme.of(tester.element(checkbox)).fillColor?.resolve({
+        WidgetState.selected,
+      }),
+      theme.colorScheme.primary,
+    );
+    await tester.tap(find.text('Appliquer'));
+    await tester.pumpAndSettle();
+    expect(find.text('Exporter vers Excel'), findsOneWidget);
+    expect(find.text('Forage'), findsOneWidget);
+  });
+
   test('reset does not recreate a default administrator', () async {
     final directory = await Directory.systemTemp.createTemp('forage-reset-test-');
     final database = AppDatabase(
