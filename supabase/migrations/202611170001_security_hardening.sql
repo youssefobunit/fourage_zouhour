@@ -56,15 +56,20 @@ $$;
 
 create or replace function public.validate_forage_profile()
 returns trigger language plpgsql security definer set search_path = '' as $$
-declare pages text[] := array['dashboard','products','stock','machines','team','validation','analytics'];
+declare
+  pages constant jsonb := '["dashboard","products","stock","machines","team","validation","analytics"]';
+  allowed jsonb := to_jsonb(new.allowed_pages);
+  writable jsonb := to_jsonb(new.writable_pages);
 begin
+  if jsonb_typeof(allowed) is distinct from 'array'
+     or jsonb_typeof(writable) is distinct from 'array' then
+    raise exception 'Invalid profile page lists' using errcode='22023';
+  end if;
   if length(new.full_name) not between 1 and 120 or new.full_name ~ '[<>[:cntrl:]]'
      or length(new.email) > 254
      or (new.username is not null and new.username !~ '^[a-zA-Z0-9._-]{3,32}$')
-     or not (new.allowed_pages <@ pages) or not (new.writable_pages <@ new.allowed_pages)
-     or array_position(new.allowed_pages,null) is not null
-     or array_position(new.writable_pages,null) is not null
-     or (new.role = 'visitor' and cardinality(new.writable_pages) > 0)
+     or not (allowed <@ pages) or not (writable <@ allowed)
+     or (new.role = 'visitor' and jsonb_array_length(writable) > 0)
      or ((new.login_start_time is null) <> (new.login_end_time is null)) then
     raise exception 'Invalid profile fields' using errcode='22023';
   end if;

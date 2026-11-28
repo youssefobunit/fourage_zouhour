@@ -15,12 +15,24 @@ grant execute on function public.is_forage_owner() to authenticated;
 
 -- Give the designated existing account its full administrator profile. This is
 -- idempotent and does nothing if that email has not been created yet.
-update public.profiles set
+-- Populate the actual column types: older installs use JSONB page arrays.
+with owner_pages as (
+  select typed.allowed_pages, typed.writable_pages
+  from (
+    select '["dashboard","products","stock","machines","team","validation","analytics"]'::jsonb as pages
+  ) permissions
+  cross join lateral jsonb_populate_record(null::public.profiles, jsonb_build_object(
+    'allowed_pages', permissions.pages,
+    'writable_pages', permissions.pages
+  )) typed
+)
+update public.profiles as profile set
   role='admin', status='active',
-  allowed_pages=array['dashboard','products','stock','machines','team','validation','analytics'],
-  writable_pages=array['dashboard','products','stock','machines','team','validation','analytics'],
+  allowed_pages=owner_pages.allowed_pages,
+  writable_pages=owner_pages.writable_pages,
   can_export=true
-where lower(email)='owner@younes.com';
+from owner_pages
+where lower(profile.email)='owner@younes.com';
 
 -- Other administrators can manage the workshop but cannot delete history or
 -- inventory through a forged full-snapshot upload. Operator/validator draft

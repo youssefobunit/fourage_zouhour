@@ -101,7 +101,9 @@ begin
     new.snapshot := jsonb_set(new.snapshot, '{categories}', updated_categories);
   end if;
 
-  can_validate := actor.role='admin' or (actor.role='validation' and 'validation'=any(actor.writable_pages) and 'validation'=any(actor.allowed_pages));
+  can_validate := actor.role='admin' or (actor.role='validation'
+    and coalesce(to_jsonb(actor.writable_pages) @> '["validation"]'::jsonb, false)
+    and coalesce(to_jsonb(actor.allowed_pages) @> '["validation"]'::jsonb, false));
   foreach t in array tables loop
     if jsonb_typeof(new.snapshot->t) is distinct from 'array' or jsonb_array_length(new.snapshot->t)>100000 then
       raise exception 'Invalid table %',t using errcode='22023';
@@ -290,7 +292,8 @@ begin
       if actor.role='admin' then continue; end if;
       page:=case when t in ('products','categories','catalog_families') then 'products'
         when t='machines' then 'machines' when t='operator_payments' then 'team' else 'stock' end;
-      can_edit:=page=any(actor.writable_pages) and page=any(actor.allowed_pages);
+      can_edit:=coalesce(to_jsonb(actor.writable_pages) @> jsonb_build_array(page), false)
+        and coalesce(to_jsonb(actor.allowed_pages) @> jsonb_build_array(page), false);
       if t='operations' then
         if can_validate and row_old->>'completion_draft'='1' and row_old->>'validated_at' is null then
           if row_new is not null and (row_new->>'operator_id' is distinct from row_old->>'operator_id'
@@ -299,7 +302,9 @@ begin
           end if;
           continue;
         end if;
-        if actor.role<>'operator' or not ('machines'=any(actor.writable_pages)) or not ('machines'=any(actor.allowed_pages)) or row_new is null
+        if actor.role<>'operator'
+           or not coalesce(to_jsonb(actor.writable_pages) @> '["machines"]'::jsonb, false)
+           or not coalesce(to_jsonb(actor.allowed_pages) @> '["machines"]'::jsonb, false) or row_new is null
            or row_new->>'operator_id' is distinct from auth.uid()::text
            or row_new->>'validated_at' is not null or coalesce(row_new->>'external_production','0')<>'0'
            or (row_old is not null and (row_old->>'validated_at' is not null or row_old->>'completion_draft'='1')) then

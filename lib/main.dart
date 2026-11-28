@@ -36,6 +36,8 @@ import 'security_activity_page.dart';
 part 'catalog_and_filters.dart';
 part 'atelier_glass.dart';
 part 'atelier_liquid.dart';
+part 'stock_partners.dart';
+part 'validation_editing.dart';
 
 late final DeviceIdentity appDevice;
 
@@ -1258,12 +1260,12 @@ class ProductCreation {
   const ProductCreation({
     required this.product,
     this.categoryId,
-    this.familyId,
+    this.modelId,
   });
 
   final Product product;
   final String? categoryId;
-  final String? familyId;
+  final String? modelId;
 }
 
 class Depot {
@@ -1344,12 +1346,16 @@ class Supplier {
     required this.company,
     required this.contact,
     required this.images,
+    this.fax = '',
+    this.ice = '',
   });
   final String id;
   final String name;
   final String company;
   final String contact;
   final List<Uint8List> images;
+  final String fax;
+  final String ice;
 }
 
 class Client {
@@ -1531,8 +1537,9 @@ extension MaterialTypeLabel on MaterialType {
       'largeur × longueur × épaisseur × ${density.toStringAsFixed(0)} kg/m³';
 }
 
-class ProductFamily {
-  const ProductFamily({
+/// A model groups products within one category.
+class ProductModel {
+  const ProductModel({
     required this.id,
     required this.name,
     this.productIds = const [],
@@ -1542,7 +1549,7 @@ class ProductFamily {
   final String name;
   final List<String> productIds;
 
-  factory ProductFamily.fromJson(Map<String, dynamic> json) => ProductFamily(
+  factory ProductModel.fromJson(Map<String, dynamic> json) => ProductModel(
     id: json['id'] as String,
     name: json['name'] as String,
     productIds: List<String>.from(json['product_ids'] as List),
@@ -1553,7 +1560,12 @@ class ProductFamily {
     'name': name,
     'product_ids': productIds,
   };
+
+  ProductModel withProducts(Iterable<String> ids) =>
+      ProductModel(id: id, name: name, productIds: ids.toList());
 }
+
+typedef ProductFamily = ProductModel;
 
 class ProductCategory {
   const ProductCategory({
@@ -1561,42 +1573,61 @@ class ProductCategory {
     required this.name,
     required this.productIds,
     required this.image,
-    this.families = const [],
-  });
+    List<ProductModel> models = const [],
+    List<ProductModel>? families,
+  }) : models = families ?? models;
   final String id;
   final String name;
   final List<String> productIds;
   final Uint8List image;
-  final List<ProductFamily> families;
+  final List<ProductModel> models;
+
+  List<ProductModel> get families => models;
 
   ProductCategory copyWith({
     String? name,
     List<String>? productIds,
-    List<ProductFamily>? families,
+    List<ProductModel>? models,
   }) => ProductCategory(
     id: id,
     name: name ?? this.name,
     productIds: productIds ?? this.productIds,
     image: image,
-    families: families ?? this.families,
+    models: models ?? this.models,
   );
 
-  ProductCategory withProductInFamily(String productId, String? familyId) =>
-      copyWith(
-        productIds: {...productIds, productId}.toList(),
-        families: [
-          for (final family in families)
-            ProductFamily(
-              id: family.id,
-              name: family.name,
-              productIds: [
-                for (final id in family.productIds)
-                  if (id != productId) id,
-                if (family.id == familyId) productId,
-              ],
-            ),
-        ],
+  ProductCategory withProductInModel(String productId, String? modelId) {
+    final destination = models.where((model) => model.id == modelId).firstOrNull;
+    final updated = copyWith(productIds: {...productIds, productId}.toList());
+    if (destination != null) {
+      return updated.withModel(
+        destination.withProducts({...destination.productIds, productId}),
       );
+    }
+    return updated.copyWith(
+      models: [
+        for (final model in models)
+          model.withProducts(model.productIds.where((id) => id != productId)),
+      ],
+    );
+  }
+
+  ProductCategory withModel(ProductModel model) {
+    final assigned = productIds.toSet().intersection(model.productIds.toSet());
+    final replacement = model.withProducts(assigned);
+    return copyWith(
+      models: [
+        for (final existing in models)
+          if (existing.id == model.id)
+            replacement
+          else
+            existing.withProducts(
+              existing.productIds.where((id) => !assigned.contains(id)),
+            ),
+        if (!models.any((existing) => existing.id == model.id)) replacement,
+      ],
+    );
+  }
 }
 
 abstract final class PdfReports {
@@ -3326,7 +3357,7 @@ class AppDatabase {
   Future<ProductCategory?> insertCatalogProduct(
     Product product,
     String? categoryId,
-    String? familyId,
+    String? modelId,
   ) async {
     return (await _database).transaction((transaction) async {
       await transaction.insert('products', _productToRow(product));
@@ -3338,13 +3369,51 @@ class AppDatabase {
       );
       if (rows.isEmpty) throw StateError('Catégorie introuvable.');
       final category = _categoryFromRow(rows.single);
-      if (familyId != null && !category.families.any((f) => f.id == familyId)) {
-        throw StateError('Famille introuvable.');
+      if (modelId != null && !category.models.any((model) => model.id == modelId)) {
+        throw StateError('Modèle introuvable.');
       }
-      final updated = category.withProductInFamily(product.id, familyId);
+      final updated = category.withProductInModel(product.id, modelId);
       await transaction.update(
         'categories',
         _categoryToRow(updated),
+        where: 'id = ?',
+        whereArgs: [categoryId],
+      );
+      return updated;
+    });
+  }
+
+  Future<ProductCategory> saveCatalogModel(
+    String categoryId,
+    ProductModel model,
+  ) async {
+    final name = model.name.trim();
+    if (name.isEmpty ||
+        name.runes.length > 120 ||
+        name.contains(RegExp(r'[<>\x00-\x1F\x7F]'))) {
+      throw StateError('Indiquez un nom de modèle valide.');
+    }
+    return (await _database).transaction((transaction) async {
+      final rows = await transaction.query(
+        'categories',
+        where: 'id = ?',
+        whereArgs: [categoryId],
+      );
+      if (rows.isEmpty) throw StateError('Catégorie introuvable.');
+      final category = _categoryFromRow(rows.single);
+      if (category.models.any((item) =>
+          item.id != model.id && _searchKey(item.name) == _searchKey(name))) {
+        throw StateError('Ce nom de modèle existe déjà dans la catégorie.');
+      }
+      if (!category.productIds.toSet().containsAll(model.productIds)) {
+        throw StateError('Un produit ne fait plus partie de cette catégorie.');
+      }
+      final updated = category.withModel(
+        ProductModel(id: model.id, name: name, productIds: model.productIds),
+      );
+      await transaction.update(
+        'categories',
+        {'families': jsonEncode(updated.models)},
         where: 'id = ?',
         whereArgs: [categoryId],
       );
@@ -3691,7 +3760,7 @@ class AppDatabase {
         final category = _categoryFromRow(row);
         if (!category.productIds.contains(id)) continue;
         final updated = category
-            .withProductInFamily(id, null)
+            .withProductInModel(id, null)
             .copyWith(
               productIds: category.productIds
                   .where((item) => item != id)
@@ -3873,7 +3942,8 @@ class AppDatabase {
     'id': category.id,
     'name': category.name,
     'product_ids': jsonEncode(category.productIds),
-    'families': jsonEncode(category.families),
+    // Keep the existing snapshot and backup key used by older clients.
+    'families': jsonEncode(category.models),
     'image': category.image,
   };
   ProductCategory _categoryFromRow(Map<String, Object?> row) => ProductCategory(
@@ -3883,9 +3953,9 @@ class AppDatabase {
       jsonDecode(row['product_ids'] as String) as List,
     ),
     image: row['image'] as Uint8List? ?? Uint8List(0),
-    families: [
+    models: [
       for (final item in jsonDecode(row['families'] as String? ?? '[]') as List)
-        ProductFamily.fromJson(item as Map<String, dynamic>),
+        ProductModel.fromJson(item as Map<String, dynamic>),
     ],
   );
 
@@ -3916,16 +3986,21 @@ class AppDatabase {
     'id': supplier.id,
     'name': supplier.name,
     'company': supplier.company,
-    'contact': supplier.contact,
+    'contact': _encodeSupplierContact(supplier),
     'images': _imagesToJson(supplier.images),
   };
-  Supplier _supplierFromRow(Map<String, Object?> row) => Supplier(
-    id: row['id'] as String,
-    name: row['name'] as String,
-    company: row['company'] as String? ?? '',
-    contact: row['contact'] as String? ?? '',
-    images: _imagesFromJson(row['images'] as String? ?? '[]'),
-  );
+  Supplier _supplierFromRow(Map<String, Object?> row) {
+    final details = _decodeSupplierContact(row['contact'] as String? ?? '');
+    return Supplier(
+      id: row['id'] as String,
+      name: row['name'] as String,
+      company: row['company'] as String? ?? '',
+      contact: details.contact,
+      fax: details.fax,
+      ice: details.ice,
+      images: _imagesFromJson(row['images'] as String? ?? '[]'),
+    );
+  }
 
   Map<String, Object?> _clientToRow(Client client) => {
     'id': client.id,
@@ -5233,6 +5308,7 @@ class _ForageHomeState extends State<ForageHome> {
   var _cloudSyncInProgress = false;
   bool _syncDeniedShown = false;
   final _announcedDeviceRequests = <String>{};
+  final _stockPartnerRevision = ValueNotifier(0);
 
   @override
   void initState() {
@@ -5331,6 +5407,7 @@ class _ForageHomeState extends State<ForageHome> {
   void dispose() {
     _cloudSyncTimer?.cancel();
     _deviceRequestTimer?.cancel();
+    _stockPartnerRevision.dispose();
     super.dispose();
   }
 
@@ -5367,6 +5444,7 @@ class _ForageHomeState extends State<ForageHome> {
         loadError = null;
         loading = false;
       });
+      _stockPartnerRevision.value++;
       if (widget.user.isAdmin && !_automaticBackupChecked) {
         _automaticBackupChecked = true;
         WidgetsBinding.instance.addPostFrameCallback(
@@ -5770,7 +5848,7 @@ class _ForageHomeState extends State<ForageHome> {
     final updatedCategory = await widget.database.insertCatalogProduct(
       item.product,
       item.categoryId,
-      item.familyId,
+      item.modelId,
     );
     if (!mounted) return;
     setState(() {
@@ -5875,26 +5953,40 @@ class _ForageHomeState extends State<ForageHome> {
   }
 
   Future<Supplier?> addSupplier() async {
+    if (!widget.user.canWritePage(AppPage.stock)) return null;
     final item = await Navigator.push<Supplier>(
       context,
       MaterialPageRoute(builder: (_) => const SupplierForm()),
     );
-    if (item != null) {
+    if (item == null || !mounted) return null;
+    try {
       await widget.database.insertSupplier(item);
-      if (mounted) setState(() => suppliers.add(item));
+    } catch (_) {
+      if (mounted) message(context, 'Impossible d’enregistrer le fournisseur.');
+      return null;
     }
+    if (!mounted) return null;
+    setState(() => suppliers.add(item));
+    _stockPartnerRevision.value++;
     return item;
   }
 
   Future<Client?> addClient() async {
+    if (!widget.user.canWritePage(AppPage.stock)) return null;
     final item = await Navigator.push<Client>(
       context,
       MaterialPageRoute(builder: (_) => const ClientForm()),
     );
-    if (item != null) {
+    if (item == null || !mounted) return null;
+    try {
       await widget.database.insertClient(item);
-      if (mounted) setState(() => clients.add(item));
+    } catch (_) {
+      if (mounted) message(context, 'Impossible d’enregistrer le client.');
+      return null;
     }
+    if (!mounted) return null;
+    setState(() => clients.add(item));
+    _stockPartnerRevision.value++;
     return item;
   }
 
@@ -5955,14 +6047,7 @@ class _ForageHomeState extends State<ForageHome> {
       forbidden('Validez d’abord cette vente avant d’enregistrer un retour.');
       return null;
     }
-    final alreadyReturned = saleReturns
-        .where(
-          (item) =>
-              item.saleId == sale.id &&
-              item.status != ReturnValidationStatus.rejected,
-        )
-        .fold(0, (total, item) => total + item.pieces);
-    final remaining = sale.pieces - alreadyReturned;
+    final remaining = _saleReturnMaximum(sale.id);
     if (pieces <= 0 || pieces > remaining) {
       forbidden(
         'La quantité retournée doit être comprise entre 1 et $remaining.',
@@ -6010,10 +6095,7 @@ class _ForageHomeState extends State<ForageHome> {
       forbidden('Validez d’abord l’achat d’origine avant de créer un retour.');
       return null;
     }
-    final alreadyReturned = stockAdditions
-        .where((item) => item.returnOfPurchaseId == purchase.id)
-        .fold(0, (total, item) => total + item.pieces.abs());
-    final remaining = purchase.pieces - alreadyReturned;
+    final remaining = _purchaseReturnMaximum(purchase.id!);
     if (pieces <= 0 || pieces > remaining) {
       forbidden('La quantité retournée dépasse la quantité achetée restante.');
       return null;
@@ -6042,6 +6124,27 @@ class _ForageHomeState extends State<ForageHome> {
     return item;
   }
 
+  int _saleReturnMaximum(String saleId, {String? excluding}) {
+    final sale = sales.where((item) => item.id == saleId && !item.draft).firstOrNull;
+    if (sale == null) return 0;
+    final used = saleReturns
+        .where((item) => item.saleId == saleId && item.id != excluding &&
+            item.status != ReturnValidationStatus.rejected)
+        .fold(0, (total, item) => total + item.pieces);
+    return max(0, sale.pieces - used);
+  }
+
+  int _purchaseReturnMaximum(int purchaseId, {int? excluding}) {
+    final purchase = stockAdditions
+        .where((item) => item.id == purchaseId && !item.draft)
+        .firstOrNull;
+    if (purchase == null) return 0;
+    final used = stockAdditions
+        .where((item) => item.returnOfPurchaseId == purchaseId && item.id != excluding)
+        .fold(0, (total, item) => total + item.pieces.abs());
+    return max(0, min(purchase.pieces - used, depotStock(purchase.productId, purchase.depotId)));
+  }
+
   void openStockRecords() {
     Navigator.push<void>(
       context,
@@ -6061,6 +6164,62 @@ class _ForageHomeState extends State<ForageHome> {
           canReturnPurchase: widget.user.canWritePage(AppPage.stock),
           onReturnPurchase: returnPurchase,
           onOpenAttachments: widget.user.isAdmin ? _openTransactionPhotos : null,
+        ),
+      ),
+    );
+  }
+
+  void _openStockPartners() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ListenableBuilder(
+          listenable: _stockPartnerRevision,
+          builder: (_, _) {
+            final canAdd = widget.user.canWritePage(AppPage.stock);
+            return _StockPartnersPage(
+              suppliers: suppliers,
+              clients: clients,
+              onOpenPartner: _openStockPartner,
+              onAddSupplier: canAdd ? addSupplier : null,
+              onAddClient: canAdd ? addClient : null,
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  void _openStockPartner(_StockPartnerKind kind, String id) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ListenableBuilder(
+          listenable: _stockPartnerRevision,
+          builder: (_, _) {
+            final supplier = kind == _StockPartnerKind.supplier
+                ? suppliers.where((item) => item.id == id).firstOrNull
+                : null;
+            final client = kind == _StockPartnerKind.client
+                ? clients.where((item) => item.id == id).firstOrNull
+                : null;
+            return _StockPartnerDetails(
+              kind: kind,
+              supplier: supplier,
+              client: client,
+              purchases: supplier == null
+                  ? const []
+                  : stockAdditions
+                        .where((item) => item.supplierId == id)
+                        .toList(),
+              sales: client == null
+                  ? const []
+                  : sales.where((item) => item.clientId == id).toList(),
+              productName: (id) => product(id)?.displayReference ?? 'Produit',
+              depotName: (id) => depot(id)?.name ?? 'Stock général',
+              onOpenAttachments: widget.user.isAdmin
+                  ? _openTransactionPhotos
+                  : null,
+            );
+          },
         ),
       ),
     );
@@ -6316,6 +6475,20 @@ class _ForageHomeState extends State<ForageHome> {
     }
   }
 
+  Future<void> saveCatalogModel(String categoryId, ProductModel model) async {
+    if (!widget.user.canWritePage(AppPage.products)) {
+      return forbidden('Vous n’avez pas le droit de modifier les produits.');
+    }
+    try {
+      final updated = await widget.database.saveCatalogModel(categoryId, model);
+      if (!mounted) return;
+      final index = categories.indexWhere((item) => item.id == categoryId);
+      if (index >= 0) setState(() => categories[index] = updated);
+    } on StateError catch (error) {
+      if (mounted) message(context, error.message.toString());
+    }
+  }
+
   Future<void> manageMachine(FactoryMachine value) async {
     if (!widget.user.canWritePage(AppPage.machines)) {
       return forbidden('Vous n’avez pas le droit de gérer les machines.');
@@ -6510,40 +6683,245 @@ class _ForageHomeState extends State<ForageHome> {
     );
   }
 
-  Future<void> updateStockDraft(StockAddition draft) async {
+  bool _openingValidationEditor = false;
+
+  Future<void> _editValidationDraft<T>({
+    required _ValidationDraftType type,
+    required String id,
+    required Widget Function(_ValidationDraft) form,
+    required Map<String, Object?> Function(T) updates,
+    required void Function(Map<String, Object?>) updateLocal,
+    List<Uint8List> Function(T)? newPhotos,
+  }) async {
     if (!widget.user.canValidate ||
+        !widget.user.canAccess(AppPage.validation) ||
         !widget.user.canWritePage(AppPage.validation)) {
       return forbidden('Vous n’avez pas le droit de modifier ce brouillon.');
     }
-    if (draft.returnOfPurchaseId != null) {
-      final purchase = stockAdditions
-          .where((item) => item.id == draft.returnOfPurchaseId)
-          .firstOrNull;
-      final otherReturns = stockAdditions
-          .where(
-            (item) =>
-                item.returnOfPurchaseId == draft.returnOfPurchaseId &&
-                item.id != draft.id,
-          )
-          .fold(0, (total, item) => total + item.pieces.abs());
-      if (purchase == null ||
-          draft.pieces >= 0 ||
-          draft.pieces.abs() > purchase.pieces - otherReturns) {
-        return forbidden(
-          'Ce retour fournisseur dépasse la quantité de l’achat d’origine.',
-        );
+    if (_openingValidationEditor) return;
+    _openingValidationEditor = true;
+    try {
+      final draft = await widget.database._loadValidationDraft(
+        type,
+        id,
+        canViewPhotos: widget.user.isAdmin,
+      );
+      if (!mounted) return;
+      if (draft == null) {
+        return forbidden('Ce brouillon n’est plus disponible.');
       }
+      final result = await Navigator.push<T>(
+        context,
+        MaterialPageRoute(builder: (_) => form(draft)),
+      );
+      if (!mounted || result == null) return;
+      final saved = await widget.database._saveValidationDraft(
+        draft,
+        updates(result),
+        actor: widget.user,
+        addedPhotos: newPhotos?.call(result) ?? const [],
+      );
+      if (!mounted) return;
+      if (saved == null) return message(context, 'Aucune modification.');
+      setState(() => updateLocal(saved));
+      _stockPartnerRevision.value++;
+      message(
+        context,
+        draft.revision == null
+            ? 'Brouillon enregistré sur cet appareil.'
+            : 'Brouillon corrigé. Modification enregistrée dans Sécurité.',
+      );
+    } on PostgrestException catch (error) {
+      if (!mounted) return;
+      message(context, switch (error.code) {
+        '40001' => 'Le brouillon a changé sur le serveur. Rouvrez-le avant de recommencer.',
+        'PGRST202' => 'La mise à jour du serveur nécessaire à la correction n’est pas installée.',
+        '42501' => 'La correction a été refusée. Vérifiez vos droits et l’état du brouillon.',
+        _ => 'Impossible d’enregistrer la correction. Vérifiez les données du brouillon.',
+      });
+    } on StateError catch (error) {
+      if (mounted) message(context, error.message);
+    } catch (_) {
+      if (mounted) message(context, 'Correction indisponible. Vérifiez la connexion et réessayez.');
+    } finally {
+      _openingValidationEditor = false;
     }
-    await widget.database.updateStockAddition(draft);
-    if (!mounted) return;
-    setState(
-      () =>
-          stockAdditions[stockAdditions.indexWhere(
-                (item) => item.id == draft.id,
-              )] =
-              draft,
+  }
+
+  Future<void> _openPurchaseCorrection(StockAddition item) async {
+    final id = item.id;
+    if (id == null) return;
+    if (item.returnOfPurchaseId != null) {
+      String? receipt;
+      return _editValidationDraft<int>(
+        type: _ValidationDraftType.purchase,
+        id: id.toString(),
+        form: (draft) {
+          final initial = widget.database._stockAdditionFromRow(draft.row);
+          return _ReturnQuantityForm(
+            title: 'Modifier le retour fournisseur',
+            summary: product(initial.productId)?.displayReference ?? 'Produit',
+            maximum: _purchaseReturnMaximum(initial.returnOfPurchaseId!, excluding: id),
+            initial: initial.pieces.abs(),
+            receipt: initial.receiptNumber,
+            onSaveReceipt: (value) => receipt = value,
+          );
+        },
+        updates: (pieces) => {
+          'pieces': -pieces,
+          'quantity': -pieces.toDouble(),
+          'unit': InventoryUnit.piece.name,
+          'receipt_number': ?receipt,
+        },
+        updateLocal: (row) => stockAdditions = [
+          for (final current in stockAdditions)
+            if (current.id == id) widget.database._stockAdditionFromRow(row) else current,
+        ],
+      );
+    }
+    await _editValidationDraft<StockAddition>(
+      type: _ValidationDraftType.purchase,
+      id: id.toString(),
+      form: (draft) => StockForm(
+        products: products.where((product) => !product.manufactured).toList(),
+        categories: categories,
+        catalogFamilies: catalogFamilies,
+        stock: stock,
+        depots: depots,
+        suppliers: suppliers,
+        onAddSupplier: widget.user.canWritePage(AppPage.stock) ? addSupplier : null,
+        allowGallery: true,
+        canPreviewAttachments: widget.user.isAdmin,
+        initialDraft: widget.database._stockAdditionFromRow(draft.row),
+        existingPhotos: draft.attachments,
+      ),
+      updates: (purchase) => {
+        'product_id': purchase.productId,
+        'depot_id': purchase.depotId,
+        'supplier_id': purchase.supplierId,
+        'pieces': purchase.pieces,
+        'quantity': purchase.quantity,
+        'unit': purchase.unit.name,
+        'receipt_number': purchase.receiptNumber,
+        'transport_charge': purchase.transportCharge.name,
+      },
+      newPhotos: (purchase) => purchase.images,
+      updateLocal: (row) => stockAdditions = [
+        for (final current in stockAdditions)
+          if (current.id == id) widget.database._stockAdditionFromRow(row) else current,
+      ],
     );
   }
+
+  Future<void> _openSaleCorrection(Sale item) => _editValidationDraft<Sale>(
+    type: _ValidationDraftType.sale,
+    id: item.id,
+    form: (draft) => SaleForm(
+      products: products,
+      categories: categories,
+      catalogFamilies: catalogFamilies,
+      depots: depots,
+      clients: clients,
+      available: depotStock,
+      onAddClient: widget.user.canWritePage(AppPage.stock) ? addClient : null,
+      allowGallery: widget.user.isAdmin,
+      canPreviewAttachments: widget.user.isAdmin,
+      initialDraft: widget.database._saleFromRow(draft.row),
+      existingPhotos: draft.attachments,
+    ),
+    updates: (sale) => widget.database._saleToRow(sale)
+      ..remove('images'),
+    newPhotos: (sale) => sale.images,
+    updateLocal: (row) => sales = [
+      for (final current in sales)
+        if (current.id == item.id) widget.database._saleFromRow(row) else current,
+    ],
+  );
+
+  Future<void> _openTransferCorrection(StockTransfer item) =>
+      _editValidationDraft<StockTransfer>(
+        type: _ValidationDraftType.transfer,
+        id: item.id,
+        form: (draft) => StockTransferForm(
+          products: products,
+          categories: categories,
+          catalogFamilies: catalogFamilies,
+          depots: depots,
+          available: depotStock,
+          initialDraft: widget.database._stockTransferFromRow(draft.row),
+        ),
+        updates: widget.database._stockTransferToRow,
+        updateLocal: (row) => stockTransfers = [
+          for (final current in stockTransfers)
+            if (current.id == item.id) widget.database._stockTransferFromRow(row) else current,
+        ],
+      );
+
+  Future<void> _openReturnCorrection(SaleReturn item) => _editValidationDraft<int>(
+    type: _ValidationDraftType.customerReturn,
+    id: item.id,
+    form: (draft) {
+      final initial = widget.database._saleReturnFromRow(draft.row);
+      return _ReturnQuantityForm(
+        title: 'Modifier le retour client',
+        summary: product(initial.productId)?.displayReference ?? 'Produit',
+        maximum: _saleReturnMaximum(initial.saleId, excluding: initial.id),
+        initial: initial.pieces,
+      );
+    },
+    updates: (pieces) => {'pieces': pieces},
+    updateLocal: (row) => saleReturns = [
+      for (final current in saleReturns)
+        if (current.id == item.id) widget.database._saleReturnFromRow(row) else current,
+    ],
+  );
+
+  Future<void> _openProductionCorrection(Operation item) =>
+      _editValidationDraft<Completion>(
+        type: _ValidationDraftType.operation,
+        id: item.id,
+        form: (draft) {
+          final initial = widget.database._operationFromRow(draft.row);
+          final factory = machine(initial.machineId);
+          final output = product(initial.outputProductId ?? factory?.outputId ?? '');
+          if (factory == null || output == null || initial.finishedAt == null) {
+            return const FormShell(
+              title: 'Production indisponible',
+              child: Text('Une machine ou un produit lié à cette production est introuvable.'),
+            );
+          }
+          return FinishOperation(
+            operation: initial,
+            machine: factory,
+            output: output,
+            depots: depots,
+            editing: true,
+          );
+        },
+        updates: (result) {
+          final source = product(item.productId);
+          final scrapId = item.scrapProductId ?? (source == null ? null : _scrapVariant(source).id);
+          if (result.scrapPieces > 0 && (scrapId == null || product(scrapId) == null)) {
+            throw StateError('Le produit de déchets doit exister dans le catalogue avant cette correction.');
+          }
+          return {
+            'output_pieces': result.outputPieces,
+            'output_depot_id': result.outputDepotId,
+            'remainder_pieces': result.remainderPieces,
+            'remainder_depot_id': result.remainderDepotId,
+            'scrap_pieces': result.scrapPieces,
+            'scrap_depot_id': result.scrapDepotId,
+            'scrap_product_id': result.scrapPieces == 0 ? null : scrapId,
+            'final_image': result.image,
+            'remainder_image': result.remainderImage,
+            'scrap_image': result.scrapImage,
+          };
+        },
+        updateLocal: (row) => operations = [
+          for (final current in operations)
+            if (current.id == item.id) widget.database._operationFromRow(row) else current,
+        ],
+      );
 
   Future<void> cancelStockDraft(StockAddition draft) async {
     if (!widget.user.canValidate ||
@@ -6622,36 +7000,6 @@ class _ForageHomeState extends State<ForageHome> {
     }
   }
 
-  Future<void> updateSaleDraft(Sale draft) async {
-    if (!widget.user.canValidate ||
-        !widget.user.canWritePage(AppPage.validation)) {
-      return forbidden('Vous n’avez pas le droit de modifier ce brouillon.');
-    }
-    await widget.database.updateSale(draft);
-    if (!mounted) return;
-    setState(
-      () => sales[sales.indexWhere((item) => item.id == draft.id)] = draft,
-    );
-  }
-
-  Future<void> updateStockTransferDraft(StockTransfer draft) async {
-    if (!widget.user.canValidate ||
-        !widget.user.canWritePage(AppPage.validation)) {
-      return forbidden('Vous n’avez pas le droit de modifier ce transfert.');
-    }
-    if (draft.pieces <= 0 || draft.sourceDepotId == draft.destinationDepotId) {
-      return forbidden(
-        'Le transfert doit avoir une quantité valide et deux dépôts différents.',
-      );
-    }
-    await widget.database.updateStockTransfer(draft);
-    if (!mounted) return;
-    setState(() {
-      stockTransfers[stockTransfers.indexWhere((item) => item.id == draft.id)] =
-          draft;
-    });
-  }
-
   Future<void> cancelSaleDraft(Sale draft) async {
     if (!widget.user.canValidate ||
         !widget.user.canWritePage(AppPage.validation)) {
@@ -6702,33 +7050,6 @@ class _ForageHomeState extends State<ForageHome> {
           approved,
     );
     message(context, 'Retour validé et ajouté au stock.');
-  }
-
-  Future<void> updateSaleReturn(SaleReturn draft) async {
-    if (!widget.user.canValidate ||
-        !widget.user.canWritePage(AppPage.validation)) {
-      return forbidden('Vous n’avez pas le droit de modifier ce retour.');
-    }
-    final sale = sales.where((item) => item.id == draft.saleId).firstOrNull;
-    final otherReturns = saleReturns
-        .where(
-          (item) =>
-              item.saleId == draft.saleId &&
-              item.id != draft.id &&
-              item.status != ReturnValidationStatus.rejected,
-        )
-        .fold(0, (total, item) => total + item.pieces);
-    if (sale == null ||
-        draft.pieces <= 0 ||
-        otherReturns + draft.pieces > sale.pieces) {
-      return forbidden('La quantité retournée dépasse la quantité vendue.');
-    }
-    await widget.database.updateSaleReturn(draft);
-    if (!mounted) return;
-    setState(
-      () => saleReturns[saleReturns.indexWhere((item) => item.id == draft.id)] =
-          draft,
-    );
   }
 
   Future<void> rejectSaleReturn(SaleReturn draft) async {
@@ -6790,15 +7111,6 @@ class _ForageHomeState extends State<ForageHome> {
           ? 'Travail externe validé : le stock a été mis à jour et la machine temporaire supprimée.'
           : 'Production validée et ajoutée au stock.',
     );
-  }
-
-  Future<void> updateOperationDraft(Operation draft) async {
-    if (!widget.user.canValidate ||
-        !widget.user.canWritePage(AppPage.validation)) {
-      return forbidden('Vous n’avez pas le droit de modifier ce brouillon.');
-    }
-    await widget.database.updateOperation(draft);
-    if (mounted) setState(() {});
   }
 
   Future<void> cancelOperationDraft(Operation draft) async {
@@ -6979,20 +7291,20 @@ class _ForageHomeState extends State<ForageHome> {
                         .where((item) => item.draft)
                         .toList(),
                     onApproveStock: approveStockDraft,
-                    onEditStock: updateStockDraft,
+                    onEditStock: _openPurchaseCorrection,
                     onCancelStock: cancelStockDraft,
                     onApproveSale: approveSaleDraft,
-                    onEditSale: updateSaleDraft,
+                    onEditSale: _openSaleCorrection,
                     onCancelSale: cancelSaleDraft,
                     onApproveReturn: approveSaleReturn,
-                    onEditReturn: updateSaleReturn,
+                    onEditReturn: _openReturnCorrection,
                     onRejectReturn: rejectSaleReturn,
                     onCancelReturn: cancelSaleReturn,
                     onApproveOperation: approveOperationDraft,
-                    onEditOperation: updateOperationDraft,
+                    onEditOperation: _openProductionCorrection,
                     onCancelOperation: cancelOperationDraft,
                     onApproveTransfer: approveStockTransfer,
-                    onEditTransfer: updateStockTransferDraft,
+                    onEditTransfer: _openTransferCorrection,
                     onCancelTransfer: cancelStockTransfer,
                   ),
                 ),
@@ -7046,6 +7358,7 @@ class _ForageHomeState extends State<ForageHome> {
         onOpenDepots: () => _openDepots(context),
         onOpenRecords: openStockRecords,
         onOpenPayments: openTransactionPayments,
+        onOpenPartners: _openStockPartners,
       ),
       MachinesPage(
         machines: machines,
@@ -7071,6 +7384,9 @@ class _ForageHomeState extends State<ForageHome> {
         onLoadSessions: widget.database.loadUserSessions,
         onOpenPayroll: () => _openPayroll(context),
         onOpenDeviceRequests: openDeviceRequests,
+        loadLocalSecurityEvents: widget.user.isAdmin
+            ? widget.database._loadLocalValidationEvents
+            : null,
       ),
       ValidationPage(
         products: products,
@@ -7085,20 +7401,20 @@ class _ForageHomeState extends State<ForageHome> {
             .toList(),
         transferDrafts: stockTransfers.where((item) => item.draft).toList(),
         onApproveStock: approveStockDraft,
-        onEditStock: updateStockDraft,
+        onEditStock: _openPurchaseCorrection,
         onCancelStock: cancelStockDraft,
         onApproveSale: approveSaleDraft,
-        onEditSale: updateSaleDraft,
+        onEditSale: _openSaleCorrection,
         onCancelSale: cancelSaleDraft,
         onApproveReturn: approveSaleReturn,
-        onEditReturn: updateSaleReturn,
+        onEditReturn: _openReturnCorrection,
         onRejectReturn: rejectSaleReturn,
         onCancelReturn: cancelSaleReturn,
         onApproveOperation: approveOperationDraft,
-        onEditOperation: updateOperationDraft,
+        onEditOperation: _openProductionCorrection,
         onCancelOperation: cancelOperationDraft,
         onApproveTransfer: approveStockTransfer,
-        onEditTransfer: updateStockTransferDraft,
+        onEditTransfer: _openTransferCorrection,
         onCancelTransfer: cancelStockTransfer,
       ),
     ];
@@ -7182,10 +7498,12 @@ class _ForageHomeState extends State<ForageHome> {
         child: CatalogFamiliesPage(
           loadCategories: () => categories,
           loadFamilies: () => catalogFamilies,
+          loadProducts: () => products,
           admin: widget.user.canWritePage(AppPage.products),
           onSaveFamily: saveCatalogFamily,
           onAddCategory: addCategory,
           onEditCategory: editCategory,
+          onSaveModel: saveCatalogModel,
         ),
       ),
     ),
@@ -7421,6 +7739,7 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
   DateTimeRange? period;
   final selections = <ExportDataset, Set<String>>{};
   Set<String> productFamilyIds = const {};
+  Set<String> productModelIds = const {};
   var saving = false;
   String? firstDepot;
   String? secondDepot;
@@ -7448,6 +7767,21 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
                 productFamilyIds.isEmpty || productFamilyIds.contains(group.id),
           )
           .expand((group) => group.sections);
+
+  String _modelKey(_CatalogSection section, ProductModel model) =>
+      jsonEncode([section.category.id, model.id]);
+
+  Iterable<_CatalogSection> _selectedProductSections(
+    List<_CatalogGroup> groups,
+  ) => productSections(groups).where(
+    (section) => matches(ExportDataset.products, section.category.id),
+  );
+
+  Map<String, String> _productModelOptions(List<_CatalogGroup> groups) => {
+    for (final section in _selectedProductSections(groups))
+      for (final model in section.models)
+        _modelKey(section, model): '${section.category.name} · ${model.name}',
+  };
 
   bool inRange(DateTime value) {
     final range = period;
@@ -7500,6 +7834,7 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
     final groups = dataset == ExportDataset.products
         ? productGroups
         : const <_CatalogGroup>[];
+    final modelOptions = _productModelOptions(groups);
     final suppliers = _choices(
       widget.suppliers,
       (item) => item.id,
@@ -7574,6 +7909,9 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
                     .toSet();
                 selections[dataset] = (selections[dataset] ?? const <String>{})
                     .intersection(available);
+                productModelIds = productModelIds.intersection(
+                  _productModelOptions(groups).keys.toSet(),
+                );
               }),
             ),
             if (options.isNotEmpty) const SizedBox(height: 8),
@@ -7584,7 +7922,14 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
               options: options,
               selected: selections[dataset] ?? const {},
               multiple: true,
-              onChanged: (ids) => setState(() => selections[dataset] = ids),
+              onChanged: (ids) => setState(() {
+                selections[dataset] = ids;
+                if (dataset == ExportDataset.products) {
+                  productModelIds = productModelIds.intersection(
+                    _productModelOptions(groups).keys.toSet(),
+                  );
+                }
+              }),
             )
           else if (dataset == ExportDataset.purchases ||
               dataset == ExportDataset.sales)
@@ -7596,6 +7941,16 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
                     : 'Aucun client disponible',
               ),
             ),
+          if (modelOptions.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            SearchChoiceField(
+              label: 'Modèles',
+              options: modelOptions,
+              selected: productModelIds,
+              multiple: true,
+              onChanged: (ids) => setState(() => productModelIds = ids),
+            ),
+          ],
           if (dataset == ExportDataset.transfers)
             _TransferDepotFields(
               depots: widget.depots,
@@ -7622,14 +7977,15 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
       if (selected.contains(ExportDataset.products)) {
         final filterProducts =
             productFamilyIds.isNotEmpty ||
+            productModelIds.isNotEmpty ||
             selections[ExportDataset.products]?.isNotEmpty == true;
         final matchingIds = filterProducts
-            ? productSections(productGroups)
-                  .where(
-                    (section) =>
-                        matches(ExportDataset.products, section.category.id),
-                  )
-                  .expand((section) => section.productIds)
+            ? _selectedProductSections(productGroups)
+                  .expand((section) => productModelIds.isEmpty
+                      ? section.productIds
+                      : section.models
+                          .where((model) => productModelIds.contains(_modelKey(section, model)))
+                          .expand((model) => model.productIds))
                   .toSet()
             : null;
         sheets.add(
@@ -7639,6 +7995,7 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
               'Référence',
               'Produit',
               'Catégorie',
+              'Modèle',
               'Type',
               'Matière',
               'Longueur (m)',
@@ -7656,6 +8013,13 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
                     item.name,
                     categoriesFor(item)
                         .map((category) => category.name)
+                        .join(', '),
+                    categoriesFor(item)
+                        .map((category) => category.models
+                            .where((model) => model.productIds.contains(_catalogMembershipId(item)))
+                            .firstOrNull?.name)
+                        .nonNulls
+                        .toSet()
                         .join(', '),
                     item.kind.label,
                     item.material.label,
@@ -7877,10 +8241,16 @@ class _ExcelExportDialogState extends State<ExcelExportDialog> {
         sheets.add(
           ExcelSheetData(
             name: 'Fournisseurs',
-            headers: const ['Nom', 'Société', 'Contact'],
+            headers: const ['Nom', 'Société', 'Contact', 'Fax', 'ICE'],
             rows: widget.suppliers
                 .where((item) => matches(ExportDataset.suppliers, item.id))
-                .map((item) => [item.name, item.company, item.contact])
+                .map((item) => [
+                  item.name,
+                  item.company,
+                  item.contact,
+                  item.fax,
+                  item.ice,
+                ])
                 .toList(),
           ),
         );
@@ -11554,6 +11924,7 @@ class StockPage extends StatelessWidget {
     required this.onOpenDepots,
     required this.onOpenRecords,
     required this.onOpenPayments,
+    this.onOpenPartners,
   });
   final List<Product> products;
   final List<ProductCategory> categories;
@@ -11566,6 +11937,7 @@ class StockPage extends StatelessWidget {
   final VoidCallback onOpenDepots;
   final VoidCallback onOpenRecords;
   final VoidCallback onOpenPayments;
+  final VoidCallback? onOpenPartners;
   @override
   Widget build(BuildContext context) {
     final muted = _atelierMuted(context);
@@ -11692,6 +12064,15 @@ class StockPage extends StatelessWidget {
             color: Theme.of(context).colorScheme.primary,
             onTap: onOpenPayments,
           ),
+          if (onOpenPartners case final openPartners?) ...[
+            const SizedBox(height: 12),
+            _StockSecondaryAction(
+              icon: Icons.contacts_outlined,
+              label: 'Fournisseurs et clients',
+              color: Theme.of(context).colorScheme.primary,
+              onTap: openPartners,
+            ),
+          ],
           if (draftCount > 0) ...[
             const SizedBox(height: 14),
             Glass(
@@ -12761,48 +13142,17 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
   Future<void> _returnPurchase(StockAddition purchase) async {
     final maximum = purchase.pieces - returnedPurchasePieces(purchase);
     if (maximum <= 0) return;
-    final controller = TextEditingController();
-    final selectedProduct = product(purchase.productId);
-    final pieces = await showDialog<int>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Retour fournisseur'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Maximum retournable : ${selectedProduct == null ? maximum : productQuantityLabel(selectedProduct, maximum)}.',
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: const InputDecoration(
-                labelText: 'Quantité retournée *',
-              ),
-            ),
-          ],
+    final pieces = await Navigator.push<int>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _ReturnQuantityForm(
+          title: 'Retour fournisseur',
+          summary: product(purchase.productId)?.displayReference ?? 'Produit',
+          maximum: maximum,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final value = int.tryParse(controller.text);
-              if (value == null || value <= 0 || value > maximum) return;
-              Navigator.pop(dialogContext, value);
-            },
-            child: const Text('Envoyer à la validation'),
-          ),
-        ],
       ),
     );
-    controller.dispose();
+    if (!mounted) return;
     if (pieces == null) return;
     final request = await widget.onReturnPurchase(purchase, pieces);
     if (mounted && request != null) {
@@ -12862,48 +13212,17 @@ class _StockRecordsPageState extends State<StockRecordsPage> {
   Future<void> _returnSale(Sale sale) async {
     final maximum = sale.pieces - returnedPieces(sale);
     if (maximum <= 0) return;
-    final controller = TextEditingController();
-    final selectedProduct = product(sale.productId);
-    final pieces = await showDialog<int>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Retour client'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Maximum retournable : ${selectedProduct == null ? maximum : productQuantityLabel(selectedProduct, maximum)}.',
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: const InputDecoration(
-                labelText: 'Quantité retournée *',
-              ),
-            ),
-          ],
+    final pieces = await Navigator.push<int>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _ReturnQuantityForm(
+          title: 'Retour client',
+          summary: product(sale.productId)?.displayReference ?? 'Produit',
+          maximum: maximum,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final value = int.tryParse(controller.text);
-              if (value == null || value <= 0 || value > maximum) return;
-              Navigator.pop(dialogContext, value);
-            },
-            child: const Text('Envoyer à la validation'),
-          ),
-        ],
       ),
     );
-    controller.dispose();
+    if (!mounted) return;
     if (pieces == null) return;
     final returnRequest = await widget.onReturn(sale, pieces);
     if (mounted && returnRequest != null) {
@@ -13590,7 +13909,7 @@ class _CategoryFormState extends State<CategoryForm> {
         name: name.text.trim(),
         productIds: widget.initial?.productIds ?? const [],
         image: image ?? Uint8List(0),
-        families: widget.initial?.families ?? const [],
+        models: widget.initial?.models ?? const [],
       ),
     );
   }
@@ -14055,280 +14374,6 @@ class ValidationPage extends StatelessWidget {
           .firstOrNull ??
       'Dépôt inconnu';
 
-  Future<void> _editStock(BuildContext context, StockAddition item) async {
-    final isPurchaseReturn = item.returnOfPurchaseId != null;
-    final quantity = TextEditingController(
-      text: formatNumber(
-        isPurchaseReturn ? item.quantity.abs() : item.quantity,
-      ),
-    );
-    final receipt = TextEditingController(text: item.receiptNumber);
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          isPurchaseReturn
-              ? 'Corriger le retour fournisseur'
-              : 'Corriger l’achat',
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: quantity,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              decoration: InputDecoration(
-                labelText: 'Quantité (${item.unit.shortLabel})',
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: receipt,
-              decoration: const InputDecoration(labelText: 'N° de bon'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-    final product = _product(item.productId);
-    final entered = number(quantity.text);
-    if (saved != true ||
-        product == null ||
-        entered <= 0 ||
-        receipt.text.trim().isEmpty) {
-      return;
-    }
-    await onEditStock(
-      StockAddition(
-        id: item.id,
-        productId: item.productId,
-        depotId: item.depotId,
-        pieces: isPurchaseReturn
-            ? -piecesForQuantity(product, entered, item.unit)
-            : piecesForQuantity(product, entered, item.unit),
-        receiptNumber: receipt.text.trim(),
-        supplierId: item.supplierId,
-        returnOfPurchaseId: item.returnOfPurchaseId,
-        quantity: isPurchaseReturn ? -entered : entered,
-        unit: item.unit,
-        images: item.images,
-        addedAt: item.addedAt,
-        transportCharge: item.transportCharge,
-      ),
-    );
-  }
-
-  Future<void> _editSale(BuildContext context, Sale item) async {
-    final quantity = TextEditingController(text: formatNumber(item.quantity));
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Corriger la vente'),
-        content: TextField(
-          controller: quantity,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: InputDecoration(
-            labelText: 'Quantité (${item.unit.shortLabel})',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-    final product = _product(item.productId);
-    final entered = number(quantity.text);
-    if (saved != true || product == null || entered <= 0) return;
-    await onEditSale(
-      Sale(
-        id: item.id,
-        productId: item.productId,
-        depotId: item.depotId,
-        clientId: item.clientId,
-        pieces: piecesForQuantity(product, entered, item.unit),
-        quantity: entered,
-        unit: item.unit,
-        images: item.images,
-        createdAt: item.createdAt,
-        transportCharge: item.transportCharge,
-      ),
-    );
-  }
-
-  Future<void> _editReturn(BuildContext context, SaleReturn item) async {
-    final pieces = TextEditingController(text: '${item.pieces}');
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Corriger le retour'),
-        content: TextField(
-          controller: pieces,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: const InputDecoration(labelText: 'Pièces retournées'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-    final value = int.tryParse(pieces.text);
-    if (saved != true || value == null || value <= 0) return;
-    await onEditReturn(
-      SaleReturn(
-        id: item.id,
-        saleId: item.saleId,
-        productId: item.productId,
-        depotId: item.depotId,
-        pieces: value,
-        createdAt: item.createdAt,
-        status: ReturnValidationStatus.pending,
-      ),
-    );
-  }
-
-  Future<void> _editOperation(BuildContext context, Operation operation) async {
-    final output = TextEditingController(
-      text: '${operation.outputPieces ?? 0}',
-    );
-    final remainder = TextEditingController(
-      text: '${operation.remainderPieces}',
-    );
-    final scrap = TextEditingController(text: '${operation.scrapPieces}');
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Corriger la production'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: output,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Pièces fabriquées'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: remainder,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Pièces restantes (retour au stock)',
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: scrap,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Pièces perdues / déchets',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-    final outputPieces = int.tryParse(output.text);
-    final remainderPieces = int.tryParse(remainder.text);
-    final scrapPieces = int.tryParse(scrap.text);
-    if (saved != true ||
-        outputPieces == null ||
-        remainderPieces == null ||
-        scrapPieces == null ||
-        outputPieces < 0 ||
-        remainderPieces < 0 ||
-        scrapPieces < 0 ||
-        (remainderPieces > 0 && operation.remainderDepotId == null) ||
-        (scrapPieces > 0 && operation.scrapDepotId == null) ||
-        (!operation.externalProduction &&
-            (operation.hopperPieces == null
-                    ? outputPieces + remainderPieces + scrapPieces
-                    : outputPieces * operation.hopperPieces! +
-                          remainderPieces +
-                          scrapPieces) !=
-                operation.pieces)) {
-      return;
-    }
-    operation.outputPieces = outputPieces;
-    operation.remainderPieces = remainderPieces;
-    operation.scrapPieces = scrapPieces;
-    await onEditOperation(operation);
-  }
-
-  Future<void> _editTransfer(BuildContext context, StockTransfer item) async {
-    final pieces = TextEditingController(text: '${item.pieces}');
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Corriger le transfert'),
-        content: TextField(
-          controller: pieces,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: const InputDecoration(labelText: 'Nombre de pièces'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-    final quantity = int.tryParse(pieces.text);
-    if (saved != true || quantity == null || quantity <= 0) return;
-    await onEditTransfer(
-      StockTransfer(
-        id: item.id,
-        productId: item.productId,
-        sourceDepotId: item.sourceDepotId,
-        destinationDepotId: item.destinationDepotId,
-        pieces: quantity,
-        createdAt: item.createdAt,
-        draft: true,
-      ),
-    );
-  }
-
   Widget _draftCard(BuildContext context, {
     required IconData icon,
     required String title,
@@ -14446,7 +14491,7 @@ class ValidationPage extends StatelessWidget {
                       '${item.returnOfPurchaseId == null ? 'Achat' : 'Retour fournisseur'} · ${_product(item.productId)?.displayReference ?? 'Produit'}',
                   detail:
                       '${formatQuantity(item.quantity.abs(), item.unit)} · Bon ${item.receiptNumber}',
-                  onEdit: () => _editStock(context, item),
+                  onEdit: () => onEditStock(item),
                   onCancel: () => onCancelStock(item),
                   onApprove: () => onApproveStock(item),
                 ),
@@ -14461,7 +14506,7 @@ class ValidationPage extends StatelessWidget {
                   title:
                       'Vente · ${_product(item.productId)?.displayReference ?? 'Produit'}',
                   detail: formatQuantity(item.quantity, item.unit),
-                  onEdit: () => _editSale(context, item),
+                  onEdit: () => onEditSale(item),
                   onCancel: () => onCancelSale(item),
                   onApprove: () => onApproveSale(item),
                 ),
@@ -14480,7 +14525,7 @@ class ValidationPage extends StatelessWidget {
                   title:
                       'Retour client · ${product?.displayReference ?? 'Produit'}',
                   detail: '$quantity · en attente',
-                  onEdit: () => _editReturn(context, item),
+                  onEdit: () => onEditReturn(item),
                   onApprove: () => onApproveReturn(item),
                   onReject: () => onRejectReturn(item),
                   onCancel: () => onCancelReturn(item),
@@ -14501,7 +14546,7 @@ class ValidationPage extends StatelessWidget {
                   detail: item.externalProduction
                       ? '${item.outputPieces ?? 0} à ajouter au stock · sans opérateur'
                       : '${item.outputPieces ?? 0} fabriquées · ${item.remainderPieces} restantes · ${item.scrapPieces} déchet(s)',
-                  onEdit: () => _editOperation(context, item),
+                  onEdit: () => onEditOperation(item),
                   onCancel: () => onCancelOperation(item),
                   onApprove: () => onApproveOperation(item),
                 ),
@@ -14517,7 +14562,7 @@ class ValidationPage extends StatelessWidget {
                       'Transfert · ${_product(item.productId)?.displayReference ?? 'Produit'}',
                   detail:
                       '${item.pieces} pièce(s) · ${_depotName(item.sourceDepotId)} → ${_depotName(item.destinationDepotId)}',
-                  onEdit: () => _editTransfer(context, item),
+                  onEdit: () => onEditTransfer(item),
                   onCancel: () => onCancelTransfer(item),
                   onApprove: () => onApproveTransfer(item),
                 ),
@@ -15837,6 +15882,7 @@ class UsersPage extends StatefulWidget {
     required this.onLoadSessions,
     required this.onOpenPayroll,
     required this.onOpenDeviceRequests,
+    this.loadLocalSecurityEvents,
   });
   final List<AppUser> users;
   final bool admin;
@@ -15845,6 +15891,7 @@ class UsersPage extends StatefulWidget {
   final Future<List<UserSession>> Function(String) onLoadSessions;
   final VoidCallback onOpenPayroll;
   final VoidCallback onOpenDeviceRequests;
+  final Future<List<Map<String, dynamic>>> Function()? loadLocalSecurityEvents;
   @override
   State<UsersPage> createState() => _UsersPageState();
 }
@@ -15926,7 +15973,9 @@ class _UsersPageState extends State<UsersPage> {
                 OutlinedButton.icon(
                   onPressed: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
-                      builder: (_) => const SecurityActivityPage(),
+                      builder: (_) => SecurityActivityPage(
+                        loadLocalEvents: widget.loadLocalSecurityEvents,
+                      ),
                     ),
                   ),
                   icon: const Icon(Icons.security_rounded),
@@ -15989,12 +16038,14 @@ class StockTransferForm extends StatefulWidget {
     this.catalogFamilies = const [],
     required this.depots,
     required this.available,
+    this.initialDraft,
   });
   final List<Product> products;
   final List<ProductCategory> categories;
   final List<CatalogFamily> catalogFamilies;
   final List<Depot> depots;
   final int Function(String productId, String depotId) available;
+  final StockTransfer? initialDraft;
   @override
   State<StockTransferForm> createState() => _StockTransferFormState();
 }
@@ -16005,6 +16056,23 @@ class _StockTransferFormState extends State<StockTransferForm> {
   String? productId;
   String? sourceDepotId;
   String? destinationDepotId;
+
+  @override
+  void initState() {
+    super.initState();
+    final draft = widget.initialDraft;
+    if (draft == null) return;
+    productId = draft.productId;
+    sourceDepotId = draft.sourceDepotId;
+    destinationDepotId = draft.destinationDepotId;
+    pieces.text = '${draft.pieces}';
+  }
+
+  @override
+  void dispose() {
+    pieces.dispose();
+    super.dispose();
+  }
 
   void save() {
     if (!(form.currentState?.validate() ?? false)) return;
@@ -16024,19 +16092,19 @@ class _StockTransferFormState extends State<StockTransferForm> {
     Navigator.pop(
       context,
       StockTransfer(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        id: widget.initialDraft?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
         productId: productId!,
         sourceDepotId: sourceDepotId!,
         destinationDepotId: destinationDepotId!,
         pieces: quantity,
-        createdAt: DateTime.now(),
+        createdAt: widget.initialDraft?.createdAt ?? DateTime.now(),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) => FormShell(
-    title: 'Transférer le stock',
+    title: widget.initialDraft == null ? 'Transférer le stock' : 'Modifier le transfert',
     subtitle: 'Le transfert reste en brouillon jusqu’à sa validation.',
     child: Form(
       key: form,
@@ -16045,6 +16113,7 @@ class _StockTransferFormState extends State<StockTransferForm> {
           CatalogProductBrowser(
             products: widget.products,
             categories: widget.categories,
+            initialProductId: widget.initialDraft?.productId,
             catalogFamilies: widget.catalogFamilies,
             buildProducts: (products) => ProductPicker(
               products: products,
@@ -16109,7 +16178,7 @@ class _StockTransferFormState extends State<StockTransferForm> {
             child: FilledButton.icon(
               onPressed: save,
               icon: const Icon(Icons.send_rounded),
-              label: const Text('Envoyer à la validation'),
+              label: Text(widget.initialDraft == null ? 'Envoyer à la validation' : 'Enregistrer les modifications'),
             ),
           ),
         ],
@@ -16282,6 +16351,7 @@ class _ProductFormState extends State<ProductForm> {
   String? initialDepotId;
   String? categoryId;
   String? familyId;
+  String? modelId;
   MaterialType material = MaterialType.steel;
   LengthUnit lengthUnit = LengthUnit.meter;
   LengthUnit widthUnit = LengthUnit.meter;
@@ -16396,7 +16466,7 @@ class _ProductFormState extends State<ProductForm> {
       context,
       ProductCreation(
         categoryId: categoryId,
-        familyId: selectedSection?.legacyFamilyId,
+        modelId: modelId == '' ? null : modelId,
         product: Product(
           id: DateTime.now().microsecondsSinceEpoch.toString(),
           name: productName,
@@ -16448,6 +16518,7 @@ class _ProductFormState extends State<ProductForm> {
               onChanged: (value) => setState(() {
                 familyId = value;
                 categoryId = null;
+                modelId = null;
               }),
               validator: (value) =>
                   value == null ? 'Choisissez une famille.' : null,
@@ -16466,12 +16537,30 @@ class _ProductFormState extends State<ProductForm> {
                       child: Text(section.category.name),
                     ),
                 ],
-                onChanged: (value) => setState(() => categoryId = value),
+                onChanged: (value) => setState(() {
+                  categoryId = value;
+                  modelId = null;
+                }),
                 validator: (value) =>
                     value == null ? 'Choisissez une catégorie.' : null,
               ),
               if (family.sections.isEmpty)
                 const Text('Ajoutez d’abord une catégorie à cette famille.'),
+            ],
+            if (selectedSection case final section?) ...[
+              const SizedBox(height: 14),
+              LiquidSelectFormField<String>(
+                key: ValueKey((familyId, section.category.id)),
+                initialValue: modelId ?? '',
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Modèle'),
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('Sans modèle')),
+                  for (final model in section.category.models)
+                    DropdownMenuItem(value: model.id, child: Text(model.name)),
+                ],
+                onChanged: (value) => setState(() => modelId = value),
+              ),
             ],
             const SizedBox(height: 14),
           ],
@@ -16763,6 +16852,8 @@ class StockForm extends StatefulWidget {
     required this.allowGallery,
     this.canPreviewAttachments = false,
     this.initialProductId,
+    this.initialDraft,
+    this.existingPhotos,
   });
   final List<Product> products;
   final List<ProductCategory> categories;
@@ -16770,10 +16861,12 @@ class StockForm extends StatefulWidget {
   final int Function(String) stock;
   final List<Depot> depots;
   final List<Supplier> suppliers;
-  final Future<Supplier?> Function() onAddSupplier;
+  final Future<Supplier?> Function()? onAddSupplier;
   final bool allowGallery;
   final bool canPreviewAttachments;
   final String? initialProductId;
+  final StockAddition? initialDraft;
+  final ValidationDraftPhotos? existingPhotos;
 
   @override
   State<StockForm> createState() => _StockFormState();
@@ -16787,11 +16880,22 @@ class SupplierForm extends StatefulWidget {
 }
 
 class _SupplierFormState extends State<SupplierForm> {
-  final form = GlobalKey<FormState>();
   final name = TextEditingController();
   final company = TextEditingController();
-  final contact = TextEditingController();
+  final phone = TextEditingController();
+  final fax = TextEditingController();
+  final ice = TextEditingController();
   final images = <Uint8List>[];
+
+  @override
+  void dispose() {
+    name.dispose();
+    company.dispose();
+    phone.dispose();
+    fax.dispose();
+    ice.dispose();
+    super.dispose();
+  }
 
   Future<void> pickImages() async {
     final available = 10 - images.length;
@@ -16815,14 +16919,21 @@ class _SupplierFormState extends State<SupplierForm> {
   }
 
   void save() {
-    if (!(form.currentState?.validate() ?? false)) return;
+    final personalName = name.text.trim();
+    final companyName = company.text.trim();
+    if (personalName.isEmpty && companyName.isEmpty) {
+      message(context, 'Indiquez au moins le nom ou la société du fournisseur.');
+      return;
+    }
     Navigator.pop(
       context,
       Supplier(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
-        name: name.text.trim(),
-        company: company.text.trim(),
-        contact: contact.text.trim(),
+        name: personalName,
+        company: companyName,
+        contact: personalName.isEmpty ? '' : phone.text.trim(),
+        fax: companyName.isEmpty ? '' : fax.text.trim(),
+        ice: companyName.isEmpty ? '' : ice.text.trim(),
         images: images,
       ),
     );
@@ -16831,50 +16942,59 @@ class _SupplierFormState extends State<SupplierForm> {
   @override
   Widget build(BuildContext context) => FormShell(
     title: 'Ajouter un fournisseur',
-    child: Form(
-      key: form,
-      child: Column(
-        children: [
-          TextFormField(
-            controller: name,
-            decoration: const InputDecoration(
-              labelText: 'Nom du fournisseur *',
-            ),
-            validator: required,
-          ),
+    child: Column(
+      children: [
+        TextField(
+          controller: name,
+          onChanged: (_) => setState(() {}),
+          decoration: const InputDecoration(labelText: 'Nom'),
+        ),
+        if (name.text.trim().isNotEmpty) ...[
           const SizedBox(height: 12),
           TextField(
-            controller: company,
-            decoration: const InputDecoration(
-              hintText: 'Société',
-              labelText: 'Nom de société',
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: contact,
+            controller: phone,
             keyboardType: TextInputType.phone,
             decoration: const InputDecoration(
-              labelText: 'Contact (facultatif)',
-            ),
-          ),
-          const SizedBox(height: 12),
-          MultiImageInput(
-            images: images,
-            label: 'Photos du fournisseur (${images.length}/10)',
-            onTap: pickImages,
-            onRemove: (index) => setState(() => images.removeAt(index)),
-          ),
-          const SizedBox(height: 20),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton(
-              onPressed: save,
-              child: const Text('Enregistrer le fournisseur'),
+              labelText: 'N° de téléphone (facultatif)',
             ),
           ),
         ],
-      ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: company,
+          onChanged: (_) => setState(() {}),
+          decoration: const InputDecoration(labelText: 'Nom de société'),
+        ),
+        if (company.text.trim().isNotEmpty) ...[
+          const SizedBox(height: 12),
+          TextField(
+            controller: fax,
+            keyboardType: TextInputType.phone,
+            decoration: const InputDecoration(labelText: 'Fax (facultatif)'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: ice,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'ICE (facultatif)'),
+          ),
+        ],
+        const SizedBox(height: 12),
+        MultiImageInput(
+          images: images,
+          label: 'Photos du fournisseur (${images.length}/10)',
+          onTap: pickImages,
+          onRemove: (index) => setState(() => images.removeAt(index)),
+        ),
+        const SizedBox(height: 20),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: save,
+            child: const Text('Enregistrer le fournisseur'),
+          ),
+        ),
+      ],
     ),
   );
 }
@@ -17005,6 +17125,8 @@ class SaleForm extends StatefulWidget {
     required this.onAddClient,
     required this.allowGallery,
     this.canPreviewAttachments = false,
+    this.initialDraft,
+    this.existingPhotos,
   });
   final List<Product> products;
   final List<ProductCategory> categories;
@@ -17012,9 +17134,11 @@ class SaleForm extends StatefulWidget {
   final List<Depot> depots;
   final List<Client> clients;
   final int Function(String, String) available;
-  final Future<Client?> Function() onAddClient;
+  final Future<Client?> Function()? onAddClient;
   final bool allowGallery;
   final bool canPreviewAttachments;
+  final Sale? initialDraft;
+  final ValidationDraftPhotos? existingPhotos;
 
   @override
   State<SaleForm> createState() => _SaleFormState();
@@ -17029,6 +17153,29 @@ class _SaleFormState extends State<SaleForm> {
   final images = <Uint8List>[];
   InventoryUnit unit = InventoryUnit.piece;
   TransportCharge transportCharge = TransportCharge.none;
+
+  int get photoCount => (widget.existingPhotos?.remaining ?? 0) + images.length;
+  bool get requiresPhoto => widget.existingPhotos == null || widget.existingPhotos!.count > 0;
+
+  @override
+  void initState() {
+    super.initState();
+    final draft = widget.initialDraft;
+    if (draft == null) return;
+    productId = draft.productId;
+    openedProductFamilyId = selectedProduct?.parentProductId;
+    depotId = draft.depotId;
+    clientId = draft.clientId;
+    quantity.text = draft.quantity.toString();
+    unit = draft.unit;
+    transportCharge = draft.transportCharge;
+  }
+
+  @override
+  void dispose() {
+    quantity.dispose();
+    super.dispose();
+  }
 
   Product? get selectedProduct {
     for (final product in widget.products) {
@@ -17087,12 +17234,12 @@ class _SaleFormState extends State<SaleForm> {
   }
 
   Future<void> addClient() async {
-    final added = await widget.onAddClient();
+    final added = await widget.onAddClient?.call();
     if (added != null && mounted) setState(() => clientId = added.id);
   }
 
   Future<void> pickImages() async {
-    final available = 10 - images.length;
+    final available = 10 - photoCount;
     if (available <= 0) return message(context, 'Maximum : 10 photos.');
     final selectedImages = widget.allowGallery
         ? await Future.wait(
@@ -17127,7 +17274,7 @@ class _SaleFormState extends State<SaleForm> {
         clientId == null ||
         entered <= 0 ||
         pieces <= 0 ||
-        images.isEmpty) {
+        (requiresPhoto && photoCount == 0)) {
       return message(
         context,
         'Prenez une photo, puis choisissez un client, un produit, un dépôt et une quantité valide.',
@@ -17142,7 +17289,7 @@ class _SaleFormState extends State<SaleForm> {
     Navigator.pop(
       context,
       Sale(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        id: widget.initialDraft?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
         productId: productId!,
         depotId: depotId!,
         clientId: clientId!,
@@ -17150,7 +17297,7 @@ class _SaleFormState extends State<SaleForm> {
         quantity: entered,
         unit: unit,
         images: images,
-        createdAt: DateTime.now(),
+        createdAt: widget.initialDraft?.createdAt ?? DateTime.now(),
         transportCharge: transportCharge,
       ),
     );
@@ -17158,7 +17305,7 @@ class _SaleFormState extends State<SaleForm> {
 
   @override
   Widget build(BuildContext context) => FormShell(
-    title: 'Vente',
+    title: widget.initialDraft == null ? 'Vente' : 'Modifier la vente',
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -17177,12 +17324,14 @@ class _SaleFormState extends State<SaleForm> {
                 onChanged: (ids) => setState(() => clientId = ids.first),
               ),
             ),
-            const SizedBox(width: 8),
-            IconButton.filledTonal(
-              onPressed: addClient,
-              icon: const Icon(Icons.person_add_alt_1_rounded),
-              tooltip: 'Ajouter un client',
-            ),
+            if (widget.onAddClient != null) ...[
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                onPressed: addClient,
+                icon: const Icon(Icons.person_add_alt_1_rounded),
+                tooltip: 'Ajouter un client',
+              ),
+            ],
           ],
         ),
         const SizedBox(height: 16),
@@ -17324,11 +17473,16 @@ class _SaleFormState extends State<SaleForm> {
           onChanged: (value) => setState(() => transportCharge = value!),
         ),
         const SizedBox(height: 12),
+        if (widget.existingPhotos case final photos?)
+          _ExistingDraftPhotos(
+            photos: photos,
+            onRemove: (index) => setState(() => photos.removed.add(index)),
+          ),
         MultiImageInput(
           images: images,
           label: widget.allowGallery
-              ? 'Photos des pièces / accessoires * (${images.length}/10)'
-              : 'Prendre une photo * (${images.length}/10)',
+              ? 'Photos des pièces / accessoires ($photoCount/10)'
+              : 'Prendre une photo ($photoCount/10)',
           showPreviews: widget.canPreviewAttachments,
           onPreview: widget.canPreviewAttachments
               ? () => _showTransactionPhotos(context, Future.value(List.of(images)))
@@ -17342,7 +17496,7 @@ class _SaleFormState extends State<SaleForm> {
           child: FilledButton.icon(
             onPressed: save,
             icon: const Icon(Icons.point_of_sale_rounded),
-            label: const Text('Enregistrer la vente'),
+            label: Text(widget.initialDraft == null ? 'Enregistrer la vente' : 'Enregistrer les modifications'),
           ),
         ),
       ],
@@ -17359,6 +17513,16 @@ class _StockFormState extends State<StockForm> {
   final images = <Uint8List>[];
   InventoryUnit unit = InventoryUnit.piece;
   TransportCharge transportCharge = TransportCharge.none;
+
+  int get photoCount => (widget.existingPhotos?.remaining ?? 0) + images.length;
+  bool get requiresPhoto => widget.existingPhotos == null || widget.existingPhotos!.count > 0;
+
+  @override
+  void dispose() {
+    pieces.dispose();
+    receiptNumber.dispose();
+    super.dispose();
+  }
 
   Product? get selectedProduct {
     for (final product in widget.products) {
@@ -17381,12 +17545,12 @@ class _StockFormState extends State<StockForm> {
   }
 
   Future<void> addSupplier() async {
-    final added = await widget.onAddSupplier();
+    final added = await widget.onAddSupplier?.call();
     if (added != null && mounted) setState(() => supplierId = added.id);
   }
 
   Future<void> pickImages() async {
-    final available = 10 - images.length;
+    final available = 10 - photoCount;
     if (available <= 0) {
       message(context, 'Vous pouvez ajouter au maximum 10 photos.');
       return;
@@ -17420,6 +17584,17 @@ class _StockFormState extends State<StockForm> {
   @override
   void initState() {
     super.initState();
+    final draft = widget.initialDraft;
+    if (draft != null) {
+      selected = draft.productId;
+      depotId = draft.depotId;
+      supplierId = draft.supplierId;
+      pieces.text = draft.quantity.toString();
+      receiptNumber.text = draft.receiptNumber;
+      unit = draft.unit;
+      transportCharge = draft.transportCharge;
+      return;
+    }
     if (widget.products.any(
       (product) => product.id == widget.initialProductId,
     )) {
@@ -17439,7 +17614,7 @@ class _StockFormState extends State<StockForm> {
         count <= 0 ||
         supplierId == null ||
         receiptNumber.text.trim().isEmpty ||
-        images.isEmpty) {
+        (requiresPhoto && photoCount == 0)) {
       message(
         context,
         'Ajoutez une photo, puis choisissez un produit, un fournisseur, un dépôt, une quantité valide et le n° de bon.',
@@ -17449,6 +17624,7 @@ class _StockFormState extends State<StockForm> {
     Navigator.pop(
       context,
       StockAddition(
+        id: widget.initialDraft?.id,
         productId: selected!,
         depotId: depotId!,
         pieces: count,
@@ -17457,7 +17633,7 @@ class _StockFormState extends State<StockForm> {
         quantity: enteredQuantity,
         unit: unit,
         images: images,
-        addedAt: DateTime.now(),
+        addedAt: widget.initialDraft?.addedAt ?? DateTime.now(),
         transportCharge: transportCharge,
       ),
     );
@@ -17465,7 +17641,7 @@ class _StockFormState extends State<StockForm> {
 
   @override
   Widget build(BuildContext context) => FormShell(
-    title: 'Achat · Ajouter au stock',
+    title: widget.initialDraft == null ? 'Achat · Ajouter au stock' : 'Modifier l’achat',
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -17478,7 +17654,7 @@ class _StockFormState extends State<StockForm> {
           products: widget.products,
           categories: widget.categories,
           catalogFamilies: widget.catalogFamilies,
-          initialProductId: widget.initialProductId,
+          initialProductId: widget.initialDraft?.productId ?? widget.initialProductId,
           buildProducts: (products) => ProductPicker(
             products: products,
             selected: selected == null ? <String>{} : {selected!},
@@ -17511,12 +17687,14 @@ class _StockFormState extends State<StockForm> {
                 onChanged: (ids) => setState(() => supplierId = ids.first),
               ),
             ),
-            const SizedBox(width: 8),
-            IconButton.filledTonal(
-              onPressed: addSupplier,
-              tooltip: 'Ajouter un fournisseur',
-              icon: const Icon(Icons.person_add_alt_1_rounded),
-            ),
+            if (widget.onAddSupplier != null) ...[
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                onPressed: addSupplier,
+                tooltip: 'Ajouter un fournisseur',
+                icon: const Icon(Icons.person_add_alt_1_rounded),
+              ),
+            ],
           ],
         ),
         const SizedBox(height: 12),
@@ -17595,11 +17773,16 @@ class _StockFormState extends State<StockForm> {
           onChanged: (value) => setState(() => transportCharge = value!),
         ),
         const SizedBox(height: 12),
+        if (widget.existingPhotos case final photos?)
+          _ExistingDraftPhotos(
+            photos: photos,
+            onRemove: (index) => setState(() => photos.removed.add(index)),
+          ),
         MultiImageInput(
           images: images,
           label: widget.allowGallery
-              ? 'Photos des pièces / accessoires * (${images.length}/10)'
-              : 'Prendre une photo * (${images.length}/10)',
+              ? 'Photos des pièces / accessoires ($photoCount/10)'
+              : 'Prendre une photo ($photoCount/10)',
           showPreviews: widget.canPreviewAttachments,
           onPreview: widget.canPreviewAttachments
               ? () => _showTransactionPhotos(context, Future.value(List.of(images)))
@@ -17663,7 +17846,7 @@ class _StockFormState extends State<StockForm> {
           width: double.infinity,
           child: FilledButton(
             onPressed: save,
-            child: const Text('Ajouter au stock'),
+            child: Text(widget.initialDraft == null ? 'Ajouter au stock' : 'Enregistrer les modifications'),
           ),
         ),
       ],
@@ -18547,6 +18730,7 @@ class CatalogProductBrowser extends StatefulWidget {
 class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
   String? familyId;
   String? categoryId;
+  String? modelId;
 
   List<_CatalogGroup> get groups => _catalogGroups(
     widget.categories,
@@ -18570,6 +18754,10 @@ class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
       if (section == null) continue;
       familyId = group.id;
       categoryId = section.category.id;
+      modelId = section.models
+          .where((model) => model.productIds.contains(_catalogMembershipId(product)))
+          .firstOrNull
+          ?.id;
       break;
     }
   }
@@ -18595,6 +18783,7 @@ class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
               onTap: () => setState(() {
                 familyId = group.id;
                 categoryId = null;
+                modelId = null;
               }),
             ),
       ]);
@@ -18602,12 +18791,14 @@ class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
     final section = family.sections
         .where((item) => item.category.id == categoryId)
         .firstOrNull;
-    final products = section == null
+    final models = section?.models ?? const <ProductModel>[];
+    final model = models.where((item) => item.id == modelId).firstOrNull;
+    final members = model?.productIds.toSet();
+    final products = members == null
         ? const <Product>[]
         : widget.products
               .where(
-                (item) =>
-                    section.productIds.contains(_catalogMembershipId(item)),
+                (item) => members.contains(_catalogMembershipId(item)),
               )
               .toList();
     return Column(
@@ -18615,33 +18806,55 @@ class _CatalogProductBrowserState extends State<CatalogProductBrowser> {
       children: [
         TextButton.icon(
           icon: const Icon(Icons.arrow_back_rounded),
-          label: Text(section == null ? 'Familles' : 'Catégories'),
+          label: Text(model != null ? 'Modèles' : section == null ? 'Familles' : 'Catégories'),
           onPressed: () => setState(() {
-            if (section == null) familyId = null;
-            categoryId = null;
+            if (model != null) {
+              modelId = null;
+            } else {
+              if (section == null) familyId = null;
+              categoryId = null;
+              modelId = null;
+            }
           }),
         ),
         Text(
-          section == null
-              ? family.name
-              : '${family.name} · ${section.category.name}',
+          [family.name, ?section?.category.name, ?model?.name].join(' · '),
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 10),
-        if (section != null)
+        if (model != null)
           if (products.isEmpty)
-            const Text('Aucun produit dans cette catégorie.')
+            const Text('Aucun produit dans ce modèle.')
           else
             widget.buildProducts(products)
+        else if (section != null)
+          if (models.isEmpty)
+            const Text('Aucun modèle dans cette catégorie.')
+          else
+            _catalogCards([
+              for (final item in models)
+                if (widget.showEmptyCategories ||
+                    item.productIds.any(availableIds.contains))
+                  _CatalogGroupCard(
+                    name: item.name,
+                    icon: Icons.view_in_ar_outlined,
+                    onTap: () => setState(() => modelId = item.id),
+                  ),
+            ])
         else if (family.sections.isEmpty)
           const Text('Aucune catégorie dans cette famille.')
         else
           _catalogCards([
             for (final item in family.sections)
-              _CatalogGroupCard(
-                name: item.category.name,
-                onTap: () => setState(() => categoryId = item.category.id),
-              ),
+              if (widget.showEmptyCategories ||
+                  item.productIds.any(availableIds.contains))
+                _CatalogGroupCard(
+                  name: item.category.name,
+                  onTap: () => setState(() {
+                    categoryId = item.category.id;
+                    modelId = null;
+                  }),
+                ),
           ]),
       ],
     );
@@ -18669,11 +18882,13 @@ class _CatalogGroupCard extends StatelessWidget {
     required this.name,
     required this.onTap,
     this.preview = const [],
+    this.icon = Icons.folder_outlined,
   });
 
   final String name;
   final List<String> preview;
   final VoidCallback onTap;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) => InkWell(
@@ -18690,7 +18905,7 @@ class _CatalogGroupCard extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const _AtelierIcon(Icons.folder_outlined, size: 38),
+                _AtelierIcon(icon, size: 38),
                 for (final label in preview)
                   Padding(
                     padding: const EdgeInsets.only(top: 5),
@@ -19047,11 +19262,13 @@ class FinishOperation extends StatefulWidget {
     required this.machine,
     required this.output,
     required this.depots,
+    this.editing = false,
   });
   final Operation operation;
   final FactoryMachine machine;
   final Product output;
   final List<Depot> depots;
+  final bool editing;
   @override
   State<FinishOperation> createState() => _FinishOperationState();
 }
@@ -19068,6 +19285,32 @@ class _FinishOperationState extends State<FinishOperation> {
   String? scrapDepotId;
   int step = 0;
 
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.editing) return;
+    final draft = widget.operation;
+    pieces.text = '${draft.outputPieces ?? 0}';
+    remainderPieces.text = '${draft.remainderPieces}';
+    scrapPieces.text = '${draft.scrapPieces}';
+    image = draft.finalImage;
+    remainderImage = draft.remainderImage;
+    scrapImage = draft.scrapImage;
+    outputDepotId = draft.outputDepotId;
+    remainderDepotId = draft.remainderDepotId;
+    scrapDepotId = draft.scrapDepotId;
+  }
+
+  @override
+  void dispose() {
+    pieces.dispose();
+    remainderPieces.dispose();
+    scrapPieces.dispose();
+    super.dispose();
+  }
+
+  bool get external => widget.operation.externalProduction;
+
   Future<void> pick(ValueChanged<Uint8List> onPicked) async {
     final file = await ImagePicker().pickImage(
       source: ImageSource.gallery,
@@ -19083,7 +19326,7 @@ class _FinishOperationState extends State<FinishOperation> {
           'Cette image est trop grande. Choisissez-en une autre.',
         );
       }
-      onPicked(bytes);
+      setState(() => onPicked(bytes));
     }
   }
 
@@ -19102,8 +19345,8 @@ class _FinishOperationState extends State<FinishOperation> {
         n != null &&
         n >= 0 &&
         used >= 0 &&
-        used + remainder + scrap == widget.operation.pieces;
-    final outputComplete = n == 0 || (outputDepotId != null && image != null);
+        (external || used + remainder + scrap == widget.operation.pieces);
+    final outputComplete = n == 0 || (outputDepotId != null && (external || image != null));
     final remainderComplete =
         remainder == 0 || (remainderDepotId != null && remainderImage != null);
     final scrapComplete =
@@ -19125,15 +19368,15 @@ class _FinishOperationState extends State<FinishOperation> {
       context,
       Completion(
         outputPieces: n,
-        image: image,
-        finishedAt: DateTime.now(),
+        image: n == 0 ? null : image,
+        finishedAt: widget.editing ? widget.operation.finishedAt! : DateTime.now(),
         outputDepotId: outputDepotId ?? 'general-depot',
         scrapPieces: scrap,
         remainderPieces: remainder,
-        remainderImage: remainderImage,
-        remainderDepotId: remainderDepotId,
-        scrapImage: scrapImage,
-        scrapDepotId: scrapDepotId,
+        remainderImage: remainder == 0 ? null : remainderImage,
+        remainderDepotId: remainder == 0 ? null : remainderDepotId,
+        scrapImage: scrap == 0 ? null : scrapImage,
+        scrapDepotId: scrap == 0 ? null : scrapDepotId,
       ),
     );
   }
@@ -19181,7 +19424,7 @@ class _FinishOperationState extends State<FinishOperation> {
             const SizedBox(height: 14),
             ImageInput(
               bytes: image,
-              label: 'Photo du produit fabriqué *',
+              label: external ? 'Photo du produit fabriqué' : 'Photo du produit fabriqué *',
               onTap: () => pick((value) => image = value),
             ),
           ] else
@@ -19301,7 +19544,9 @@ class _FinishOperationState extends State<FinishOperation> {
       ),
     };
     return FormShell(
-      title: 'Terminer l’opération · ${step + 1}/3',
+      title: external
+          ? 'Modifier le travail externe'
+          : '${widget.editing ? 'Modifier la production' : 'Terminer l’opération'} · ${step + 1}/3',
       subtitle: widget.machine.name,
       child: Column(
         children: [
@@ -19326,13 +19571,15 @@ class _FinishOperationState extends State<FinishOperation> {
               if (step > 0) const SizedBox(width: 10),
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: step == 2 ? finish : () => setState(() => step++),
+                  onPressed: external || step == 2 ? finish : () => setState(() => step++),
                   icon: Icon(
                     step == 2
                         ? Icons.task_alt_rounded
                         : Icons.arrow_forward_rounded,
                   ),
-                  label: Text(step == 2 ? 'Vérifier et terminer' : 'Continuer'),
+                  label: Text(external || step == 2
+                      ? (widget.editing ? 'Enregistrer les modifications' : 'Vérifier et terminer')
+                      : 'Continuer'),
                 ),
               ),
             ],

@@ -141,6 +141,25 @@ void main() {
         contains(added.id),
       );
 
+      await database.saveCatalogModel(
+        category.id,
+        forage.ProductModel(
+          id: 'tri-new',
+          name: 'DTH série 2',
+          productIds: [added.id],
+        ),
+      );
+      final modelSnapshot = await database.exportSyncSnapshot();
+      await database.replaceFromSyncSnapshot(modelSnapshot);
+      final reorganized = (await database.loadWorkshop()).categories
+          .singleWhere((item) => item.id == category.id);
+      expect(
+        reorganized.models.singleWhere((model) => model.id == 'c').productIds,
+        ['tricone'],
+      );
+      expect(reorganized.models.last.productIds, [added.id]);
+      expect(reorganized.productIds, stored.productIds);
+
       snapshot['categories']!
           .singleWhere((item) => item['id'] == category.id)
           .remove('families');
@@ -152,65 +171,85 @@ void main() {
     },
   );
 
-  testWidgets('shows two categories then opens the requested category', (
-    tester,
-  ) async {
-    await tester.binding.setSurfaceSize(const Size(390, 844));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SingleChildScrollView(
-            child: forage.CatalogProductBrowser(
-              products: [
-                catalogItem('hammer', 'HAM-001'),
-                catalogItem('dth', 'DTH-115'),
-                catalogItem('tricone', 'TRI-17'),
-                catalogItem('legacy', 'OLD-001'),
-              ],
-              categories: [
-                testCategory('h', 'Marteaux', ['hammer']),
-                testCategory('d', 'Taillants', ['dth']),
-                testCategory('t', 'Tricônes', ['tricone']),
-              ],
-              catalogFamilies: const [
-                forage.CatalogFamily(
-                  id: 'forage',
-                  name: 'Forage',
-                  categoryIds: ['h', 'd', 't'],
-                ),
-              ],
-              buildProducts: (items) => Column(
-                children: [
-                  for (final item in items) Text(item.displayReference),
+  testWidgets(
+    'opens a model within a category and retains unclassified products',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(390, 844));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: forage.CatalogProductBrowser(
+                products: [
+                  catalogItem('hammer', 'HAM-001'),
+                  catalogItem('dth', 'DTH-115'),
+                  catalogItem('tricone', 'TRI-17'),
+                  catalogItem('legacy', 'OLD-001'),
                 ],
+                categories: [
+                  testCategory('h', 'Marteaux', ['hammer']),
+                  testCategory('d', 'Taillants', ['dth']),
+                  forage.ProductCategory(
+                    id: 't',
+                    name: 'Tricônes',
+                    image: Uint8List(0),
+                    productIds: const ['tricone'],
+                    models: const [
+                      forage.ProductModel(
+                        id: 'tri',
+                        name: 'Série TRI',
+                        productIds: ['tricone'],
+                      ),
+                    ],
+                  ),
+                ],
+                catalogFamilies: const [
+                  forage.CatalogFamily(
+                    id: 'forage',
+                    name: 'Forage',
+                    categoryIds: ['h', 'd', 't'],
+                  ),
+                ],
+                buildProducts: (items) => Column(
+                  children: [
+                    for (final item in items) Text(item.displayReference),
+                  ],
+                ),
               ),
             ),
           ),
         ),
-      ),
-    );
-    expect(find.text('Marteaux'), findsOne);
-    expect(find.text('Taillants'), findsOne);
-    expect(find.text('Tricônes'), findsNothing);
-    expect(find.text('TRI-17'), findsNothing);
-    await tester.tap(find.text('Forage'));
-    await tester.pump();
-    expect(find.text('Tricônes'), findsOne);
-    await tester.tap(find.text('Tricônes'));
-    await tester.pump();
-    expect(find.text('TRI-17'), findsOne);
-    expect(find.text('HAM-001'), findsNothing);
-    await tester.tap(find.text('Catégories'));
-    await tester.pump();
-    await tester.tap(find.text('Familles'));
-    await tester.pump();
-    await tester.tap(find.text('Sans famille'));
-    await tester.pump();
-    await tester.tap(find.text('Sans catégorie'));
-    await tester.pump();
-    expect(find.text('OLD-001'), findsOne);
-  });
+      );
+      expect(find.text('Marteaux'), findsOne);
+      expect(find.text('Taillants'), findsOne);
+      expect(find.text('Tricônes'), findsNothing);
+      expect(find.text('TRI-17'), findsNothing);
+      await tester.tap(find.text('Forage'));
+      await tester.pump();
+      expect(find.text('Tricônes'), findsOne);
+      await tester.tap(find.text('Tricônes'));
+      await tester.pump();
+      expect(find.text('TRI-17'), findsNothing);
+      await tester.tap(find.text('Série TRI'));
+      await tester.pump();
+      expect(find.text('TRI-17'), findsOne);
+      expect(find.text('HAM-001'), findsNothing);
+      await tester.tap(find.text('Modèles'));
+      await tester.pump();
+      await tester.tap(find.text('Catégories'));
+      await tester.pump();
+      await tester.tap(find.text('Familles'));
+      await tester.pump();
+      await tester.tap(find.text('Sans famille'));
+      await tester.pump();
+      await tester.tap(find.text('Sans catégorie'));
+      await tester.pump();
+      await tester.tap(find.text('Sans modèle'));
+      await tester.pump();
+      expect(find.text('OLD-001'), findsOne);
+    },
+  );
 
   testWidgets('changing family clears the selected category', (tester) async {
     await tester.binding.setSurfaceSize(const Size(900, 1200));
@@ -221,7 +260,13 @@ void main() {
           kind: forage.ProductKind.diameter,
           depots: const [],
           categories: [
-            testCategory('a', 'Forets', []),
+            forage.ProductCategory(
+              id: 'a',
+              name: 'Forets',
+              productIds: const [],
+              image: Uint8List(0),
+              models: const [forage.ProductModel(id: 'a1', name: 'Série 1')],
+            ),
             testCategory('b', 'Raccords', []),
           ],
           catalogFamilies: const [
@@ -251,13 +296,74 @@ void main() {
     await choose('Famille *', 'Forage');
     await choose('Catégorie *', 'Forets');
     expect(find.text('Forets'), findsOne);
+    await choose('Modèle', 'Série 1');
+    expect(find.text('Série 1'), findsOne);
     await choose('Famille *', 'Accessoires');
     expect(find.text('Forets'), findsNothing);
+    expect(find.text('Série 1'), findsNothing);
     tester.state<FormState>(find.byType(Form)).validate();
     await tester.pump();
     expect(find.text('Choisissez une catégorie.'), findsOne);
     await choose('Catégorie *', 'Raccords');
     expect(find.text('Raccords'), findsOne);
+  });
+
+  testWidgets('creates a model and assigns an existing category product', (
+    tester,
+  ) async {
+    var current = testCategory('drilling', 'Tricônes', ['bit']);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: forage.CatalogFamiliesPage(
+            loadCategories: () => [current],
+            loadFamilies: () => const [
+              forage.CatalogFamily(
+                id: 'forage',
+                name: 'Forage',
+                categoryIds: ['drilling'],
+              ),
+            ],
+            loadProducts: () => [catalogItem('bit', 'TRI-17')],
+            admin: true,
+            onSaveFamily: (_) async {},
+            onAddCategory: (_) async {},
+            onEditCategory: (_) async {},
+            onSaveModel: (categoryId, model) async {
+              expect(categoryId, current.id);
+              current = current.withModel(model);
+            },
+          ),
+        ),
+      ),
+    );
+
+    Future<void> tap(String label) async {
+      final result = find.text(label);
+      await tester.ensureVisible(result);
+      await tester.tap(result);
+      await tester.pumpAndSettle();
+    }
+
+    await tap('Forage');
+    await tap('Tricônes');
+    await tap('Ajouter un modèle');
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Nom du modèle *'),
+      'Série TRI',
+    );
+    await tester.tap(
+      find.widgetWithText(forage.SearchChoiceField, 'Produits du modèle'),
+    );
+    await tester.pumpAndSettle();
+    await tap('TRI-17');
+    await tap('Appliquer');
+    await tap('Enregistrer le modèle');
+
+    expect(current.models.single.name, 'Série TRI');
+    expect(current.models.single.productIds, ['bit']);
+    await tap('Série TRI');
+    expect(find.text('TRI-17'), findsOneWidget);
   });
 
   test('transfer filter matches one depot or both, in either direction', () {
@@ -443,7 +549,7 @@ void main() {
   );
 
   testWidgets(
-    'Excel exports products from the selected families and categories',
+    'Excel exports products from the selected families, categories and models',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(390, 820));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -521,6 +627,7 @@ void main() {
         forage.SearchChoiceField,
         'Catégories',
       );
+      final models = find.widgetWithText(forage.SearchChoiceField, 'Modèles');
       Finder choice(String text) => find.widgetWithText(CheckboxListTile, text);
       Future<void> open(Finder field) async {
         await tester.tap(field);
@@ -539,23 +646,22 @@ void main() {
       await tester.tap(choice('Tuyaux'));
       await open(find.text('Appliquer'));
       await open(families);
-      for (final family in [
-        'Forage',
-        'Tuyauterie',
-        'Série A',
-        'Série B',
-        'Sans famille',
-      ]) {
+      for (final family in ['Forage', 'Tuyauterie', 'Sans famille']) {
         expect(choice(family), findsOneWidget);
       }
       await tester.tap(choice('Forage'));
-      await tester.tap(choice('Série A'));
+      await tester.tap(choice('Sans famille'));
       await open(find.text('Appliquer'));
       expect(find.text('Tuyaux'), findsNothing);
       await open(categories);
       expect(choice('Tuyaux'), findsNothing);
       await tester.tap(choice('Forets'));
       await tester.tap(choice('Pièces anciennes'));
+      await open(find.text('Appliquer'));
+      await tester.ensureVisible(models);
+      await open(models);
+      await tester.tap(choice('Forets · Sans modèle'));
+      await tester.tap(choice('Pièces anciennes · Série A'));
       await open(find.text('Appliquer'));
       await open(find.text('Créer le fichier Excel'));
 
@@ -564,6 +670,8 @@ void main() {
         'DRILL-MADE',
         'OLD-A',
       ]);
+      expect(saved!.single.headers, contains('Modèle'));
+      expect(saved!.single.rows.last[3], 'Série A');
     },
   );
 }
